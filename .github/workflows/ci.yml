@@ -59,20 +59,30 @@ jobs:
         with:
           path: module
 
+      # The west workspace is built beside the module rather than on top of
+      # it. west init -l would make the module checkout the workspace root,
+      # and west would then clone Zephyr into module/zephyr, colliding with
+      # the module's own zephyr/module.yml.
+      - name: Stage the manifest
+        run: |
+          mkdir -p ws
+          cp -r module/example ws/config
+
       - name: Cache the west workspace
         uses: actions/cache@v4
         with:
           path: |
-            modules/
-            tools/
-            zephyr/
-            bootloader/
-            zmk/
+            ws/modules
+            ws/tools
+            ws/zephyr
+            ws/bootloader
+            ws/zmk
           key: zmk-${{ hashFiles('module/example/west.yml') }}
 
       - name: Initialise the workspace
+        working-directory: ws
         run: |
-          west init -l module/example
+          west init -l config
           west update --fetch-opt=--filter=blob:none
           west zephyr-export
 
@@ -81,20 +91,21 @@ jobs:
       # the only place the devicetree macros in src/scenes.c are exercised
       # against a real devicetree.
       - name: Build
+        working-directory: ws
         run: |
           west build -s zmk/app -b ${{ matrix.board }} -- \
             -DSHIELD=${{ matrix.shield }} \
-            -DZMK_CONFIG="${GITHUB_WORKSPACE}/module/example" \
+            -DZMK_CONFIG="${GITHUB_WORKSPACE}/ws/config" \
             -DZMK_EXTRA_MODULES="${GITHUB_WORKSPACE}/module"
 
       - name: Report size
-        run: |
-          arm-zephyr-eabi-size build/zephyr/zmk.elf
+        working-directory: ws
+        run: arm-zephyr-eabi-size build/zephyr/zmk.elf
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.shield }}
-          path: build/zephyr/zmk.uf2
+          path: ws/build/zephyr/zmk.uf2
 
   # Builds with the settings the defaults do not cover, so a Kconfig
   # combination cannot rot unnoticed.
@@ -116,30 +127,43 @@ jobs:
           - name: no indicators
             args: -DCONFIG_ZMK_VFX_INDICATORS=n
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout the module
+        uses: actions/checkout@v4
         with:
           path: module
 
-      - uses: actions/cache@v4
+      # The west workspace is built beside the module rather than on top of
+      # it. west init -l would make the module checkout the workspace root,
+      # and west would then clone Zephyr into module/zephyr, colliding with
+      # the module's own zephyr/module.yml.
+      - name: Stage the manifest
+        run: |
+          mkdir -p ws
+          cp -r module/example ws/config
+
+      - name: Cache the west workspace
+        uses: actions/cache@v4
         with:
           path: |
-            modules/
-            tools/
-            zephyr/
-            bootloader/
-            zmk/
+            ws/modules
+            ws/tools
+            ws/zephyr
+            ws/bootloader
+            ws/zmk
           key: zmk-${{ hashFiles('module/example/west.yml') }}
 
       - name: Initialise the workspace
+        working-directory: ws
         run: |
-          west init -l module/example
+          west init -l config
           west update --fetch-opt=--filter=blob:none
           west zephyr-export
 
       - name: Build
+        working-directory: ws
         run: |
           west build -s zmk/app -b nice_nano_v2 -- \
             -DSHIELD=lily58_left \
-            -DZMK_CONFIG="${GITHUB_WORKSPACE}/module/example" \
+            -DZMK_CONFIG="${GITHUB_WORKSPACE}/ws/config" \
             -DZMK_EXTRA_MODULES="${GITHUB_WORKSPACE}/module" \
             ${{ matrix.args }}
