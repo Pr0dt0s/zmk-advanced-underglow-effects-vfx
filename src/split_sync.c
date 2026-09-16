@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
