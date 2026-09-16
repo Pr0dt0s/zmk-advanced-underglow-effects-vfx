@@ -9,7 +9,10 @@
 #include <dt-bindings/zmk/vfx.h>
 #include <vfx/presets.dtsi>
 
-/* The lily58 shield ships an arbitrary chain-length of 10; set yours. */
+/* The lily58 shield ships an arbitrary chain-length of 10; set yours.
+ * led_strip is only defined by the shield for the nice_nano//zmk board
+ * target, which is what example/build.yaml and CI use.
+ */
 &led_strip {
     chain-length = <36>;
 };

@@ -22,10 +22,6 @@
  * adding a DEFINE macro and one DT_FOREACH line, nothing else.
  */
 
-/* Generators with nothing to remember between frames still get a state
- * symbol, so VFX_LAYER_ENTRY stays uniform rather than branching per type.
- * It is one unread byte each.
- */
 #define VFX_CFG_SYM(node) _CONCAT(vfx_cfg_, node)
 #define VFX_STATE_SYM(node) _CONCAT(vfx_state_, node)
 #define VFX_API_SYM(node) _CONCAT(vfx_api_, node)
@@ -53,6 +49,11 @@
 DT_FOREACH_STATUS_OKAY(zmk_vfx_zone, VFX_ZONE_DEFINE)
 
 /* ------------------------------------------------------------- generators */
+
+/* Generators with nothing to remember between frames still declare a state
+ * symbol, a single unread byte, so that VFX_LAYER_ENTRY below stays uniform
+ * instead of branching on the generator type.
+ */
 
 #define VFX_SOLID_DEFINE(node)                                                                     \
     static const struct vfx_solid_cfg VFX_CFG_SYM(node) = {                                        \

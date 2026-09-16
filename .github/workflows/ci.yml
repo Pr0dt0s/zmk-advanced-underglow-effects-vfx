@@ -50,9 +50,9 @@ jobs:
       matrix:
         include:
           - shield: lily58_left
-            board: nice_nano_v2
+            board: "nice_nano//zmk"
           - shield: lily58_right
-            board: nice_nano_v2
+            board: "nice_nano//zmk"
     steps:
       - name: Checkout the module
         uses: actions/checkout@v4
@@ -93,7 +93,7 @@ jobs:
       - name: Build
         working-directory: ws
         run: |
-          west build -s zmk/app -b ${{ matrix.board }} -- \
+          west build -s zmk/app -b "${{ matrix.board }}" -- \
             -DSHIELD=${{ matrix.shield }} \
             -DZMK_CONFIG="${GITHUB_WORKSPACE}/ws/config" \
             -DZMK_EXTRA_MODULES="${GITHUB_WORKSPACE}/module"
@@ -162,7 +162,7 @@ jobs:
       - name: Build
         working-directory: ws
         run: |
-          west build -s zmk/app -b nice_nano_v2 -- \
+          west build -s zmk/app -b "nice_nano//zmk" -- \
             -DSHIELD=lily58_left \
             -DZMK_CONFIG="${GITHUB_WORKSPACE}/ws/config" \
             -DZMK_EXTRA_MODULES="${GITHUB_WORKSPACE}/module" \
