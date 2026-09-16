@@ -154,6 +154,18 @@ static void blank_strip_handler(struct k_work *work) {
     }
 
     push_frame();
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_POWER_GATE)
+    /* Switching the underglow off stops the tick, so the blackout countdown
+     * that normally gates the rail never runs. Without this, "off" would
+     * leave the strip powered and drawing its quiescent current forever,
+     * which is the one case where saving it matters most.
+     */
+    if (!state.on) {
+        vfx_power_rail_disable();
+        vfx_power_force_gated(&power_ctl);
+    }
+#endif
 }
 
 K_WORK_DEFINE(vfx_blank_work, blank_strip_handler);

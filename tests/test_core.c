@@ -482,6 +482,29 @@ static void test_gate_stability_tracks_the_countdown(void) {
     CHECK(vfx_power_is_stable(&c), "a fully gated rail is stable");
 }
 
+static void test_force_gated_matches_a_normal_gate(void) {
+    /* Switching the underglow off cuts the rail outside the blackout
+     * countdown. The gate has to end up in the same state it would have
+     * reached normally, or the next wake would misbehave.
+     */
+    struct vfx_power_ctl forced;
+    vfx_power_reset(&forced);
+    vfx_power_force_gated(&forced);
+
+    struct vfx_power_ctl counted;
+    vfx_power_reset(&counted);
+    for (int t = 0; t <= 500; t += FRAME_MS) {
+        vfx_power_step(&counted, &TEST_POLICY, false, FRAME_MS);
+    }
+
+    CHECK(forced.state == counted.state, "forced gate state differs from a counted one");
+    CHECK(vfx_power_is_stable(&forced), "a forced gate must be stable");
+
+    /* And it must still wake normally. */
+    CHECK(vfx_power_step(&forced, &TEST_POLICY, true, FRAME_MS) == VFX_POWER_WAKE,
+          "a forced gate must still wake on a lit frame");
+}
+
 static void test_current_estimate(void) {
     struct vfx_rgb black[36] = {0};
     struct vfx_rgb white[36];
@@ -878,6 +901,7 @@ int main(void) {
         {"gate does not thrash on a blinking scene", test_gate_does_not_thrash_on_a_blinking_scene},
         {"gate wakes on a lit frame after settling", test_gate_wakes_on_a_lit_frame_after_settling},
         {"gate stability tracks the countdown", test_gate_stability_tracks_the_countdown},
+        {"forced gate matches a normal gate", test_force_gated_matches_a_normal_gate},
         {"current estimate", test_current_estimate},
         {"ripple fires, decays and goes idle", test_ripple_fires_decays_and_goes_idle},
         {"ripple travels outward", test_ripple_travels_outward},

@@ -19,6 +19,12 @@ void vfx_power_reset(struct vfx_power_ctl *ctl) {
     ctl->state = VFX_POWER_LIT;
 }
 
+void vfx_power_force_gated(struct vfx_power_ctl *ctl) {
+    ctl->black_ms = 0;
+    ctl->settle_left_ms = 0;
+    ctl->state = VFX_POWER_GATED;
+}
+
 enum vfx_power_action vfx_power_step(struct vfx_power_ctl *ctl,
                                      const struct vfx_power_policy *policy, bool lit,
                                      uint16_t elapsed_ms) {

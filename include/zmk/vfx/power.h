@@ -61,6 +61,12 @@ enum vfx_power_action vfx_power_step(struct vfx_power_ctl *ctl,
  */
 bool vfx_power_is_stable(const struct vfx_power_ctl *ctl);
 
+/* Put the gate straight into its off state, for when the rail was cut outside
+ * the normal blackout countdown: switching the underglow off stops the tick,
+ * so the countdown that usually gets us here never runs.
+ */
+void vfx_power_force_gated(struct vfx_power_ctl *ctl);
+
 /* Anything that changes the scene out from under the gate resets it, so a
  * newly selected scene is never judged by the previous one's darkness.
  */
