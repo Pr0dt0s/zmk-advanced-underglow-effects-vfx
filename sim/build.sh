@@ -20,6 +20,8 @@ exports=(
   vfx_sim_add_solid vfx_sim_add_gradient
   vfx_sim_render vfx_sim_num_pixels vfx_sim_any_lit vfx_sim_is_animating
   vfx_sim_key_event
+  vfx_sim_set_power_policy vfx_sim_power_state vfx_sim_power_action
+  vfx_sim_estimated_ua vfx_sim_power_reset
 )
 
 args=(--target=wasm32 -nostdlib -O2 -flto -DVFX_SIM -I"$root/include"
@@ -33,6 +35,7 @@ done
 clang "${args[@]}" \
   "$here/vfx_sim.c" \
   "$root/src/color.c" "$root/src/zone.c" "$root/src/render.c" \
+  "$root/src/power_policy.c" \
   "$root/src/layers/solid.c" "$root/src/layers/gradient.c" \
   -o "$out/vfx.wasm"
 

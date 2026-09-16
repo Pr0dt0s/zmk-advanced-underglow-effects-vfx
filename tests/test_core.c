@@ -14,6 +14,7 @@
 
 #include <zmk/vfx/engine.h>
 #include <zmk/vfx/layers.h>
+#include <zmk/vfx/power.h>
 
 static int failures;
 
@@ -381,6 +382,124 @@ static void test_brightness_scales_to_black(void) {
     CHECK(!lit, "brightness 0 must produce an unlit frame for the power gate");
 }
 
+
+/* ---- power gate ------------------------------------------------------- */
+
+#define FRAME_MS 20
+
+static const struct vfx_power_policy TEST_POLICY = {.blackout_delay_ms = 500, .settle_ms = 50};
+
+static void test_gate_waits_the_blackout_delay(void) {
+    struct vfx_power_ctl c;
+    vfx_power_reset(&c);
+
+    /* Black frames transmit normally until the delay is up, so the strip
+     * actually shows the black rather than freezing on the last lit frame.
+     */
+    int transmits = 0;
+    enum vfx_power_action a = VFX_POWER_TRANSMIT;
+
+    for (int t = 0; t < 500; t += FRAME_MS) {
+        a = vfx_power_step(&c, &TEST_POLICY, false, FRAME_MS);
+        if (a == VFX_POWER_TRANSMIT) transmits++;
+        else break;
+    }
+
+    CHECK(a == VFX_POWER_GATE_OFF, "gate did not fire at the delay, got %d", a);
+    CHECK(transmits == 500 / FRAME_MS - 1 || transmits == 500 / FRAME_MS,
+          "unexpected transmit count before gating: %d", transmits);
+    CHECK(c.state == VFX_POWER_GATED, "state should be GATED after gating");
+}
+
+static void test_gate_does_not_thrash_on_a_blinking_scene(void) {
+    /* A scene that dips through black every few frames must never gate: this
+     * is the failure mode that would cycle the rail continuously.
+     */
+    struct vfx_power_ctl c;
+    vfx_power_reset(&c);
+
+    for (int i = 0; i < 2000; i++) {
+        bool lit = (i % 10) < 7;   /* black for 3 frames out of every 10 */
+        enum vfx_power_action a = vfx_power_step(&c, &TEST_POLICY, lit, FRAME_MS);
+
+        CHECK(a == VFX_POWER_TRANSMIT, "blinking scene gated at frame %d (action %d)", i, a);
+        if (a != VFX_POWER_TRANSMIT) break;
+    }
+}
+
+static void test_gate_wakes_on_a_lit_frame_after_settling(void) {
+    struct vfx_power_ctl c;
+    vfx_power_reset(&c);
+
+    /* Get into the gated state. */
+    for (int t = 0; t <= 500; t += FRAME_MS) vfx_power_step(&c, &TEST_POLICY, false, FRAME_MS);
+    CHECK(c.state == VFX_POWER_GATED, "setup: expected GATED");
+
+    /* While gated and still black, the bus must stay quiet. */
+    CHECK(vfx_power_step(&c, &TEST_POLICY, false, FRAME_MS) == VFX_POWER_SKIP,
+          "gated black frames must not touch the bus");
+
+    /* First lit frame brings the rail up but must not transmit yet. */
+    CHECK(vfx_power_step(&c, &TEST_POLICY, true, FRAME_MS) == VFX_POWER_WAKE,
+          "a lit frame while gated must wake the rail");
+    CHECK(c.state == VFX_POWER_SETTLING, "should be settling after waking");
+
+    /* Data driven at a rail that has not come up shows as garbage, so the
+     * settle window must skip rather than transmit.
+     */
+    int skipped = 0;
+    enum vfx_power_action a;
+    for (int i = 0; i < 20; i++) {
+        a = vfx_power_step(&c, &TEST_POLICY, true, FRAME_MS);
+        if (a == VFX_POWER_SKIP) skipped++;
+        else break;
+    }
+
+    CHECK(a == VFX_POWER_TRANSMIT, "settling never completed");
+    CHECK(skipped * FRAME_MS >= TEST_POLICY.settle_ms - FRAME_MS,
+          "transmitted after only %d ms of settling, wanted %d", skipped * FRAME_MS,
+          TEST_POLICY.settle_ms);
+    CHECK(c.state == VFX_POWER_LIT, "should be LIT once settled");
+}
+
+static void test_gate_stability_tracks_the_countdown(void) {
+    struct vfx_power_ctl c;
+    vfx_power_reset(&c);
+
+    CHECK(vfx_power_is_stable(&c), "a freshly reset gate is stable");
+
+    vfx_power_step(&c, &TEST_POLICY, false, FRAME_MS);
+    CHECK(!vfx_power_is_stable(&c),
+          "a running blackout countdown must keep the engine ticking, or a "
+          "static black scene would never reach the gate");
+
+    vfx_power_step(&c, &TEST_POLICY, true, FRAME_MS);
+    CHECK(vfx_power_is_stable(&c), "a lit frame clears the countdown");
+
+    for (int t = 0; t <= 500; t += FRAME_MS) vfx_power_step(&c, &TEST_POLICY, false, FRAME_MS);
+    CHECK(vfx_power_is_stable(&c), "a fully gated rail is stable");
+}
+
+static void test_current_estimate(void) {
+    struct vfx_rgb black[36] = {0};
+    struct vfx_rgb white[36];
+
+    for (int i = 0; i < 36; i++) white[i] = (struct vfx_rgb){255, 255, 255};
+
+    CHECK(vfx_estimate_ua(black, 36, false) == 0, "an unpowered strip draws nothing");
+
+    const uint32_t idle = vfx_estimate_ua(black, 36, true);
+    const uint32_t full = vfx_estimate_ua(white, 36, true);
+
+    printf("  36 px: black-but-powered %u mA, full white %u mA\n", idle / 1000, full / 1000);
+
+    /* The whole justification for gating: a powered strip showing nothing is
+     * still tens of milliamps, which dwarfs an idle MCU.
+     */
+    CHECK(idle > 25000 && idle < 40000, "idle estimate %u uA is outside the expected range", idle);
+    CHECK(full > idle * 10, "full white should dwarf the quiescent draw");
+}
+
 int main(void) {
     struct {
         const char *name;
@@ -400,6 +519,11 @@ int main(void) {
         {"static scene reports idle", test_static_scene_reports_idle},
         {"opacity zero layer skipped", test_opacity_zero_layer_skipped},
         {"brightness scales to black", test_brightness_scales_to_black},
+        {"gate waits the blackout delay", test_gate_waits_the_blackout_delay},
+        {"gate does not thrash on a blinking scene", test_gate_does_not_thrash_on_a_blinking_scene},
+        {"gate wakes on a lit frame after settling", test_gate_wakes_on_a_lit_frame_after_settling},
+        {"gate stability tracks the countdown", test_gate_stability_tracks_the_countdown},
+        {"current estimate", test_current_estimate},
     };
 
     for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {

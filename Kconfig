@@ -50,6 +50,58 @@ config ZMK_VFX_GAMMA
       Maps composited linear values through a CIE 1931 lightness curve so
       brightness ramps look even to the eye. Costs 256 bytes of flash.
 
+config ZMK_VFX_AUTO_POWER_GATE
+    bool "Cut power to the LEDs when every pixel is off"
+    default y
+    help
+      WS2812s draw close to 1 mA each even while displaying black, so a 36
+      pixel strip sits around 30 mA whether or not anything is lit. When a
+      rendered frame comes out entirely black this switches the external
+      power rail off, and switches it back on as soon as a frame has
+      something to show.
+
+      The engine keeps rendering while gated, which costs almost nothing
+      without the bus transfer, so a keypress ripple still wakes the strip.
+
+      Requires a zmk,ext-power-generic node. Note that on many boards that
+      rail feeds everything external, not just the LEDs: if a display shares
+      it, the display will switch off too.
+
+config ZMK_VFX_BLACKOUT_DELAY_MS
+    int "Milliseconds of continuous black before cutting the rail"
+    depends on ZMK_VFX_AUTO_POWER_GATE
+    range 0 60000
+    default 500
+    help
+      Stops a scene that blinks, or one that dips through black between
+      cycles, from switching the rail on and off continuously.
+
+config ZMK_VFX_POWER_SETTLE_MS
+    int "Milliseconds to let the rail stabilise before the first frame"
+    depends on ZMK_VFX_AUTO_POWER_GATE
+    range 0 1000
+    default 50
+    help
+      Driving data at a strip whose supply has not come up yet shows as
+      garbage on the first few pixels. The default matches the init-delay-ms
+      the nice_nano board uses for the same rail.
+
+config ZMK_VFX_SUSPEND_STRIP_BUS
+    bool "Suspend the LED strip's bus while the rail is gated"
+    depends on ZMK_VFX_AUTO_POWER_GATE && PM_DEVICE
+    default y
+    help
+      Applies the bus node's sleep pinctrl state, parking the data line low.
+      A data pin left high into an unpowered strip leaks current through the
+      chip's protection diode, which would undo much of the saving.
+
+config ZMK_VFX_SKIP_UNCHANGED_FRAMES
+    bool "Skip the bus transfer when a frame is identical to the last"
+    default y
+    help
+      Saves the SPI transfer and its DMA activity on static or slow scenes
+      even while the strip is lit.
+
 config ZMK_VFX_RGB_UNDERGLOW_COMPAT
     bool "Bind &rgb_ug to the VFX engine"
     default y

@@ -13,7 +13,10 @@ if(CONFIG_ZMK_VFX)
     src/engine.c
     src/scenes.c
     src/behavior_vfx.c
+    src/power_policy.c
   )
+
+  zephyr_library_sources_ifdef(CONFIG_ZMK_VFX_AUTO_POWER_GATE src/power.c)
 
   zephyr_library_sources_ifdef(CONFIG_ZMK_VFX_RGB_UNDERGLOW_COMPAT
                                src/behavior_rgb_compat.c)

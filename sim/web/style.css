@@ -59,6 +59,8 @@ canvas { width: 100%; height: auto; display: block; border-radius: 6px; cursor: 
 }
 .pill.on { color: #7ee787; border-color: #2c5133; }
 .pill.off { color: #6b7280; }
+.pill.warn { color: #ffcc66; border-color: #5a4a1f; }
+.pill.gated { color: #ff9f7b; border-color: #5c3324; }
 
 .hint { margin-left: auto; font-style: italic; }
 

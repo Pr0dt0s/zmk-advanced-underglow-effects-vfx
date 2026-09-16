@@ -10,7 +10,10 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include <string.h>
+
 #include <zmk/vfx/engine.h>
+#include <zmk/vfx/power.h>
 #include <zmk/vfx/scenes.h>
 #include <zmk/vfx/vfx.h>
 #include <zmk/workqueue.h>
@@ -62,6 +65,20 @@ static struct {
 } state;
 
 static bool frame_dirty = true;
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_POWER_GATE)
+static struct vfx_power_ctl power_ctl;
+
+static const struct vfx_power_policy power_policy = {
+    .blackout_delay_ms = CONFIG_ZMK_VFX_BLACKOUT_DELAY_MS,
+    .settle_ms = CONFIG_ZMK_VFX_POWER_SETTLE_MS,
+};
+#endif
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_SKIP_UNCHANGED_FRAMES)
+static struct vfx_rgb last_sent[STRIP_NUM_PIXELS];
+static bool last_sent_valid;
+#endif
 
 static uint8_t brightness_ceiling(uint8_t v) {
     const uint16_t ceiling = (uint16_t)CONFIG_ZMK_VFX_BRT_MAX * 255U / 100U;
@@ -126,9 +143,47 @@ static void vfx_tick(struct k_work *work) {
     bool any_lit = false;
 
     vfx_render_frame(scene, &ctx, frame, &any_lit);
-    push_frame();
-
     frame_dirty = false;
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_POWER_GATE)
+    switch (vfx_power_step(&power_ctl, &power_policy, any_lit, VFX_FRAME_MS)) {
+    case VFX_POWER_SKIP:
+        /* Rail is down or still settling. We rendered anyway, which is how
+         * the first lit frame gets noticed, but the bus stays quiet.
+         */
+        return;
+
+    case VFX_POWER_GATE_OFF:
+        /* The frame is already black, so sending it is what actually turns
+         * the LEDs off before the supply goes; without it they would hold
+         * their last colour until the rail decayed.
+         */
+        push_frame();
+        vfx_power_rail_disable();
+        LOG_DBG("LED rail gated off after %d ms of black frames",
+                CONFIG_ZMK_VFX_BLACKOUT_DELAY_MS);
+        return;
+
+    case VFX_POWER_WAKE:
+        vfx_power_rail_enable();
+        LOG_DBG("LED rail woken by a lit frame");
+        return;
+
+    case VFX_POWER_TRANSMIT:
+        break;
+    }
+#endif
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_SKIP_UNCHANGED_FRAMES)
+    if (last_sent_valid && memcmp(last_sent, frame, sizeof(frame)) == 0) {
+        return;
+    }
+
+    memcpy(last_sent, frame, sizeof(frame));
+    last_sent_valid = true;
+#endif
+
+    push_frame();
 }
 
 K_WORK_DEFINE(vfx_tick_work, vfx_tick);
@@ -146,7 +201,17 @@ static void vfx_timer_handler(struct k_timer *timer) {
     if (!frame_dirty) {
         const struct vfx_frame_ctx ctx = build_ctx();
 
-        if (!vfx_scene_is_animating(vfx_scene_get(state.scene), &ctx)) {
+        bool idle = !vfx_scene_is_animating(vfx_scene_get(state.scene), &ctx);
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_POWER_GATE)
+        /* A scene can be static and black, in which case the gate still has a
+         * countdown to finish. Parking now would leave the rail powered for a
+         * frame that will never be drawn again.
+         */
+        idle = idle && vfx_power_is_stable(&power_ctl);
+#endif
+
+        if (idle) {
             /* Nothing left to animate: stop waking the CPU 50 times a second.
              * zmk_vfx_request_frame() restarts us when something changes.
              */
@@ -238,6 +303,18 @@ int zmk_vfx_on(void) {
     state.on = true;
     frame_dirty = true;
 
+#if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_POWER_GATE)
+    vfx_power_reset(&power_ctl);
+    vfx_power_rail_enable();
+#endif
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_SKIP_UNCHANGED_FRAMES)
+    /* The strip lost its state while the rail was down, so the next frame has
+     * to go out even if it matches what we last sent.
+     */
+    last_sent_valid = false;
+#endif
+
     k_timer_start(&vfx_timer, K_NO_WAIT, K_MSEC(VFX_FRAME_MS));
 
     return zmk_vfx_save_state();
@@ -252,6 +329,10 @@ int zmk_vfx_off(void) {
     k_timer_stop(&vfx_timer);
     blank_strip();
 
+#if IS_ENABLED(CONFIG_ZMK_VFX_SKIP_UNCHANGED_FRAMES)
+    last_sent_valid = false;
+#endif
+
     return zmk_vfx_save_state();
 }
 
@@ -265,6 +346,12 @@ int zmk_vfx_select_scene(uint8_t index) {
     }
 
     state.scene = index;
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_POWER_GATE)
+    /* A new scene must not inherit the previous one's blackout countdown. */
+    vfx_power_reset(&power_ctl);
+#endif
+
     zmk_vfx_request_frame();
 
     return zmk_vfx_save_state();

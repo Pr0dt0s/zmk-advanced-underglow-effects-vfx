@@ -19,6 +19,7 @@
 
 #include <zmk/vfx/engine.h>
 #include <zmk/vfx/layers.h>
+#include <zmk/vfx/power.h>
 
 #define EXPORT __attribute__((visibility("default")))
 
@@ -63,6 +64,15 @@ static struct vfx_frame_ctx ctx = {
 };
 
 static bool last_lit;
+
+/* The power gate runs here too, so the rail indicator and the current readout
+ * on the page come from the same state machine the firmware runs, not from a
+ * JavaScript approximation of it.
+ */
+static struct vfx_power_ctl power_ctl;
+static struct vfx_power_policy power_policy = {.blackout_delay_ms = 500, .settle_ms = 50};
+static int last_action = VFX_POWER_TRANSMIT;
+static uint32_t last_frame_ms = 0;
 
 /* --------------------------------------------------------------- freestanding */
 
@@ -212,13 +222,43 @@ EXPORT int vfx_sim_add_gradient(int zone, int blend, int opacity, int scroll_spe
 
 /* ------------------------------------------------------------------- render */
 
+EXPORT void vfx_sim_set_power_policy(int blackout_delay_ms, int settle_ms) {
+    power_policy.blackout_delay_ms = (uint16_t)blackout_delay_ms;
+    power_policy.settle_ms = (uint16_t)settle_ms;
+    vfx_power_reset(&power_ctl);
+}
+
 EXPORT const uint8_t *vfx_sim_render(uint32_t time_ms) {
+    /* Frames arrive at whatever rate the browser paints, so feed the gate the
+     * real elapsed time rather than a nominal frame interval.
+     */
+    uint32_t elapsed = time_ms > last_frame_ms ? time_ms - last_frame_ms : 0;
+    if (elapsed > 1000) {
+        elapsed = 1000; /* a backgrounded tab should not gate instantly on return */
+    }
+    last_frame_ms = time_ms;
+
     ctx.time_ms = time_ms;
 
     vfx_render_frame(&scene, &ctx, frame, &last_lit);
 
+    last_action = (int)vfx_power_step(&power_ctl, &power_policy, last_lit, (uint16_t)elapsed);
+
     return (const uint8_t *)frame;
 }
+
+/* 0 = lit, 1 = gated, 2 = settling. */
+EXPORT int vfx_sim_power_state(void) { return (int)power_ctl.state; }
+
+EXPORT int vfx_sim_power_action(void) { return last_action; }
+
+EXPORT int vfx_sim_estimated_ua(void) {
+    const bool powered = power_ctl.state != VFX_POWER_GATED;
+
+    return (int)vfx_estimate_ua(frame, ctx.num_pixels, powered);
+}
+
+EXPORT void vfx_sim_power_reset(void) { vfx_power_reset(&power_ctl); }
 
 EXPORT int vfx_sim_num_pixels(void) { return ctx.num_pixels; }
 

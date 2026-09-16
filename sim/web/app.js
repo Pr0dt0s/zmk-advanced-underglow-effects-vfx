@@ -79,7 +79,13 @@ class Half {
     this.pixels = this.mem.subarray(ptr, ptr + this.count * 3);
     this.lit = this.e.vfx_sim_any_lit() === 1;
     this.animating = this.e.vfx_sim_is_animating() === 1;
+    this.powerState = this.e.vfx_sim_power_state();   // 0 lit, 1 gated, 2 settling
+    this.microamps = this.e.vfx_sim_estimated_ua();
     return this.pixels;
+  }
+
+  setPowerPolicy(blackoutMs, settleMs) {
+    this.e.vfx_sim_set_power_policy(blackoutMs, settleMs);
   }
 
   key(position, pressed) { this.e.vfx_sim_key_event(position, pressed ? 1 : 0); }
@@ -179,6 +185,11 @@ function draw(ctx, halves) {
     const idx = n - (led.half === 1 ? leds.length / 2 : 0);
     const px = half.pixels;
     if (!px) continue;
+
+    /* A gated half has no power at the strip, so it must draw dark even
+     * though the engine is still rendering frames behind the scenes.
+     */
+    if (half.powerState === 1) continue;
 
     const r = px[idx * 3], g = px[idx * 3 + 1], b = px[idx * 3 + 2];
     if ((r | g | b) === 0) continue;
@@ -357,11 +368,14 @@ async function main() {
   let stripPath = 'serpentine';
   const state = { brightness: 255, speed: 3, hue: 0, split: 'free', drift: 0 };
 
+  let applyPowerPolicy = () => {};
+
   function reinit() {
     halves[0].init(ledsPerHalf, ledsPerHalf * 2, 0);
     halves[1].init(ledsPerHalf, ledsPerHalf * 2, ledsPerHalf);
     buildLayout(canvas, ledsPerHalf, stripPath);
     applyScene();
+    applyPowerPolicy();
   }
 
   function applyScene() {
@@ -396,12 +410,23 @@ async function main() {
 
     const lit = halves[0].lit || halves[1].lit;
     const anim = halves[0].animating || halves[1].animating;
+    const RAIL = ['rail on', 'rail gated off', 'rail settling'];
+    const RAIL_CLASS = ['on', 'gated', 'warn'];
+    const worst = Math.max(halves[0].powerState === 1 ? 1 : halves[0].powerState,
+                           halves[1].powerState === 1 ? 1 : halves[1].powerState);
+    const ua = halves[0].microamps + halves[1].microamps;
 
     $('stat-pixels').textContent = `${ledsPerHalf} LEDs per half (${ledsPerHalf * 2} total)`;
     $('stat-lit').textContent = lit ? 'lit' : 'all pixels off';
     $('stat-lit').className = 'pill ' + (lit ? 'on' : 'off');
     $('stat-anim').textContent = anim ? 'animating' : 'static';
     $('stat-anim').className = 'pill ' + (anim ? 'on' : 'off');
+
+    const bothGated = halves[0].powerState === 1 && halves[1].powerState === 1;
+    $('stat-rail').textContent = bothGated ? RAIL[1] : RAIL[worst === 1 ? 0 : worst];
+    $('stat-rail').className = 'pill ' + (bothGated ? 'gated' : RAIL_CLASS[worst === 1 ? 0 : worst]);
+    $('stat-ma').textContent = `~${(ua / 1000).toFixed(1)} mA at the strip`;
+    $('stat-ma').className = 'pill ' + (ua === 0 ? 'on' : 'off');
 
     requestAnimationFrame(tick);
   }
@@ -419,6 +444,34 @@ async function main() {
   bindRange('speed', 'speed');
   bindRange('hue', 'hue', v => `${v}°`);
   bindRange('drift', 'drift', v => `${v} ms`);
+
+  applyPowerPolicy = () => {
+    const blackout = Number($('blackout').value);
+    const settle = Number($('settle').value);
+    $('out-blackout').textContent = `${blackout} ms`;
+    $('out-settle').textContent = `${settle} ms`;
+    for (const h of halves) h.setPowerPolicy(blackout, settle);
+  };
+
+  $('blackout').addEventListener('input', applyPowerPolicy);
+  $('settle').addEventListener('input', applyPowerPolicy);
+
+  $('fade-black').addEventListener('click', () => {
+    /* Ramps brightness down rather than snapping, so the gate is seen to wait
+     * out its delay instead of firing the instant the value hits zero.
+     */
+    const el = $('brightness');
+    const from = state.brightness;
+    const t0 = performance.now();
+    const step = now => {
+      const k = Math.min(1, (now - t0) / 900);
+      state.brightness = Math.round(from * (1 - k));
+      el.value = state.brightness;
+      $('out-brightness').textContent = `${Math.round(state.brightness / 255 * 100)}%`;
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
 
   $('count').addEventListener('input', e => {
     ledsPerHalf = Number(e.target.value);
@@ -477,6 +530,7 @@ async function main() {
       scene = structuredClone(PRESETS[name]);
       $('scene').value = JSON.stringify(scene, null, 2);
       applyScene();
+      for (const h of halves) h.e.vfx_sim_power_reset();
       document.querySelectorAll('.preset').forEach(x => x.classList.remove('active'));
       b.classList.add('active');
     });

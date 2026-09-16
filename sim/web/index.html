@@ -24,6 +24,8 @@
       <span id="stat-pixels">&mdash;</span>
       <span id="stat-lit" class="pill">&mdash;</span>
       <span id="stat-anim" class="pill">&mdash;</span>
+      <span id="stat-rail" class="pill">&mdash;</span>
+      <span id="stat-ma" class="pill">&mdash;</span>
       <span class="hint">click a key to fire a key event</span>
     </div>
   </section>
@@ -63,6 +65,26 @@
         Drag the drift slider in free-running mode to see what two unsynchronised
         halves look like after a long uptime. Switch to synced and the drift is
         corrected away.
+      </p>
+    </div>
+
+    <div class="panel">
+      <h2>Power gate</h2>
+      <p class="note" style="margin-top:0">
+        WS2812s draw about 1&nbsp;mA each even showing black, so a powered strip
+        costs tens of milliamps with nothing lit. When a frame comes out
+        entirely black the engine cuts the rail, and a lit frame brings it back.
+      </p>
+      <label>Blackout delay <output id="out-blackout"></output>
+        <input type="range" id="blackout" min="0" max="3000" step="100" value="500"></label>
+      <label>Rail settle time <output id="out-settle"></output>
+        <input type="range" id="settle" min="0" max="300" step="10" value="50"></label>
+      <div class="row">
+        <button id="fade-black">Fade scene to black</button>
+      </div>
+      <p class="note">
+        Drag brightness to zero, or use the button, and watch the rail drop out
+        after the delay. Then click a key: the ripple wakes it again.
       </p>
     </div>
 
