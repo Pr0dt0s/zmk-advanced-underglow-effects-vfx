@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZMK VFX Simulator</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>ZMK VFX <span>simulator</span></h1>
+  <p class="sub">
+    The keyboard below is rendered by the actual firmware compositor compiled to
+    WebAssembly &mdash; <code>render.c</code>, <code>color.c</code> and the effect
+    generators, unmodified. No effect is reimplemented in JavaScript, so what you
+    see here is what the board renders.
+  </p>
+</header>
+
+<main>
+  <section class="stage">
+    <canvas id="board" width="1400" height="520"></canvas>
+    <div class="readout">
+      <span id="stat-pixels">&mdash;</span>
+      <span id="stat-lit" class="pill">&mdash;</span>
+      <span id="stat-anim" class="pill">&mdash;</span>
+      <span class="hint">click a key to fire a key event</span>
+    </div>
+  </section>
+
+  <section class="controls">
+    <div class="panel">
+      <h2>Engine</h2>
+      <label>Brightness <output id="out-brightness"></output>
+        <input type="range" id="brightness" min="0" max="255" value="255"></label>
+      <label>Speed <output id="out-speed"></output>
+        <input type="range" id="speed" min="1" max="5" value="3"></label>
+      <label>Hue shift <output id="out-hue"></output>
+        <input type="range" id="hue" min="0" max="359" value="0"></label>
+      <label>LEDs per half <output id="out-count"></output>
+        <input type="range" id="count" min="6" max="72" value="36"></label>
+      <label>Strip path
+        <select id="path">
+          <option value="serpentine">Serpentine (snaked rows)</option>
+          <option value="rows">Rows (each row left to right)</option>
+          <option value="ring">Ring (around the perimeter)</option>
+        </select></label>
+      <div class="row">
+        <button id="playpause">Pause</button>
+        <button id="restart">Restart clock</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Split</h2>
+      <label class="radio"><input type="radio" name="split" value="free" checked>
+        Free-running <small>each half keeps its own clock</small></label>
+      <label class="radio"><input type="radio" name="split" value="synced">
+        Synced <small>right half follows the left</small></label>
+      <label>Right-half clock drift <output id="out-drift"></output>
+        <input type="range" id="drift" min="-2000" max="2000" value="0"></label>
+      <p class="note">
+        Drag the drift slider in free-running mode to see what two unsynchronised
+        halves look like after a long uptime. Switch to synced and the drift is
+        corrected away.
+      </p>
+    </div>
+
+    <div class="panel wide">
+      <h2>Scene</h2>
+      <div class="row" id="presets"></div>
+      <textarea id="scene" spellcheck="false" rows="16"></textarea>
+      <div class="row">
+        <button id="apply" class="primary">Apply scene</button>
+        <button id="export">Copy as devicetree</button>
+        <span id="scene-status" class="status"></span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
