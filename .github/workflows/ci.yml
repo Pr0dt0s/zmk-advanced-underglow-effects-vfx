@@ -120,12 +120,20 @@ jobs:
         include:
           - name: split sync
             args: -DCONFIG_ZMK_VFX_SPLIT_SYNCED=y -DCONFIG_ZMK_VFX_SPLIT_FREE=n
+            prep: "true"
           - name: no power gate
             args: -DCONFIG_ZMK_VFX_AUTO_POWER_GATE=n
+            prep: "true"
+          # Turning the shim off unbinds rgb_ug, and Zephyr resolves
+          # devicetree before Kconfig, so a keymap cannot guard its bindings
+          # with #if. Strip them instead, which is exactly what a user
+          # disabling the shim has to do to their own keymap.
           - name: no rgb_ug shim
             args: -DCONFIG_ZMK_VFX_RGB_UNDERGLOW_COMPAT=n
+            prep: "sed -i -E 's/&rgb_ug [A-Z_]+/\\&trans/g' ws/config/lily58.keymap"
           - name: no indicators
             args: -DCONFIG_ZMK_VFX_INDICATORS=n
+            prep: "true"
     steps:
       - name: Checkout the module
         uses: actions/checkout@v4
@@ -158,6 +166,9 @@ jobs:
           west init -l config
           west update --fetch-opt=--filter=blob:none
           west zephyr-export
+
+      - name: Adjust the config for this variant
+        run: ${{ matrix.prep }}
 
       - name: Build
         working-directory: ws
