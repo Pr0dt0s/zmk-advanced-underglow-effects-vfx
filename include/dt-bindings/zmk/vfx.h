@@ -38,7 +38,16 @@
 #define VFX_SPD_CMD 9
 #define VFX_HUI_CMD 10
 #define VFX_HUD_CMD 11
-#define VFX_SYNC_CMD 12
+
+/* Absolute forms. A relative command pressed on the central is rewritten into
+ * one of these before it is relayed, so both halves land on the same value
+ * instead of each applying its own increment to its own starting point. This
+ * is the mechanism ZMK's own rgb_ug behavior uses.
+ */
+#define VFX_SET_SCENE_CMD 12
+#define VFX_SET_BRT_CMD 13
+#define VFX_SET_SPD_CMD 14
+#define VFX_SET_HUE_CMD 15
 
 #define VFX_TOG VFX_TOG_CMD 0
 #define VFX_ON VFX_ON_CMD 0
@@ -52,3 +61,6 @@
 #define VFX_SPD VFX_SPD_CMD 0
 #define VFX_HUI VFX_HUI_CMD 0
 #define VFX_HUD VFX_HUD_CMD 0
+#define VFX_SET_BRT(v) VFX_SET_BRT_CMD v
+#define VFX_SET_SPD(v) VFX_SET_SPD_CMD v
+#define VFX_SET_HUE(v) VFX_SET_HUE_CMD v

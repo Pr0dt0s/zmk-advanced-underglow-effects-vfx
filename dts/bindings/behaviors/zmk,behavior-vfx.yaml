@@ -1,0 +1,8 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: Advanced underglow (VFX) control
+
+compatible: "zmk,behavior-vfx"
+
+include: two_param.yaml

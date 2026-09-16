@@ -23,6 +23,10 @@ int zmk_vfx_cycle_scene(int direction);
 uint8_t zmk_vfx_current_scene(void);
 const char *zmk_vfx_scene_name(uint8_t index);
 
+int zmk_vfx_set_brightness(uint8_t value);
+int zmk_vfx_set_speed(uint8_t value);
+int zmk_vfx_set_hue(uint16_t degrees);
+
 int zmk_vfx_change_brightness(int direction);
 int zmk_vfx_change_speed(int direction);
 int zmk_vfx_change_hue(int direction);
@@ -30,6 +34,18 @@ int zmk_vfx_change_hue(int direction);
 uint8_t zmk_vfx_get_brightness(void);
 uint8_t zmk_vfx_get_speed(void);
 int16_t zmk_vfx_get_hue_shift(void);
+
+/* What a relative step would produce, without applying it. The behavior uses
+ * these on the central to turn a relative press into an absolute command
+ * before relaying it to the peripherals.
+ */
+uint8_t zmk_vfx_calc_scene(int direction);
+uint8_t zmk_vfx_calc_brightness(int direction);
+uint8_t zmk_vfx_calc_speed(int direction);
+uint16_t zmk_vfx_calc_hue(int direction);
+
+/* Persist the current state, debounced. */
+int zmk_vfx_save_state(void);
 
 /* Shift the engine timebase, used by the synced split mode to follow central.
  * Applied as a slew rather than a jump so corrections are not visible.

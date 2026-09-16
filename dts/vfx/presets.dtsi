@@ -1,0 +1,95 @@
+/*
+ * Copyright (c) 2026 The ZMK VFX Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * Ready-made scenes, so VFX is usable without authoring any devicetree.
+ *
+ *   #include <vfx/presets.dtsi>
+ *
+ *   &vfx_engine {
+ *       status = "okay";
+ *       default-scene = <&vfx_aurora>;
+ *   };
+ *
+ * Zones and scenes are matched by compatible wherever they sit in the tree,
+ * so these do not need to live under the engine node.
+ *
+ * vfx_all covers the whole strip: zone lengths are clamped to the actual
+ * chain-length at runtime, so 255 means "as many pixels as this board has"
+ * and the same preset works on a 10 pixel board and a 72 pixel one.
+ */
+
+#include <dt-bindings/zmk/vfx.h>
+
+/ {
+    vfx_presets {
+        vfx_zones {
+            vfx_all: vfx_all {
+                compatible = "zmk,vfx-zone";
+                range = <0 255>;
+            };
+        };
+
+        vfx_solid_warm: vfx_solid_warm {
+            compatible = "zmk,vfx-scene";
+            display-name = "Warm";
+
+            base {
+                compatible = "zmk,vfx-layer-solid";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(30, 85, 100)>;
+            };
+        };
+
+        vfx_aurora: vfx_aurora {
+            compatible = "zmk,vfx-scene";
+            display-name = "Aurora";
+
+            base {
+                compatible = "zmk,vfx-layer-gradient";
+                zone = <&vfx_all>;
+                stops = <VFX_HSB(200, 100, 40) VFX_HSB(280, 100, 60) VFX_HSB(160, 90, 50)>;
+                scroll-speed = <8>;
+            };
+        };
+
+        vfx_rainbow: vfx_rainbow {
+            compatible = "zmk,vfx-scene";
+            display-name = "Rainbow";
+
+            base {
+                compatible = "zmk,vfx-layer-gradient";
+                zone = <&vfx_all>;
+                stops = <VFX_HSB(0, 100, 100) VFX_HSB(60, 100, 100) VFX_HSB(120, 100, 100)
+                         VFX_HSB(180, 100, 100) VFX_HSB(240, 100, 100) VFX_HSB(300, 100, 100)>;
+                scroll-speed = <14>;
+            };
+        };
+
+        vfx_ember: vfx_ember {
+            compatible = "zmk,vfx-scene";
+            display-name = "Ember";
+
+            /* A dim bed with brighter embers drifting over it, added rather
+             * than replaced so the two combine instead of the top layer
+             * flattening the one beneath.
+             */
+            bed {
+                compatible = "zmk,vfx-layer-solid";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(18, 100, 22)>;
+            };
+
+            embers {
+                compatible = "zmk,vfx-layer-gradient";
+                zone = <&vfx_all>;
+                blend = <VFX_BLEND_ADD>;
+                opacity = <200>;
+                stops = <VFX_HSB(10, 100, 55) VFX_HSB(35, 100, 10)>;
+                scroll-speed = <5>;
+                span = <12>;
+            };
+        };
+    };
+};

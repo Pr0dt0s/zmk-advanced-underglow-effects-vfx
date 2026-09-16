@@ -93,16 +93,16 @@ DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_gradient, VFX_GRADIENT_DEFINE)
         .num_layers = ARRAY_SIZE(VFX_LAYERS_SYM(node)),                                            \
     };
 
+#if !DT_HAS_COMPAT_STATUS_OKAY(zmk_vfx_scene)
+#error "ZMK VFX is enabled but no zmk,vfx-scene node exists. Include <vfx/presets.dtsi> or declare a scene in your keymap."
+#endif
+
 DT_FOREACH_STATUS_OKAY(zmk_vfx_scene, VFX_SCENE_DEFINE)
 
 #define VFX_SCENE_REF(node) &VFX_SCENE_SYM(node),
 
 static const struct vfx_scene *const vfx_scene_list[] = {
     DT_FOREACH_STATUS_OKAY(zmk_vfx_scene, VFX_SCENE_REF)};
-
-BUILD_ASSERT(ARRAY_SIZE(vfx_scene_list) > 0,
-             "ZMK VFX is enabled but no zmk,vfx-scene node is defined. Include "
-             "<vfx/presets.dtsi> or declare a scene in your keymap.");
 
 uint8_t vfx_scene_count(void) { return (uint8_t)ARRAY_SIZE(vfx_scene_list); }
 

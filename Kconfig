@@ -50,6 +50,19 @@ config ZMK_VFX_GAMMA
       Maps composited linear values through a CIE 1931 lightness curve so
       brightness ramps look even to the eye. Costs 256 bytes of flash.
 
+config ZMK_VFX_RGB_UNDERGLOW_COMPAT
+    bool "Bind &rgb_ug to the VFX engine"
+    default y
+    help
+      ZMK always declares the rgb_ug behavior node, but only compiles its
+      driver under CONFIG_ZMK_RGB_UNDERGLOW, which VFX requires to be off.
+      Without this shim a keymap that uses &rgb_ug will not build.
+
+      RGB_EFF and RGB_EFR cycle scenes, brightness, speed and hue map onto
+      their engine equivalents, and the saturation commands are accepted but
+      ignored: VFX sets saturation per layer in devicetree rather than
+      globally.
+
 config ZMK_VFX_AUTO_OFF_IDLE
     bool "Turn underglow off when the keyboard goes idle"
     default y

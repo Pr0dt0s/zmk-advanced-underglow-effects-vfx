@@ -15,6 +15,10 @@
 #include <zmk/vfx/vfx.h>
 #include <zmk/workqueue.h>
 
+#if IS_ENABLED(CONFIG_SETTINGS)
+#include <zephyr/settings/settings.h>
+#endif
+
 #if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_OFF_IDLE)
 #include <zmk/activity.h>
 #include <zmk/event_manager.h>
@@ -27,7 +31,7 @@ LOG_MODULE_REGISTER(zmk_vfx, CONFIG_ZMK_VFX_LOG_LEVEL);
 #error "ZMK VFX needs a zmk,underglow chosen node pointing at an LED strip."
 #endif
 
-#if !DT_HAS_STATUS_OKAY(zmk_vfx_engine)
+#if !DT_HAS_COMPAT_STATUS_OKAY(zmk_vfx_engine)
 #error "ZMK VFX is enabled but no zmk,vfx-engine node is declared."
 #endif
 
@@ -90,12 +94,24 @@ static void push_frame(void) {
     }
 }
 
-static void blank_strip(void) {
+/* Pushing a frame is a blocking SPI transfer, and turning the underglow off
+ * happens from a behavior on the main work queue. Hand it to the low priority
+ * queue rather than stalling keymap processing, which is what ZMK core does.
+ */
+static void blank_strip_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+
     for (uint16_t i = 0; i < STRIP_NUM_PIXELS; i++) {
         frame[i] = VFX_RGB_BLACK;
     }
 
     push_frame();
+}
+
+K_WORK_DEFINE(vfx_blank_work, blank_strip_handler);
+
+static void blank_strip(void) {
+    k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &vfx_blank_work);
 }
 
 static void vfx_tick(struct k_work *work) {
@@ -131,6 +147,10 @@ static void vfx_timer_handler(struct k_timer *timer) {
         const struct vfx_frame_ctx ctx = build_ctx();
 
         if (!vfx_scene_is_animating(vfx_scene_get(state.scene), &ctx)) {
+            /* Nothing left to animate: stop waking the CPU 50 times a second.
+             * zmk_vfx_request_frame() restarts us when something changes.
+             */
+            k_timer_stop(&vfx_timer);
             return;
         }
     }
@@ -140,11 +160,73 @@ static void vfx_timer_handler(struct k_timer *timer) {
 
 K_TIMER_DEFINE(vfx_timer, vfx_timer_handler, NULL);
 
-void zmk_vfx_request_frame(void) {
+#if IS_ENABLED(CONFIG_SETTINGS)
+static struct k_work_delayable save_work;
+
+static void vfx_save_work_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+
+    settings_save_one("vfx/state", &state, sizeof(state));
+}
+
+static int vfx_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg) {
+    const char *next;
+
+    if (!settings_name_steq(name, "state", &next) || next) {
+        return -ENOENT;
+    }
+
+    if (len != sizeof(state)) {
+        /* Layout changed between firmware versions; fall back to the defaults
+         * rather than reinterpreting old bytes as a new struct.
+         */
+        return -EINVAL;
+    }
+
+    int rc = read_cb(cb_arg, &state, sizeof(state));
+    if (rc < 0) {
+        return rc;
+    }
+
+    /* A saved scene index can point past the end if scenes were removed. */
+    if (state.scene >= vfx_scene_count()) {
+        state.scene = 0;
+    }
+
+    /* The split time offset is a live correction against the other half, not
+     * something to carry across a reboot: a stale one would skew the timebase
+     * from the first frame.
+     */
+    state.time_offset = 0;
+
     frame_dirty = true;
 
     if (state.on) {
-        k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &vfx_tick_work);
+        k_timer_start(&vfx_timer, K_NO_WAIT, K_MSEC(VFX_FRAME_MS));
+    }
+
+    return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(zmk_vfx, "vfx", NULL, vfx_settings_set, NULL, NULL);
+#endif
+
+int zmk_vfx_save_state(void) {
+#if IS_ENABLED(CONFIG_SETTINGS)
+    return MIN(k_work_reschedule(&save_work, K_MSEC(CONFIG_ZMK_SETTINGS_SAVE_DEBOUNCE)), 0);
+#else
+    return 0;
+#endif
+}
+
+void zmk_vfx_request_frame(void) {
+    frame_dirty = true;
+
+    /* Restarting rather than just submitting: the timer parks itself once a
+     * scene stops animating, so a switch to an animated scene has to wake it.
+     */
+    if (state.on) {
+        k_timer_start(&vfx_timer, K_NO_WAIT, K_MSEC(VFX_FRAME_MS));
     }
 }
 
@@ -158,7 +240,7 @@ int zmk_vfx_on(void) {
 
     k_timer_start(&vfx_timer, K_NO_WAIT, K_MSEC(VFX_FRAME_MS));
 
-    return 0;
+    return zmk_vfx_save_state();
 }
 
 int zmk_vfx_off(void) {
@@ -170,7 +252,7 @@ int zmk_vfx_off(void) {
     k_timer_stop(&vfx_timer);
     blank_strip();
 
-    return 0;
+    return zmk_vfx_save_state();
 }
 
 int zmk_vfx_toggle(void) { return state.on ? zmk_vfx_off() : zmk_vfx_on(); }
@@ -185,14 +267,11 @@ int zmk_vfx_select_scene(uint8_t index) {
     state.scene = index;
     zmk_vfx_request_frame();
 
-    return 0;
+    return zmk_vfx_save_state();
 }
 
 int zmk_vfx_cycle_scene(int direction) {
-    const uint8_t count = vfx_scene_count();
-    const int next = ((int)state.scene + count + direction) % count;
-
-    return zmk_vfx_select_scene((uint8_t)next);
+    return zmk_vfx_select_scene(zmk_vfx_calc_scene(direction));
 }
 
 uint8_t zmk_vfx_current_scene(void) { return state.scene; }
@@ -203,32 +282,56 @@ const char *zmk_vfx_scene_name(uint8_t index) {
     return scene ? scene->name : NULL;
 }
 
+#define VFX_BRT_STEP (255 / 10)
+#define VFX_HUE_STEP 10
+
+uint8_t zmk_vfx_calc_scene(int direction) {
+    const uint8_t count = vfx_scene_count();
+
+    return (uint8_t)(((int)state.scene + count + direction) % count);
+}
+
+uint8_t zmk_vfx_calc_brightness(int direction) {
+    return (uint8_t)CLAMP((int)state.brightness + direction * VFX_BRT_STEP, 0, 255);
+}
+
+uint8_t zmk_vfx_calc_speed(int direction) {
+    return (uint8_t)CLAMP((int)state.speed + direction, 1, 5);
+}
+
+uint16_t zmk_vfx_calc_hue(int direction) {
+    return vfx_hue_add((uint16_t)state.hue_shift, (int16_t)(direction * VFX_HUE_STEP));
+}
+
+int zmk_vfx_set_brightness(uint8_t value) {
+    state.brightness = value;
+    zmk_vfx_request_frame();
+
+    return zmk_vfx_save_state();
+}
+
+int zmk_vfx_set_speed(uint8_t value) {
+    state.speed = (uint8_t)CLAMP(value, 1, 5);
+    zmk_vfx_request_frame();
+
+    return zmk_vfx_save_state();
+}
+
+int zmk_vfx_set_hue(uint16_t degrees) {
+    /* Kept in 0-359 so the stored value never depends on how it was reached. */
+    state.hue_shift = (int16_t)(degrees % 360);
+    zmk_vfx_request_frame();
+
+    return zmk_vfx_save_state();
+}
+
 int zmk_vfx_change_brightness(int direction) {
-    const int step = 255 / 10;
-    int b = (int)state.brightness + direction * step;
-
-    state.brightness = (uint8_t)CLAMP(b, 0, 255);
-    zmk_vfx_request_frame();
-
-    return 0;
+    return zmk_vfx_set_brightness(zmk_vfx_calc_brightness(direction));
 }
 
-int zmk_vfx_change_speed(int direction) {
-    int s = (int)state.speed + direction;
+int zmk_vfx_change_speed(int direction) { return zmk_vfx_set_speed(zmk_vfx_calc_speed(direction)); }
 
-    state.speed = (uint8_t)CLAMP(s, 1, 5);
-    zmk_vfx_request_frame();
-
-    return 0;
-}
-
-int zmk_vfx_change_hue(int direction) {
-    /* vfx_hue_add wraps into 0-359, so hue_shift stays in range by construction. */
-    state.hue_shift = (int16_t)vfx_hue_add((uint16_t)state.hue_shift, (int16_t)(direction * 10));
-    zmk_vfx_request_frame();
-
-    return 0;
-}
+int zmk_vfx_change_hue(int direction) { return zmk_vfx_set_hue(zmk_vfx_calc_hue(direction)); }
 
 uint8_t zmk_vfx_get_brightness(void) { return state.brightness; }
 uint8_t zmk_vfx_get_speed(void) { return state.speed; }
@@ -272,6 +375,14 @@ static int zmk_vfx_init(void) {
     state.hue_shift = 0;
     state.time_offset = 0;
     state.on = IS_ENABLED(CONFIG_ZMK_VFX_ON_START);
+
+#if IS_ENABLED(CONFIG_SETTINGS)
+    k_work_init_delayable(&save_work, vfx_save_work_handler);
+
+    /* Anything persisted overwrites these defaults when the settings subsystem
+     * loads, which happens after this init runs.
+     */
+#endif
 
     LOG_INF("VFX ready: %d pixels, %d scenes, %d fps", STRIP_NUM_PIXELS, vfx_scene_count(),
             VFX_FPS);

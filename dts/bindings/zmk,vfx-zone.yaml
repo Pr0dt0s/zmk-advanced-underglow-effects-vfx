@@ -10,7 +10,11 @@ compatible: "zmk,vfx-zone"
 properties:
   range:
     type: array
-    description: Two cells, <first-index count>.
+    default: [0, 0]
+    description: |
+      Two cells, <first-index count>. Defaulted so that a zone using the
+      pixels property still has this defined; the instantiation macros read
+      whichever one applies.
 
   pixels:
     type: array

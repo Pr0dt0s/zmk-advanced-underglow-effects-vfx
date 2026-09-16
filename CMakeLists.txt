@@ -12,7 +12,11 @@ if(CONFIG_ZMK_VFX)
     src/render.c
     src/engine.c
     src/scenes.c
+    src/behavior_vfx.c
   )
+
+  zephyr_library_sources_ifdef(CONFIG_ZMK_VFX_RGB_UNDERGLOW_COMPAT
+                               src/behavior_rgb_compat.c)
 
   zephyr_library_sources(src/layers/solid.c)
   zephyr_library_sources(src/layers/gradient.c)
