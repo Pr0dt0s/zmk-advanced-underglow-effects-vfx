@@ -1,0 +1,13 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  A stack of effect layers. Child nodes are the layers, composited in
+  devicetree order: the first child is the bottom of the stack.
+
+compatible: "zmk,vfx-scene"
+
+properties:
+  display-name:
+    type: string
+    description: Name shown in ZMK Studio and in the simulator.

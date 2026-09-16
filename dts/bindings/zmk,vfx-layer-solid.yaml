@@ -1,0 +1,14 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: Fills its zone with one color.
+
+compatible: "zmk,vfx-layer-solid"
+
+include: vfx-layer-common.yaml
+
+properties:
+  color:
+    type: int
+    required: true
+    description: Packed color, built with VFX_HSB(h, s, b).

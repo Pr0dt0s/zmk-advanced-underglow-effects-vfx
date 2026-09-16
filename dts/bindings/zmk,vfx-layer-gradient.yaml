@@ -1,0 +1,34 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  A cyclic multi-stop gradient across the virtual strip, optionally scrolling.
+  Two stops of the same hue at different brightness gives a comet; a full set
+  of hues gives a rainbow equivalent to ZMK's built-in swirl.
+
+compatible: "zmk,vfx-layer-gradient"
+
+include: vfx-layer-common.yaml
+
+properties:
+  stops:
+    type: array
+    required: true
+    description: |
+      Colors built with VFX_HSB(h, s, b). The gradient is cyclic, so the last
+      stop blends back into the first. Interpolation takes the short way around
+      the hue circle.
+
+  scroll-speed:
+    type: int
+    default: 0
+    description: |
+      Virtual pixels per second, scaled by the engine's global speed setting.
+      Negative scrolls the other way. 0 holds the gradient still.
+
+  span:
+    type: int
+    default: 0
+    description: |
+      Virtual pixels covered by one full cycle of the gradient. 0 stretches one
+      cycle across the whole board.

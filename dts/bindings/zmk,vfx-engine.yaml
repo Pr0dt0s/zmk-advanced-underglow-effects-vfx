@@ -1,0 +1,40 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Advanced underglow effect engine. Owns the strip named by the zmk,underglow
+  chosen node and renders scenes onto it.
+
+compatible: "zmk,vfx-engine"
+
+properties:
+  fps:
+    type: int
+    description: |
+      Target frame rate. Defaults to CONFIG_ZMK_VFX_FPS. The engine never
+      renders faster than this and drops to an idle heartbeat when the active
+      scene reports it has nothing left to animate.
+
+  virtual-length:
+    type: int
+    description: |
+      Pixel count of the whole keyboard, across both halves of a split. Effects
+      are positioned in this space so a gradient flows continuously across the
+      seam. Defaults to this half's chain-length.
+
+  strip-offset:
+    type: int
+    default: 0
+    description: |
+      Index of this half's first pixel within virtual-length. Set 0 on the left
+      half and the left half's pixel count on the right.
+
+  default-scene:
+    type: phandle
+    description: Scene selected on first boot, before any saved setting.
+
+  key-pixels:
+    type: array
+    description: |
+      Pixel index nearest each key position, indexed by key position. Reactive
+      effects use it to place a ripple. Omit for a linear key-to-pixel mapping.

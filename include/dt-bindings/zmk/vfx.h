@@ -1,0 +1,54 @@
+/*
+ * Copyright (c) 2026 The ZMK VFX Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+#pragma once
+
+/* Colors are packed into a single devicetree cell: 0x00HHSSBB.
+ * h: 0-359 degrees, s: 0-100 percent, b: 0-100 percent.
+ */
+#define VFX_HSB(h, s, b) ((((h) & 0x1FF) << 16) | (((s) & 0xFF) << 8) | ((b) & 0xFF))
+
+#define VFX_HSB_H(v) (((v) >> 16) & 0x1FF)
+#define VFX_HSB_S(v) (((v) >> 8) & 0xFF)
+#define VFX_HSB_B(v) ((v) & 0xFF)
+
+#define VFX_BLACK VFX_HSB(0, 0, 0)
+#define VFX_WHITE VFX_HSB(0, 0, 100)
+
+/* Blend modes for stacking a layer onto what is already composited. */
+#define VFX_BLEND_NORMAL 0
+#define VFX_BLEND_ADD 1
+#define VFX_BLEND_MULTIPLY 2
+#define VFX_BLEND_SCREEN 3
+#define VFX_BLEND_MAX 4
+
+/* &vfx behavior commands. */
+#define VFX_TOG_CMD 0
+#define VFX_ON_CMD 1
+#define VFX_OFF_CMD 2
+#define VFX_NEXT_CMD 3
+#define VFX_PREV_CMD 4
+#define VFX_SEL_CMD 5
+#define VFX_BRI_CMD 6
+#define VFX_BRD_CMD 7
+#define VFX_SPI_CMD 8
+#define VFX_SPD_CMD 9
+#define VFX_HUI_CMD 10
+#define VFX_HUD_CMD 11
+#define VFX_SYNC_CMD 12
+
+#define VFX_TOG VFX_TOG_CMD 0
+#define VFX_ON VFX_ON_CMD 0
+#define VFX_OFF VFX_OFF_CMD 0
+#define VFX_NEXT VFX_NEXT_CMD 0
+#define VFX_PREV VFX_PREV_CMD 0
+#define VFX_SEL(n) VFX_SEL_CMD n
+#define VFX_BRI VFX_BRI_CMD 0
+#define VFX_BRD VFX_BRD_CMD 0
+#define VFX_SPI VFX_SPI_CMD 0
+#define VFX_SPD VFX_SPD_CMD 0
+#define VFX_HUI VFX_HUI_CMD 0
+#define VFX_HUD VFX_HUD_CMD 0

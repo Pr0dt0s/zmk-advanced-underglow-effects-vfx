@@ -1,0 +1,17 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  A named group of pixels that a layer can be scoped to. Give either a
+  contiguous range or an explicit pixel list, not both.
+
+compatible: "zmk,vfx-zone"
+
+properties:
+  range:
+    type: array
+    description: Two cells, <first-index count>.
+
+  pixels:
+    type: array
+    description: Explicit pixel indices, for zones that are not contiguous.

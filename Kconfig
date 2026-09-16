@@ -1,0 +1,61 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+menuconfig ZMK_VFX
+    bool "Advanced addressable underglow effects (VFX)"
+    select LED_STRIP
+    help
+      Replaces ZMK's built-in RGB underglow with a devicetree-configurable
+      compositor: scenes are stacks of effect layers, each scoped to a pixel
+      zone and combined with a blend mode.
+
+      This owns the strip referenced by the "zmk,underglow" chosen node, so
+      CONFIG_ZMK_RGB_UNDERGLOW must be disabled.
+
+if ZMK_VFX
+
+config ZMK_VFX_FPS
+    int "Target frames per second"
+    range 1 120
+    default 50
+    help
+      Upper bound on the render rate. The engine renders no faster than this
+      and may render slower when the active scene is static.
+
+config ZMK_VFX_BRT_MAX
+    int "Maximum global brightness in percent"
+    range 1 100
+    default 100
+    help
+      Hard ceiling applied after compositing. Lower this to cap current draw.
+
+config ZMK_VFX_BRT_START
+    int "Startup global brightness in percent"
+    range 0 100
+    default 60
+
+config ZMK_VFX_SPD_START
+    int "Startup animation speed"
+    range 1 5
+    default 3
+
+config ZMK_VFX_ON_START
+    bool "Underglow starts on"
+    default y
+
+config ZMK_VFX_GAMMA
+    bool "Apply perceptual (CIE 1931) gamma correction"
+    default y
+    help
+      Maps composited linear values through a CIE 1931 lightness curve so
+      brightness ramps look even to the eye. Costs 256 bytes of flash.
+
+config ZMK_VFX_AUTO_OFF_IDLE
+    bool "Turn underglow off when the keyboard goes idle"
+    default y
+
+module = ZMK_VFX
+module-str = zmk_vfx
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # ZMK_VFX

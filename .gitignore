@@ -1,0 +1,4 @@
+tests/test_core
+build/
+docs/sim/
+*.o
