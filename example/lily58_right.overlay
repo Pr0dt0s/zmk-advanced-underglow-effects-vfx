@@ -1,0 +1,27 @@
+/*
+ * VFX engine for the right half of a Lily58.
+ *
+ * virtual-length is the whole keyboard and strip-offset is where this half
+ * starts in it, which is what lets a gradient run continuously across the
+ * seam while each half only renders its own pixels.
+ */
+
+#include <dt-bindings/zmk/vfx.h>
+#include <vfx/presets.dtsi>
+
+/* The lily58 shield ships an arbitrary chain-length of 10; set yours. */
+&led_strip {
+    chain-length = <36>;
+};
+
+/ {
+    vfx_engine: vfx_engine {
+        compatible = "zmk,vfx-engine";
+        status = "okay";
+
+        virtual-length = <72>;
+        strip-offset = <36>;
+
+        default-scene = <&vfx_aurora>;
+    };
+};

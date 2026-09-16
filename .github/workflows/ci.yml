@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Compositor tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Builds the engine core with no Zephyr in scope at all. If this stops
+      # working, the compositor has grown a kernel dependency it should not
+      # have, and the simulator would stop matching the firmware.
+      - name: Build and run
+        working-directory: tests
+        run: make test
+
+  simulator:
+    name: WebAssembly simulator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang and wasm-ld
+        run: sudo apt-get update && sudo apt-get install -y clang lld
+
+      - name: Build
+        run: ./sim/build.sh
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/sim
+
+  firmware:
+    name: Firmware (${{ matrix.shield }})
+    runs-on: ubuntu-latest
+    container:
+      image: zmkfirmware/zmk-build-arm:stable
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shield: lily58_left
+            board: nice_nano_v2
+          - shield: lily58_right
+            board: nice_nano_v2
+    steps:
+      - name: Checkout the module
+        uses: actions/checkout@v4
+        with:
+          path: module
+
+      - name: Cache the west workspace
+        uses: actions/cache@v4
+        with:
+          path: |
+            modules/
+            tools/
+            zephyr/
+            bootloader/
+            zmk/
+          key: zmk-${{ hashFiles('module/example/west.yml') }}
+
+      - name: Initialise the workspace
+        run: |
+          west init -l module/example
+          west update --fetch-opt=--filter=blob:none
+          west zephyr-export
+
+      # -DZMK_EXTRA_MODULES points the build at this checkout rather than a
+      # published copy, so CI compiles the code in the pull request. This is
+      # the only place the devicetree macros in src/scenes.c are exercised
+      # against a real devicetree.
+      - name: Build
+        run: |
+          west build -s zmk/app -b ${{ matrix.board }} -- \
+            -DSHIELD=${{ matrix.shield }} \
+            -DZMK_CONFIG="${GITHUB_WORKSPACE}/module/example" \
+            -DZMK_EXTRA_MODULES="${GITHUB_WORKSPACE}/module"
+
+      - name: Report size
+        run: |
+          arm-zephyr-eabi-size build/zephyr/zmk.elf
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.shield }}
+          path: build/zephyr/zmk.uf2
+
+  # Builds with the settings the defaults do not cover, so a Kconfig
+  # combination cannot rot unnoticed.
+  firmware-variants:
+    name: Firmware (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    container:
+      image: zmkfirmware/zmk-build-arm:stable
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: split sync
+            args: -DCONFIG_ZMK_VFX_SPLIT_SYNCED=y -DCONFIG_ZMK_VFX_SPLIT_FREE=n
+          - name: no power gate
+            args: -DCONFIG_ZMK_VFX_AUTO_POWER_GATE=n
+          - name: no rgb_ug shim
+            args: -DCONFIG_ZMK_VFX_RGB_UNDERGLOW_COMPAT=n
+          - name: no indicators
+            args: -DCONFIG_ZMK_VFX_INDICATORS=n
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: module
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            modules/
+            tools/
+            zephyr/
+            bootloader/
+            zmk/
+          key: zmk-${{ hashFiles('module/example/west.yml') }}
+
+      - name: Initialise the workspace
+        run: |
+          west init -l module/example
+          west update --fetch-opt=--filter=blob:none
+          west zephyr-export
+
+      - name: Build
+        run: |
+          west build -s zmk/app -b nice_nano_v2 -- \
+            -DSHIELD=lily58_left \
+            -DZMK_CONFIG="${GITHUB_WORKSPACE}/module/example" \
+            -DZMK_EXTRA_MODULES="${GITHUB_WORKSPACE}/module" \
+            ${{ matrix.args }}

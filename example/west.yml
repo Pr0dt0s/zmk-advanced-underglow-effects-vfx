@@ -1,0 +1,14 @@
+# Manifest for the example build. The module itself is supplied to the build
+# with -DZMK_EXTRA_MODULES so CI compiles the checkout under test rather than
+# whatever is published.
+manifest:
+  remotes:
+    - name: zmkfirmware
+      url-base: https://github.com/zmkfirmware
+  projects:
+    - name: zmk
+      remote: zmkfirmware
+      revision: main
+      import: app/west.yml
+  self:
+    path: config
