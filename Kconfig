@@ -102,6 +102,59 @@ config ZMK_VFX_SKIP_UNCHANGED_FRAMES
       Saves the SPI transfer and its DMA activity on static or slow scenes
       even while the strip is lit.
 
+choice ZMK_VFX_SPLIT_MODE
+    prompt "How the halves of a split agree on an animation"
+    default ZMK_VFX_SPLIT_FREE
+    depends on ZMK_SPLIT
+
+config ZMK_VFX_SPLIT_FREE
+    bool "Free-running"
+    help
+      Each half renders its own slice of one whole-board coordinate space
+      from its own clock. Effects are written so that two halves agreeing on
+      the time produce identical frames, so gradients and waves line up
+      across the seam with no radio traffic at all.
+
+      What the halves do not share is a clock, so over hours of uptime two
+      crystals drift apart and the seam gradually loses alignment. Reactive
+      effects respond only to the keys their own half can see.
+
+config ZMK_VFX_SPLIT_SYNCED
+    bool "Synchronised over the split link"
+    help
+      The central periodically tells the peripheral what time it thinks it
+      is, and relays its own key positions, so the halves stay aligned
+      indefinitely and a ripple started on one side crosses to the other.
+
+      Uses ZMK's existing behavior relay rather than a separate GATT
+      service. Corrections are eased in rather than stepped, so they are not
+      visible in whatever is on screen.
+
+      Costs a little radio traffic and therefore a little battery.
+
+endchoice
+
+config ZMK_VFX_SYNC_INTERVAL_MS
+    int "Milliseconds between synchronisation beacons"
+    depends on ZMK_VFX_SPLIT_SYNCED
+    range 200 60000
+    default 2000
+    help
+      Lower keeps the halves tighter at the cost of more radio traffic.
+      Crystal drift is parts per million, so seconds between beacons is
+      plenty once the initial offset has been established.
+
+config ZMK_VFX_SYNC_RELAY_KEYS
+    bool "Relay the central's key positions to the peripheral"
+    depends on ZMK_VFX_SPLIT_SYNCED
+    default y
+    help
+      Lets a ripple started by a key on the central half continue onto the
+      peripheral. Without it each half only reacts to its own keys.
+
+      This sends a message per keypress on the central half, which is the
+      most expensive part of synced mode.
+
 config ZMK_VFX_RGB_UNDERGLOW_COMPAT
     bool "Bind &rgb_ug to the VFX engine"
     default y

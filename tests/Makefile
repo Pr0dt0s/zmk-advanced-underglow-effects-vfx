@@ -10,7 +10,7 @@ CPPFLAGS = -DVFX_SIM -I../include
 LDLIBS   = -lm
 
 CORE = ../src/color.c ../src/zone.c ../src/render.c ../src/power_policy.c \
-       ../src/mathtab.c ../src/status.c \
+       ../src/mathtab.c ../src/status.c ../src/sync_policy.c \
        ../src/layers/solid.c ../src/layers/gradient.c ../src/layers/ambient.c \
        ../src/layers/reactive.c ../src/layers/indicators.c
 
@@ -18,8 +18,13 @@ CORE = ../src/color.c ../src/zone.c ../src/render.c ../src/power_policy.c \
 test: test_core
 	./test_core
 
-test_core: test_core.c $(CORE)
-	$(CC) $(CFLAGS) $(CPPFLAGS) $^ $(LDLIBS) -o $@
+# Headers are listed as prerequisites so that changing a constant in one of
+# them rebuilds: a stale binary here reports a pass against code that is no
+# longer what is committed.
+HEADERS = $(wildcard ../include/zmk/vfx/*.h ../include/dt-bindings/zmk/*.h)
+
+test_core: test_core.c $(CORE) $(HEADERS)
+	$(CC) $(CFLAGS) $(CPPFLAGS) test_core.c $(CORE) $(LDLIBS) -o $@
 
 clean:
 	rm -f test_core

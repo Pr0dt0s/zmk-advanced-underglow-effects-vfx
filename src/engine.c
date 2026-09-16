@@ -16,6 +16,7 @@
 #include <zmk/vfx/power.h>
 #include <zmk/vfx/scenes.h>
 #include <zmk/vfx/status.h>
+#include <zmk/vfx/sync.h>
 #include <zmk/vfx/vfx.h>
 #include <zmk/workqueue.h>
 
@@ -456,6 +457,31 @@ int16_t zmk_vfx_get_hue_shift(void) { return state.hue_shift; }
 
 void zmk_vfx_set_time_offset(int32_t offset_ms) { state.time_offset = offset_ms; }
 int32_t zmk_vfx_get_time_offset(void) { return state.time_offset; }
+
+void zmk_vfx_apply_sync(uint32_t central_time_ms) {
+    const int32_t desired = vfx_sync_desired(central_time_ms, (uint32_t)k_uptime_get());
+    const int32_t next = vfx_sync_step(state.time_offset, desired);
+
+    if (next == state.time_offset) {
+        return;
+    }
+
+    LOG_DBG("VFX timebase %d -> %d ms (central wants %d)", state.time_offset, next, desired);
+
+    state.time_offset = next;
+
+    /* The offset only shows up in the next rendered frame, and a scene that
+     * had gone idle would not render one.
+     */
+    zmk_vfx_request_frame();
+}
+
+void zmk_vfx_inject_key(uint32_t position) {
+    const struct vfx_frame_ctx ctx = build_ctx();
+
+    vfx_scene_key_event(vfx_scene_get(state.scene), &ctx, position, true, ctx.time_ms);
+    zmk_vfx_request_frame();
+}
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_OFF_IDLE)
 static bool on_before_idle;

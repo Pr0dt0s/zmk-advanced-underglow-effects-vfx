@@ -16,6 +16,7 @@
 #include <zmk/vfx/layers.h>
 #include <zmk/vfx/power.h>
 #include <zmk/vfx/status.h>
+#include <zmk/vfx/sync.h>
 
 static int failures;
 
@@ -792,6 +793,68 @@ static void test_layer_state_picks_colour_by_layer(void) {
     vfx_status_mutable()->active_layer = 0;
 }
 
+
+/* ---- split sync -------------------------------------------------------- */
+
+static void test_sync_jumps_on_first_beacon(void) {
+    /* A peripheral that just connected, or just rebooted, has nothing on
+     * screen worth protecting, and slewing seconds of offset would take
+     * minutes. Take it all at once.
+     */
+    const int32_t out = vfx_sync_step(0, 5000);
+
+    CHECK(out == 5000, "a large initial offset must be taken at once, got %d", out);
+}
+
+static void test_sync_slews_small_corrections(void) {
+    /* Crystal drift shows up as a small, steady error. Stepping it would tear
+     * whatever is animating, so it must be eased in under one frame's worth
+     * at a time.
+     */
+    const int32_t out = vfx_sync_step(0, 200);
+
+    CHECK(out != 200, "a small correction must not be applied in one step");
+    CHECK(out == VFX_SYNC_MAX_SLEW_MS, "expected a %d ms step, got %d", VFX_SYNC_MAX_SLEW_MS, out);
+    CHECK(VFX_SYNC_MAX_SLEW_MS < 1000 / 50,
+          "a slew step of %d ms is larger than a frame at 50 fps and would be visible",
+          VFX_SYNC_MAX_SLEW_MS);
+}
+
+static void test_sync_converges_and_settles(void) {
+    int32_t offset = 0;
+    const int32_t target = 180;
+    int beacons = 0;
+
+    while (offset != target && beacons < 1000) {
+        offset = vfx_sync_step(offset, target);
+        beacons++;
+    }
+
+    CHECK(offset == target, "sync never converged, stuck at %d", offset);
+    printf("  converged on a %d ms error in %d beacons\n", target, beacons);
+
+    /* Once there, it must stay put rather than oscillating around the target. */
+    CHECK(vfx_sync_step(offset, target) == target, "sync oscillates once converged");
+}
+
+static void test_sync_handles_negative_drift(void) {
+    CHECK(vfx_sync_step(0, -200) == -VFX_SYNC_MAX_SLEW_MS, "must slew backwards too");
+    CHECK(vfx_sync_step(0, -5000) == -5000, "a large negative offset must jump");
+}
+
+static void test_sync_desired_survives_wrapping(void) {
+    /* k_uptime_get() is truncated to 32 bits for the beacon, so the
+     * subtraction has to still give the right delta across the wrap.
+     */
+    const uint32_t central = 100;          /* just wrapped */
+    const uint32_t local = 0xFFFFFF00u;    /* about to wrap */
+    const int32_t want = (int32_t)(central - local);
+
+    CHECK(vfx_sync_desired(central, local) == want,
+          "offset computed across a 32 bit wrap is wrong: %d", vfx_sync_desired(central, local));
+    CHECK(want == 356, "expected a small positive delta across the wrap, got %d", want);
+}
+
 int main(void) {
     struct {
         const char *name;
@@ -825,6 +888,11 @@ int main(void) {
         {"battery indicator fills proportionally", test_battery_indicator_fills_proportionally},
         {"ble profile lights selected slot", test_ble_profile_lights_only_the_selected_slot},
         {"layer state picks colour by layer", test_layer_state_picks_colour_by_layer},
+        {"sync jumps on first beacon", test_sync_jumps_on_first_beacon},
+        {"sync slews small corrections", test_sync_slews_small_corrections},
+        {"sync converges and settles", test_sync_converges_and_settles},
+        {"sync handles negative drift", test_sync_handles_negative_drift},
+        {"sync desired survives wrapping", test_sync_desired_survives_wrapping},
     };
 
     for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {

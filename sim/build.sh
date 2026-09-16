@@ -24,6 +24,7 @@ exports=(
   vfx_sim_estimated_ua vfx_sim_power_reset
   vfx_sim_add_layer vfx_sim_add_layer_state vfx_sim_add_battery
   vfx_sim_add_ble_profile vfx_sim_set_status vfx_sim_set_key_map
+  vfx_sim_sync_step vfx_sim_sync_max_slew
 )
 
 args=(--target=wasm32 -nostdlib -O2 -flto -DVFX_SIM -I"$root/include"
@@ -38,6 +39,7 @@ clang "${args[@]}" \
   "$here/vfx_sim.c" \
   "$root/src/color.c" "$root/src/zone.c" "$root/src/render.c" \
   "$root/src/power_policy.c" "$root/src/mathtab.c" "$root/src/status.c" \
+  "$root/src/sync_policy.c" \
   "$root/src/layers/solid.c" "$root/src/layers/gradient.c" \
   "$root/src/layers/ambient.c" "$root/src/layers/reactive.c" \
   "$root/src/layers/indicators.c" \

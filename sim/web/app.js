@@ -537,6 +537,14 @@ async function main() {
   let frozenAt = 0;
 
   let stripPath = 'serpentine';
+
+  /* The right half's timebase correction. In synced mode a beacon nudges it
+   * toward cancelling the drift, using the firmware's own slew policy, so the
+   * page shows the correction easing in over seconds rather than snapping.
+   */
+  let syncOffset = 0;
+  let lastBeacon = 0;
+  const SYNC_INTERVAL_MS = 2000;
   const state = {
     brightness: 255, speed: 3, hue: 0, split: 'free', drift: 0,
     activeLayer: 0, battery: 78, profile: 0, connected: true, usb: false, caps: false,
@@ -580,10 +588,23 @@ async function main() {
     }
 
     halves[0].render(t);
-    /* Free-running halves keep independent clocks, which is what the drift
-     * slider stands in for. Synced mode makes the right half follow the left.
+
+    /* The right half runs on its own crystal, which the drift slider stands
+     * in for. Free-running mode leaves that error in place. Synced mode
+     * beacons a correction toward cancelling it, eased in by the same policy
+     * the firmware uses, so the seam visibly pulls back into alignment.
      */
-    halves[1].render(state.split === 'synced' ? t : t + state.drift);
+    if (state.split === 'synced') {
+      if (t - lastBeacon >= SYNC_INTERVAL_MS) {
+        lastBeacon = t;
+        syncOffset = halves[1].e.vfx_sim_sync_step(syncOffset, -state.drift);
+      }
+    } else {
+      syncOffset = 0;
+      lastBeacon = t;
+    }
+
+    halves[1].render(t + state.drift + syncOffset);
 
     draw(ctx, halves);
 
@@ -607,6 +628,10 @@ async function main() {
     $('stat-ma').textContent = `~${(ua / 1000).toFixed(1)} mA at the strip`;
     $('stat-ma').className = 'pill ' + (ua === 0 ? 'on' : 'off');
 
+    const residual = state.split === 'synced' ? state.drift + syncOffset : state.drift;
+    $('out-drift').textContent =
+      state.split === 'synced' ? `${state.drift} ms, ${residual} ms left` : `${state.drift} ms`;
+
     requestAnimationFrame(tick);
   }
 
@@ -623,6 +648,7 @@ async function main() {
   bindRange('speed', 'speed');
   bindRange('hue', 'hue', v => `${v}°`);
   bindRange('drift', 'drift', v => `${v} ms`);
+  $('drift').addEventListener('input', () => { lastBeacon = -1e9; });
 
   applyPowerPolicy = () => {
     const blackout = Number($('blackout').value);

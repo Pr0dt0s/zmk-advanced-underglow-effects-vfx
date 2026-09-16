@@ -21,6 +21,7 @@
 #include <zmk/vfx/layers.h>
 #include <zmk/vfx/power.h>
 #include <zmk/vfx/status.h>
+#include <zmk/vfx/sync.h>
 
 #define EXPORT __attribute__((visibility("default")))
 
@@ -512,6 +513,15 @@ EXPORT int vfx_sim_num_pixels(void) { return ctx.num_pixels; }
 EXPORT int vfx_sim_any_lit(void) { return last_lit ? 1 : 0; }
 
 EXPORT int vfx_sim_is_animating(void) { return vfx_scene_is_animating(&scene, &ctx) ? 1 : 0; }
+
+/* The same slew the firmware applies to a synchronisation beacon, so the
+ * page shows convergence rather than a snap.
+ */
+EXPORT int vfx_sim_sync_step(int current_offset, int desired_offset) {
+    return (int)vfx_sync_step((int32_t)current_offset, (int32_t)desired_offset);
+}
+
+EXPORT int vfx_sim_sync_max_slew(void) { return VFX_SYNC_MAX_SLEW_MS; }
 
 EXPORT void vfx_sim_key_event(int position, int pressed) {
     vfx_scene_key_event(&scene, &ctx, (uint32_t)position, pressed != 0, ctx.time_ms);

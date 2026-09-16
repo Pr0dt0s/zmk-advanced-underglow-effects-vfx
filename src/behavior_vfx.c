@@ -160,6 +160,18 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
         return zmk_vfx_change_hue(-1);
     case VFX_SET_HUE_CMD:
         return zmk_vfx_set_hue((uint16_t)binding->param2);
+
+    /* Relayed from the central in synchronised split mode. These never appear
+     * in a keymap; they arrive through ZMK's behavior relay, which is why
+     * they ride this behavior rather than a GATT service of their own.
+     */
+    case VFX_SYNC_CMD:
+        zmk_vfx_apply_sync(binding->param2);
+        return 0;
+
+    case VFX_KEY_CMD:
+        zmk_vfx_inject_key(binding->param2);
+        return 0;
     }
 
     return -ENOTSUP;

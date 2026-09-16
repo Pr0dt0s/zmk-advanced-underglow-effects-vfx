@@ -53,6 +53,12 @@ int zmk_vfx_save_state(void);
 void zmk_vfx_set_time_offset(int32_t offset_ms);
 int32_t zmk_vfx_get_time_offset(void);
 
+/* A synchronisation beacon from the central carrying its uptime. */
+void zmk_vfx_apply_sync(uint32_t central_time_ms);
+
+/* A key position relayed from the other half, for reactive effects. */
+void zmk_vfx_inject_key(uint32_t position);
+
 /* Ask for a frame now, outside the normal cadence, after something changed
  * that the scene itself cannot observe.
  */

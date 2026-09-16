@@ -16,7 +16,10 @@ if(CONFIG_ZMK_VFX)
     src/power_policy.c
     src/mathtab.c
     src/status.c
+    src/sync_policy.c
   )
+
+  zephyr_library_sources_ifdef(CONFIG_ZMK_VFX_SPLIT_SYNCED src/split_sync.c)
 
   zephyr_library_sources_ifdef(CONFIG_ZMK_VFX_AUTO_POWER_GATE src/power.c)
 

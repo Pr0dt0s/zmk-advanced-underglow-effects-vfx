@@ -49,6 +49,13 @@
 #define VFX_SET_SPD_CMD 14
 #define VFX_SET_HUE_CMD 15
 
+/* Split synchronisation, sent central to peripheral rather than typed in a
+ * keymap. VFX_SYNC carries the central's timebase; VFX_KEY relays a key
+ * position so the peripheral can draw a ripple for a key it cannot see.
+ */
+#define VFX_SYNC_CMD 16
+#define VFX_KEY_CMD 17
+
 #define VFX_TOG VFX_TOG_CMD 0
 #define VFX_ON VFX_ON_CMD 0
 #define VFX_OFF VFX_OFF_CMD 0
