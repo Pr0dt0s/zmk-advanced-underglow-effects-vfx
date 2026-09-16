@@ -15,6 +15,7 @@
 #include <zmk/vfx/engine.h>
 #include <zmk/vfx/layers.h>
 #include <zmk/vfx/power.h>
+#include <zmk/vfx/status.h>
 
 static int failures;
 
@@ -500,6 +501,297 @@ static void test_current_estimate(void) {
     CHECK(full > idle * 10, "full white should dwarf the quiescent draw");
 }
 
+
+/* ---- generators -------------------------------------------------------- */
+
+static struct vfx_zone full_zone = {.pixels = NULL, .start = 0, .len = NPX};
+
+#define SCENE1(varname, api_ptr, cfg_ptr, state_ptr)                                               \
+    static struct vfx_layer varname##_layers[1];                                                   \
+    varname##_layers[0] = (struct vfx_layer){.api = (api_ptr),                                     \
+                                             .zone = &full_zone,                                   \
+                                             .config = (cfg_ptr),                                  \
+                                             .state = (state_ptr),                                 \
+                                             .blend = VFX_BLEND_NORMAL,                            \
+                                             .opacity = 255};                                      \
+    struct vfx_scene varname = {.name = #varname, .layers = varname##_layers, .num_layers = 1}
+
+static void test_ripple_fires_decays_and_goes_idle(void) {
+    struct vfx_ripple_cfg cfg = {
+        .color = VFX_HSB(0, 0, 100), .decay_ms = 600, .speed = 40, .width = 3};
+    struct vfx_ripple_state st = {0};
+    SCENE1(scene, &vfx_layer_ripple_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+    ctx.num_keys = NPX; /* identity-ish key mapping for the test */
+
+    /* A reactive scene with nothing happening must report idle: that is what
+     * lets the engine park its timer and the power gate cut the rail.
+     */
+    CHECK(!vfx_scene_is_animating(&scene, &ctx), "an idle ripple layer must report idle");
+
+    bool lit = false;
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(!lit, "no ripples means nothing lit");
+
+    vfx_scene_key_event(&scene, &ctx, 10, true, 0);
+    CHECK(vfx_scene_is_animating(&scene, &ctx), "a live ripple must report animating");
+
+    ctx.time_ms = 100;
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(lit, "a live ripple must light something");
+
+    /* Past the decay the ripple is retired and we are idle again, which is
+     * what allows the rail to gate back off after a keypress.
+     */
+    ctx.time_ms = 700;
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(!lit, "an expired ripple must stop lighting pixels");
+    CHECK(!vfx_scene_is_animating(&scene, &ctx), "an expired ripple must report idle again");
+}
+
+static void test_ripple_travels_outward(void) {
+    struct vfx_ripple_cfg cfg = {
+        .color = VFX_HSB(0, 0, 100), .decay_ms = 2000, .speed = 40, .width = 2};
+    struct vfx_ripple_state st = {0};
+    SCENE1(scene, &vfx_layer_ripple_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+    ctx.num_keys = NPX;
+
+    vfx_scene_key_event(&scene, &ctx, 18, true, 0);
+
+    /* Brightest pixel should move away from the origin over time. */
+    int first = -1, later = -1;
+
+    ctx.time_ms = 100;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    for (int i = 0, best = 0; i < NPX; i++) {
+        if (out[i].r > best) { best = out[i].r; first = i; }
+    }
+
+    /* 300 ms, not later: at 40 px/s the front is 12 pixels out, still on a 36
+     * pixel strip. Much past that and the ripple has left the board.
+     */
+    ctx.time_ms = 300;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    for (int i = 0, best = 0; i < NPX; i++) {
+        if (out[i].r > best) { best = out[i].r; later = i; }
+    }
+
+    const int origin = 18;
+    CHECK(first >= 0 && later >= 0, "ripple produced no lit pixels");
+    CHECK(abs(later - origin) > abs(first - origin),
+          "ripple front did not travel outward: %d then %d from origin %d", first, later, origin);
+}
+
+static void test_ripple_retired_once_it_leaves_the_strip(void) {
+    /* A ripple that has run off the end draws nothing, so it must not keep
+     * reporting the layer as animating: that would hold the engine awake and
+     * the power rail up for an invisible effect.
+     */
+    struct vfx_ripple_cfg cfg = {
+        .color = VFX_HSB(0, 0, 100), .decay_ms = 60000, .speed = 40, .width = 2};
+    struct vfx_ripple_state st = {0};
+    SCENE1(scene, &vfx_layer_ripple_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+    ctx.num_keys = NPX;
+
+    vfx_scene_key_event(&scene, &ctx, 18, true, 0);
+
+    /* Long before the 60 s decay, but well past the far end of the strip. */
+    ctx.time_ms = 3000;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    CHECK(!vfx_scene_is_animating(&scene, &ctx),
+          "a ripple past the end of the strip must be retired, not held for its decay");
+}
+
+static void test_ripple_slots_reuse_oldest(void) {
+    /* More presses than slots must not drop the newest: fast typing would
+     * feel dead if the newest press were the one discarded.
+     */
+    struct vfx_ripple_cfg cfg = {
+        .color = VFX_HSB(0, 0, 100), .decay_ms = 5000, .speed = 40, .width = 3};
+    struct vfx_ripple_state st = {0};
+    SCENE1(scene, &vfx_layer_ripple_api, &cfg, &st);
+
+    struct vfx_frame_ctx ctx = test_ctx();
+    ctx.num_keys = NPX;
+
+    for (int i = 0; i < VFX_MAX_RIPPLES + 3; i++) {
+        vfx_scene_key_event(&scene, &ctx, (uint32_t)i, true, (uint32_t)(i * 10));
+    }
+
+    int active = 0, newest = 0;
+    for (int i = 0; i < VFX_MAX_RIPPLES; i++) {
+        if (st.slots[i].active) active++;
+        if (st.slots[i].start_ms == (VFX_MAX_RIPPLES + 2) * 10) newest = 1;
+    }
+
+    CHECK(active == VFX_MAX_RIPPLES, "expected all slots busy, got %d", active);
+    CHECK(newest, "the most recent press was dropped instead of the oldest");
+}
+
+static void test_trail_decay_is_time_based_not_frame_based(void) {
+    /* Two runs over the same wall time at different frame rates must end up
+     * at the same heat, or the effect would change character with frame rate.
+     */
+    struct vfx_trail_cfg cfg = {.color = VFX_HSB(0, 0, 100), .decay_ms = 1000, .spread = 2};
+    struct vfx_trail_state fast = {0}, slow = {0};
+
+    struct vfx_frame_ctx ctx = test_ctx();
+    ctx.num_keys = NPX;
+
+    struct vfx_layer fl = {.api = &vfx_layer_trail_api, .zone = &full_zone, .config = &cfg,
+                           .state = &fast, .blend = VFX_BLEND_NORMAL, .opacity = 255};
+    struct vfx_layer sl = fl;
+    sl.state = &slow;
+
+    struct vfx_scene fs = {.name = "f", .layers = &fl, .num_layers = 1};
+    struct vfx_scene ss = {.name = "s", .layers = &sl, .num_layers = 1};
+
+    vfx_scene_key_event(&fs, &ctx, 10, true, 0);
+    vfx_scene_key_event(&ss, &ctx, 10, true, 0);
+
+    struct vfx_rgb out[NPX];
+
+    for (uint32_t t = 0; t <= 500; t += 10) { ctx.time_ms = t; vfx_render_frame(&fs, &ctx, out, NULL); }
+    for (uint32_t t = 0; t <= 500; t += 50) { ctx.time_ms = t; vfx_render_frame(&ss, &ctx, out, NULL); }
+
+    const int origin = 10 * NPX / NPX;
+    const int diff = abs((int)fast.heat[origin] - (int)slow.heat[origin]);
+
+    printf("  trail heat after 500 ms: 10 ms steps %u, 50 ms steps %u\n",
+           fast.heat[origin], slow.heat[origin]);
+    CHECK(diff <= 24, "trail decay depends on frame rate: %d apart", diff);
+}
+
+static void test_twinkle_is_identical_on_both_halves(void) {
+    /* Twinkle picks pixels from a hash rather than storing state. Both halves
+     * must therefore agree without exchanging anything, the same property the
+     * gradient has.
+     */
+    struct vfx_twinkle_cfg cfg = {.color = VFX_HSB(0, 0, 100), .period_ms = 1000, .density = 128};
+    uint8_t dummy = 0;
+
+    struct vfx_layer half_layer = {.api = &vfx_layer_twinkle_api, .zone = &full_zone,
+                                   .config = &cfg, .state = &dummy,
+                                   .blend = VFX_BLEND_NORMAL, .opacity = 255};
+    static struct vfx_zone whole_zone = {.pixels = NULL, .start = 0, .len = NPX * 2};
+    struct vfx_layer whole_layer = half_layer;
+    whole_layer.zone = &whole_zone;
+
+    struct vfx_scene half = {.name = "h", .layers = &half_layer, .num_layers = 1};
+    struct vfx_scene whole = {.name = "w", .layers = &whole_layer, .num_layers = 1};
+
+    struct vfx_rgb rout[NPX], wout[NPX * 2];
+    struct vfx_frame_ctx rctx = test_ctx(), wctx = test_ctx();
+
+    rctx.virtual_length = wctx.virtual_length = NPX * 2;
+    rctx.strip_offset = NPX;
+    wctx.num_pixels = NPX * 2;
+    rctx.time_ms = wctx.time_ms = 4321;
+
+    vfx_render_frame(&half, &rctx, rout, NULL);
+    vfx_render_frame(&whole, &wctx, wout, NULL);
+
+    CHECK(memcmp(rout, wout + NPX, sizeof(rout)) == 0,
+          "twinkle differs between a half render and the whole board render");
+}
+
+static void test_battery_indicator_fills_proportionally(void) {
+    struct vfx_battery_cfg cfg = {.low_color = VFX_HSB(0, 100, 100),
+                                  .high_color = VFX_HSB(120, 100, 100),
+                                  .empty_color = 0,
+                                  .warn_below = 20};
+    uint8_t dummy = 0;
+    static struct vfx_zone bar = {.pixels = NULL, .start = 0, .len = 10};
+    struct vfx_layer l = {.api = &vfx_layer_battery_api, .zone = &bar, .config = &cfg,
+                          .state = &dummy, .blend = VFX_BLEND_NORMAL, .opacity = 255};
+    struct vfx_scene scene = {.name = "bat", .layers = &l, .num_layers = 1};
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    vfx_status_mutable()->battery_level = 50;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    int lit_px = 0;
+    for (int i = 0; i < 10; i++) if ((out[i].r | out[i].g | out[i].b) != 0) lit_px++;
+    CHECK(lit_px == 5, "50%% battery should fill 5 of 10 pixels, got %d", lit_px);
+
+    /* A nearly flat battery must still show something, or the indicator goes
+     * dark exactly when it matters most.
+     */
+    vfx_status_mutable()->battery_level = 1;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    CHECK((out[0].r | out[0].g | out[0].b) != 0, "1%% battery must still light one pixel");
+    CHECK(out[0].r > out[0].g, "a battery at 1%% should use the low colour (red)");
+
+    vfx_status_mutable()->battery_level = 100;
+}
+
+static void test_ble_profile_lights_only_the_selected_slot(void) {
+    struct vfx_ble_profile_cfg cfg = {.connected_color = VFX_HSB(210, 100, 100),
+                                      .disconnected_color = VFX_HSB(0, 100, 60),
+                                      .usb_color = VFX_HSB(120, 100, 80)};
+    uint8_t dummy = 0;
+    static struct vfx_zone slots = {.pixels = NULL, .start = 0, .len = 5};
+    struct vfx_layer l = {.api = &vfx_layer_ble_profile_api, .zone = &slots, .config = &cfg,
+                          .state = &dummy, .blend = VFX_BLEND_NORMAL, .opacity = 255};
+    struct vfx_scene scene = {.name = "ble", .layers = &l, .num_layers = 1};
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    vfx_status_mutable()->ble_profile = 2;
+    vfx_status_mutable()->ble_connected = true;
+    vfx_status_mutable()->usb_output = false;
+
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    for (int i = 0; i < 5; i++) {
+        bool on = (out[i].r | out[i].g | out[i].b) != 0;
+        CHECK(on == (i == 2), "slot %d lit=%d, expected only slot 2", i, on);
+    }
+
+    vfx_status_mutable()->ble_profile = 0;
+}
+
+static void test_layer_state_picks_colour_by_layer(void) {
+    static const uint32_t colors[] = {0, VFX_HSB(120, 100, 80), VFX_HSB(280, 100, 80)};
+    struct vfx_layer_state_cfg cfg = {.colors = colors, .num_colors = 3};
+    uint8_t dummy = 0;
+    SCENE1(scene, &vfx_layer_layer_state_api, &cfg, &dummy);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+    bool lit = true;
+
+    /* Layer 0 is given a zero-brightness colour, the usual way to keep the
+     * base layer from drawing over whatever is beneath.
+     */
+    vfx_status_mutable()->active_layer = 0;
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(!lit, "layer 0 with a zero-brightness colour must draw nothing");
+
+    vfx_status_mutable()->active_layer = 1;
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(lit && out[0].g > out[0].r, "layer 1 should render its green");
+
+    /* A layer beyond the list must not read off the end. */
+    vfx_status_mutable()->active_layer = 9;
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(!lit, "a layer past the end of the colour list must draw nothing");
+
+    vfx_status_mutable()->active_layer = 0;
+}
+
 int main(void) {
     struct {
         const char *name;
@@ -524,6 +816,15 @@ int main(void) {
         {"gate wakes on a lit frame after settling", test_gate_wakes_on_a_lit_frame_after_settling},
         {"gate stability tracks the countdown", test_gate_stability_tracks_the_countdown},
         {"current estimate", test_current_estimate},
+        {"ripple fires, decays and goes idle", test_ripple_fires_decays_and_goes_idle},
+        {"ripple travels outward", test_ripple_travels_outward},
+        {"ripple retired once it leaves the strip", test_ripple_retired_once_it_leaves_the_strip},
+        {"ripple slots reuse oldest", test_ripple_slots_reuse_oldest},
+        {"trail decay is time based", test_trail_decay_is_time_based_not_frame_based},
+        {"twinkle identical on both halves", test_twinkle_is_identical_on_both_halves},
+        {"battery indicator fills proportionally", test_battery_indicator_fills_proportionally},
+        {"ble profile lights selected slot", test_ble_profile_lights_only_the_selected_slot},
+        {"layer state picks colour by layer", test_layer_state_picks_colour_by_layer},
     };
 
     for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {

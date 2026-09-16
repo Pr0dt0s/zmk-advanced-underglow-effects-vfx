@@ -1,0 +1,35 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Expanding rings radiating from each pressed key.
+
+  Needs the engine's key-pixels property to know where a key sits on the
+  strip; without it, key positions are spread evenly over the board,
+  which still animates but will not line up with the keys.
+
+compatible: "zmk,vfx-layer-ripple"
+
+include: vfx-layer-common.yaml
+
+properties:
+  color:
+    type: int
+    required: true
+    description: |
+      Packed color, built with VFX_HSB(h, s, b).
+  decay-ms:
+    type: int
+    default: 600
+    description: |
+      How long one ripple takes to fade out.
+  speed:
+    type: int
+    default: 40
+    description: |
+      Virtual pixels per second the ripple front travels.
+  width:
+    type: int
+    default: 3
+    description: |
+      Virtual pixels of the bright band at the front.

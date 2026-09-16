@@ -10,6 +10,30 @@ const BLEND = { normal: 0, add: 1, multiply: 2, screen: 3, max: 4 };
 const BLEND_NAME = ['VFX_BLEND_NORMAL', 'VFX_BLEND_ADD', 'VFX_BLEND_MULTIPLY',
                     'VFX_BLEND_SCREEN', 'VFX_BLEND_MAX'];
 
+
+/* One description of every generator, used for loading a scene into the
+ * engine and for emitting the devicetree. Keeping them in one table is what
+ * stops the exported devicetree drifting from what the preview rendered.
+ *
+ * `args` are the numeric config fields in the order vfx_sim_add_layer takes
+ * them, each with the same default the devicetree binding declares.
+ */
+const LAYER_SPECS = {
+  solid:      { id: 0,  args: [] },
+  gradient:   { id: 1,  args: [] },
+  breathe:    { id: 2,  args: [['period_ms', 4000], ['min_level', 0]] },
+  wave:       { id: 3,  args: [['wavelength', 0], ['period_ms', 2000], ['depth', 255]] },
+  twinkle:    { id: 4,  args: [['period_ms', 1200], ['density', 40]] },
+  plasma:     { id: 5,  args: [['scale', 0], ['period_ms', 6000], ['hue_spread', 40]] },
+  ripple:     { id: 6,  args: [['decay_ms', 600], ['speed', 40], ['width', 3]] },
+  keyflash:   { id: 7,  args: [['decay_ms', 400], ['spread', 2]] },
+  trail:      { id: 8,  args: [['decay_ms', 1500], ['spread', 2]] },
+  'layer-state': { id: 9,  args: [] },
+  battery:       { id: 10, args: [['warn_below', 20]] },
+  'ble-profile': { id: 11, args: [] },
+  'caps-word':   { id: 12, args: [['period_ms', 0]] },
+};
+
 const packHsb = (h, s, b) => (((h & 0x1ff) << 16) | ((s & 0xff) << 8) | (b & 0xff)) >>> 0;
 
 /* ------------------------------------------------------------------ engine */
@@ -54,24 +78,77 @@ class Half {
       const zid = zoneIds[l.zone];
       if (zid === undefined) throw new Error(`layer ${i} references unknown zone "${l.zone}"`);
 
+      const spec = LAYER_SPECS[l.type];
+      if (!spec) throw new Error(`layer ${i} has unknown type "${l.type}"`);
+
       const blend = BLEND[l.blend ?? 'normal'];
       if (blend === undefined) throw new Error(`layer ${i} has unknown blend "${l.blend}"`);
       const opacity = l.opacity ?? 255;
 
+      const args = spec.args.map(([name, dflt]) => l[name] ?? dflt);
+      while (args.length < 3) args.push(0);
+
       let rc;
-      if (l.type === 'solid') {
-        rc = this.e.vfx_sim_add_solid(zid, blend, opacity, packHsb(...l.color));
-      } else if (l.type === 'gradient') {
-        const scratch = this.e.vfx_sim_scratch();
-        const view = this.view;
-        l.stops.forEach((c, k) => view.setUint32(scratch + k * 4, packHsb(...c), true));
-        rc = this.e.vfx_sim_add_gradient(zid, blend, opacity,
-                                         l.scroll_speed ?? 0, l.span ?? 0, l.stops.length);
-      } else {
-        throw new Error(`layer ${i} has unknown type "${l.type}"`);
+      switch (l.type) {
+        case 'solid':
+          rc = this.e.vfx_sim_add_solid(zid, blend, opacity, packHsb(...l.color));
+          break;
+
+        case 'gradient': {
+          const view = this.view;
+          const scratch = this.e.vfx_sim_scratch();
+          l.stops.forEach((c, k) => view.setUint32(scratch + k * 4, packHsb(...c), true));
+          rc = this.e.vfx_sim_add_gradient(zid, blend, opacity,
+                                           l.scroll_speed ?? 0, l.span ?? 0, l.stops.length);
+          break;
+        }
+
+        case 'layer-state': {
+          const view = this.view;
+          const scratch = this.e.vfx_sim_scratch();
+          l.colors.forEach((c, k) =>
+            view.setUint32(scratch + k * 4, c === null ? 0 : packHsb(...c), true));
+          rc = this.e.vfx_sim_add_layer_state(zid, blend, opacity, l.colors.length);
+          break;
+        }
+
+        case 'battery':
+          rc = this.e.vfx_sim_add_battery(zid, blend, opacity,
+                                          packHsb(...l.low_color), packHsb(...l.high_color),
+                                          l.empty_color ? packHsb(...l.empty_color) : 0,
+                                          l.warn_below ?? 20);
+          break;
+
+        case 'ble-profile':
+          rc = this.e.vfx_sim_add_ble_profile(zid, blend, opacity,
+                                              packHsb(...l.connected_color),
+                                              packHsb(...l.disconnected_color),
+                                              l.usb_color ? packHsb(...l.usb_color) : 0);
+          break;
+
+        default:
+          rc = this.e.vfx_sim_add_layer(spec.id, zid, blend, opacity, packHsb(...l.color),
+                                        args[0], args[1], args[2]);
+          break;
       }
+
       if (rc < 0) throw new Error(`layer ${i} was rejected by the engine`);
     }
+  }
+
+  setStatus(activeLayer, battery, profile, connected, usb, caps) {
+    this.e.vfx_sim_set_status(activeLayer, battery, profile, connected ? 1 : 0,
+                              usb ? 1 : 0, caps ? 1 : 0);
+  }
+
+  /* Key position -> virtual pixel. Without it reactive effects still animate
+   * but land in the wrong places, exactly as on a board with no key-pixels.
+   */
+  setKeyMap(pixels) {
+    const scratch = this.e.vfx_sim_scratch();
+    const mem = this.mem;
+    pixels.forEach((p, i) => { mem[scratch + i] = p & 0xff; });
+    this.e.vfx_sim_set_key_map(pixels.length);
   }
 
   render(timeMs) {
@@ -161,8 +238,26 @@ function buildLayout(canvas, ledsPerHalf, stripPath) {
     }
   }
 
+  /* Map each key to its nearest LED, which is what key-pixels does in
+   * devicetree. Computed from the geometry rather than guessed, so a ripple
+   * starts under the key that was actually pressed.
+   */
+  const keyPixels = rects.map(r => {
+    const cx = r.x + r.w / 2;
+    const cy = r.y + r.h / 2;
+    let best = 0;
+    let bestD = Infinity;
+
+    leds.forEach((led, i) => {
+      const d = (led.x - cx) ** 2 + (led.y - cy) ** 2;
+      if (d < bestD) { bestD = d; best = i; }
+    });
+
+    return best;
+  });
+
   const spacing = (Math.max(...rects.map(r => r.w)) || 40);
-  layout = { rects, leds, scale, spacing };
+  layout = { rects, leds, scale, spacing, keyPixels };
   return layout;
 }
 
@@ -261,7 +356,9 @@ function toDevicetree(scene, ledsPerHalf) {
   out.push(`            display-name = "${scene.name}";`);
 
   for (const [i, l] of (scene.layers || []).entries()) {
-    const node = `${l.type}_${i}`;
+    const node = `${l.type.replace(/-/g, '_')}_${i}`;
+    const spec = LAYER_SPECS[l.type];
+
     out.push('');
     out.push(`${ind}${node} {`);
     out.push(`${ind}    compatible = "zmk,vfx-layer-${l.type}";`);
@@ -271,13 +368,35 @@ function toDevicetree(scene, ledsPerHalf) {
     }
     if ((l.opacity ?? 255) !== 255) out.push(`${ind}    opacity = <${l.opacity}>;`);
 
-    if (l.type === 'solid') {
-      out.push(`${ind}    color = <${hsb(l.color)}>;`);
-    } else if (l.type === 'gradient') {
+    if (l.color) out.push(`${ind}    color = <${hsb(l.color)}>;`);
+
+    if (l.type === 'gradient') {
       out.push(`${ind}    stops = <${l.stops.map(hsb).join(' ')}>;`);
       if (l.scroll_speed) out.push(`${ind}    scroll-speed = <${l.scroll_speed}>;`);
       if (l.span) out.push(`${ind}    span = <${l.span}>;`);
+    } else if (l.type === 'layer-state') {
+      const colors = l.colors.map(c => (c === null ? 'VFX_BLACK' : hsb(c)));
+      out.push(`${ind}    colors = <${colors.join(' ')}>;`);
+    } else if (l.type === 'battery') {
+      out.push(`${ind}    high-color = <${hsb(l.high_color)}>;`);
+      out.push(`${ind}    low-color = <${hsb(l.low_color)}>;`);
+      if (l.empty_color) out.push(`${ind}    empty-color = <${hsb(l.empty_color)}>;`);
+    } else if (l.type === 'ble-profile') {
+      out.push(`${ind}    connected-color = <${hsb(l.connected_color)}>;`);
+      out.push(`${ind}    disconnected-color = <${hsb(l.disconnected_color)}>;`);
+      if (l.usb_color) out.push(`${ind}    usb-color = <${hsb(l.usb_color)}>;`);
     }
+
+    /* Only emit numeric properties that differ from the binding's default,
+     * so the pasted devicetree stays as short as what was actually chosen.
+     */
+    for (const [name, dflt] of spec.args) {
+      const v = l[name];
+      if (v !== undefined && v !== dflt) {
+        out.push(`${ind}    ${name.replace(/_/g, '-')} = <${v}>;`);
+      }
+    }
+
     out.push(`${ind}};`);
   }
 
@@ -319,6 +438,58 @@ const PRESETS = {
       { type: 'gradient', zone: 'all', blend: 'add', opacity: 200,
         stops: [[10, 100, 55], [35, 100, 10]], scroll_speed: 5, span: 12 },
       { type: 'solid', zone: 'edge', blend: 'screen', opacity: 90, color: [45, 70, 60] },
+    ],
+  },
+  Reactive: {
+    name: 'Reactive',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'solid', zone: 'all', color: [230, 70, 8] },
+      { type: 'ripple', zone: 'all', blend: 'add', color: [190, 40, 100],
+        decay_ms: 700, speed: 45, width: 3 },
+    ],
+  },
+  'Twinkle night': {
+    name: 'Twinkle night',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'solid', zone: 'all', color: [235, 100, 10] },
+      { type: 'twinkle', zone: 'all', blend: 'screen', color: [45, 25, 100],
+        period_ms: 1600, density: 55 },
+    ],
+  },
+  Plasma: {
+    name: 'Plasma',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'plasma', zone: 'all', color: [275, 90, 85],
+        scale: 14, period_ms: 7000, hue_spread: 70 },
+    ],
+  },
+  Breathe: {
+    name: 'Breathe',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'breathe', zone: 'all', color: [155, 90, 100], period_ms: 4500, min_level: 20 },
+    ],
+  },
+  'Status bar': {
+    name: 'Status bar',
+    zones: {
+      all: { range: [0, 255] },
+      battery: { range: [0, 6] },
+      profiles: { range: [8, 5] },
+      layers: { range: [30, 6] },
+    },
+    layers: [
+      { type: 'solid', zone: 'all', color: [220, 40, 6] },
+      { type: 'battery', zone: 'battery',
+        high_color: [120, 100, 70], low_color: [0, 100, 80], warn_below: 25 },
+      { type: 'ble-profile', zone: 'profiles',
+        connected_color: [210, 100, 80], disconnected_color: [20, 100, 50],
+        usb_color: [120, 100, 70] },
+      { type: 'layer-state', zone: 'layers',
+        colors: [null, [50, 100, 70], [280, 100, 70], [0, 100, 70]] },
     ],
   },
   'Zones demo': {
@@ -366,7 +537,10 @@ async function main() {
   let frozenAt = 0;
 
   let stripPath = 'serpentine';
-  const state = { brightness: 255, speed: 3, hue: 0, split: 'free', drift: 0 };
+  const state = {
+    brightness: 255, speed: 3, hue: 0, split: 'free', drift: 0,
+    activeLayer: 0, battery: 78, profile: 0, connected: true, usb: false, caps: false,
+  };
 
   let applyPowerPolicy = () => {};
 
@@ -374,6 +548,7 @@ async function main() {
     halves[0].init(ledsPerHalf, ledsPerHalf * 2, 0);
     halves[1].init(ledsPerHalf, ledsPerHalf * 2, ledsPerHalf);
     buildLayout(canvas, ledsPerHalf, stripPath);
+    for (const h of halves) h.setKeyMap(layout.keyPixels);
     applyScene();
     applyPowerPolicy();
   }
@@ -398,7 +573,11 @@ async function main() {
   function tick(now) {
     const t = playing ? (now - clockStart) : frozenAt;
 
-    for (const h of halves) h.setState(state.brightness, state.speed, state.hue);
+    for (const h of halves) {
+      h.setState(state.brightness, state.speed, state.hue);
+      h.setStatus(state.activeLayer, state.battery, state.profile,
+                  state.connected, state.usb, state.caps);
+    }
 
     halves[0].render(t);
     /* Free-running halves keep independent clocks, which is what the drift
@@ -473,6 +652,15 @@ async function main() {
     requestAnimationFrame(step);
   });
 
+  bindRange('activeLayer', 'activeLayer');
+  bindRange('battery', 'battery', v => `${v}%`);
+  bindRange('profile', 'profile');
+
+  for (const [id, key] of [['connected', 'connected'], ['usb', 'usb'], ['caps', 'caps']]) {
+    const el = $(id);
+    el.addEventListener('change', () => { state[key] = el.checked; });
+  }
+
   $('count').addEventListener('input', e => {
     ledsPerHalf = Number(e.target.value);
     $('out-count').textContent = ledsPerHalf;
@@ -483,6 +671,7 @@ async function main() {
   $('path').addEventListener('change', e => {
     stripPath = e.target.value;
     buildLayout(canvas, ledsPerHalf, stripPath);
+    for (const h of halves) h.setKeyMap(layout.keyPixels);
   });
 
   $('playpause').addEventListener('click', e => {
@@ -557,6 +746,14 @@ async function main() {
 
   $('scene').value = JSON.stringify(scene, null, 2);
   reinit();
+
+  /* Small handle for poking at the engine from the console or a test. */
+  window.vfxDebug = {
+    halves, state, layout: () => layout,
+    press: i => { const half = layout.rects[i].half; halves[half].key(i, true); },
+    pixels: h => Array.from(halves[h].pixels || []),
+  };
+
   requestAnimationFrame(tick);
 }
 

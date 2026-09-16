@@ -29,8 +29,20 @@ void vfx_render_frame(const struct vfx_scene *scene, const struct vfx_frame_ctx 
 bool vfx_scene_is_animating(const struct vfx_scene *scene, const struct vfx_frame_ctx *ctx);
 
 /* Fan a key event out to every reactive layer in the scene. */
-void vfx_scene_key_event(const struct vfx_scene *scene, uint32_t position, bool pressed);
+void vfx_scene_key_event(const struct vfx_scene *scene, const struct vfx_frame_ctx *ctx,
+                         uint32_t position, bool pressed, uint32_t time_ms);
 
 /* Generator vtables, referenced by the devicetree instantiation macros. */
 extern const struct vfx_layer_api vfx_layer_solid_api;
 extern const struct vfx_layer_api vfx_layer_gradient_api;
+extern const struct vfx_layer_api vfx_layer_breathe_api;
+extern const struct vfx_layer_api vfx_layer_wave_api;
+extern const struct vfx_layer_api vfx_layer_twinkle_api;
+extern const struct vfx_layer_api vfx_layer_plasma_api;
+extern const struct vfx_layer_api vfx_layer_ripple_api;
+extern const struct vfx_layer_api vfx_layer_keyflash_api;
+extern const struct vfx_layer_api vfx_layer_trail_api;
+extern const struct vfx_layer_api vfx_layer_layer_state_api;
+extern const struct vfx_layer_api vfx_layer_battery_api;
+extern const struct vfx_layer_api vfx_layer_ble_profile_api;
+extern const struct vfx_layer_api vfx_layer_caps_word_api;

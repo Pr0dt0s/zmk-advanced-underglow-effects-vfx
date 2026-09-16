@@ -1,0 +1,22 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Lights its zone while caps word is active, optionally pulsing.
+
+compatible: "zmk,vfx-layer-caps-word"
+
+include: vfx-layer-common.yaml
+
+properties:
+  color:
+    type: int
+    required: true
+    description: |
+      Packed color, built with VFX_HSB(h, s, b).
+  period-ms:
+    type: int
+    default: 0
+    description: |
+      Pulse period. 0 holds a steady color, which also lets the engine
+      park its timer instead of rendering continuously.

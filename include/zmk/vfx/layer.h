@@ -32,11 +32,35 @@ struct vfx_frame_ctx {
     uint8_t speed;      /* 1-5 */
     uint8_t brightness; /* 0-255, already clamped to CONFIG_ZMK_VFX_BRT_MAX */
     int16_t hue_shift;  /* global hue rotation in degrees */
+
+    /* Virtual pixel nearest each key position, from the engine's key-pixels
+     * property. NULL falls back to spreading key positions evenly over the
+     * strip, which is wrong in detail but keeps reactive effects usable
+     * without anyone having to measure their board.
+     */
+    const uint8_t *key_pixels;
+    uint16_t num_keys;
 };
 
 /* Virtual (whole board) index of a local strip index. */
 static inline uint16_t vfx_virtual_idx(const struct vfx_frame_ctx *ctx, uint16_t strip_idx) {
     return (uint16_t)(ctx->strip_offset + strip_idx);
+}
+
+/* Virtual pixel a key sits nearest. Reactive layers work in virtual space so
+ * a ripple started by the other half lands in the right place once the two
+ * are synchronised.
+ */
+static inline uint16_t vfx_key_pixel(const struct vfx_frame_ctx *ctx, uint32_t position) {
+    if (ctx->key_pixels && position < ctx->num_keys) {
+        return ctx->key_pixels[position];
+    }
+
+    if (ctx->num_keys > 0) {
+        return (uint16_t)(position * ctx->virtual_length / ctx->num_keys);
+    }
+
+    return (uint16_t)(position % (ctx->virtual_length ? ctx->virtual_length : 1));
 }
 
 struct vfx_layer;
@@ -57,8 +81,13 @@ struct vfx_layer_api {
     bool (*pixel)(const struct vfx_layer *layer, const struct vfx_frame_ctx *ctx, uint16_t zone_i,
                   uint16_t strip_i, struct vfx_rgb *out);
 
-    /* Optional. Reactive layers use this to record key activity. */
-    void (*key_event)(const struct vfx_layer *layer, uint32_t position, bool pressed);
+    /* Optional. Reactive layers record key activity here. The timestamp comes
+     * from the engine's timebase rather than being read inside the generator,
+     * both to keep Zephyr out of these files and so a relayed event from the
+     * other half can be stamped with when it actually happened.
+     */
+    void (*key_event)(const struct vfx_layer *layer, const struct vfx_frame_ctx *ctx,
+                      uint32_t position, bool pressed, uint32_t time_ms);
 
     /* Optional. Return true if this layer can still change what it renders.
      * When every layer in a scene reports false the engine stops ticking until

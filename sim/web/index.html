@@ -88,6 +88,24 @@
       </p>
     </div>
 
+    <div class="panel">
+      <h2>Keyboard state</h2>
+      <p class="note" style="margin-top:0">
+        What the indicator layers read. On hardware these come from ZMK events;
+        here you drive them, which is how a battery or profile indicator can be
+        checked without draining a cell.
+      </p>
+      <label>Active layer <output id="out-activeLayer"></output>
+        <input type="range" id="activeLayer" min="0" max="7" value="0"></label>
+      <label>Battery <output id="out-battery"></output>
+        <input type="range" id="battery" min="0" max="100" value="78"></label>
+      <label>BLE profile <output id="out-profile"></output>
+        <input type="range" id="profile" min="0" max="4" value="0"></label>
+      <label class="radio"><input type="checkbox" id="connected" checked> Profile connected</label>
+      <label class="radio"><input type="checkbox" id="usb"> Output is USB</label>
+      <label class="radio"><input type="checkbox" id="caps"> Caps word active</label>
+    </div>
+
     <div class="panel wide">
       <h2>Scene</h2>
       <div class="row" id="presets"></div>

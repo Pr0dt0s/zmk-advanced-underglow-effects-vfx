@@ -20,6 +20,7 @@
 #include <zmk/vfx/engine.h>
 #include <zmk/vfx/layers.h>
 #include <zmk/vfx/power.h>
+#include <zmk/vfx/status.h>
 
 #define EXPORT __attribute__((visibility("default")))
 
@@ -43,13 +44,44 @@ static int num_zones;
 static struct vfx_layer layers[MAX_LAYERS];
 static int num_layers;
 
+/* One arena per config type, indexed by layer slot. Wasteful in RAM and
+ * entirely fine here: the simulator is not the thing that has to fit on an
+ * nRF52840, and keeping the layouts identical to the firmware's matters more.
+ */
 static struct vfx_solid_cfg solid_cfg[MAX_LAYERS];
 static struct vfx_solid_state solid_state[MAX_LAYERS];
 static struct vfx_gradient_cfg grad_cfg[MAX_LAYERS];
 static struct vfx_gradient_state grad_state[MAX_LAYERS];
 static uint32_t grad_stops[MAX_LAYERS][MAX_STOPS];
 
+static struct vfx_breathe_cfg breathe_cfg[MAX_LAYERS];
+static struct vfx_breathe_state breathe_state[MAX_LAYERS];
+static struct vfx_wave_cfg wave_cfg[MAX_LAYERS];
+static struct vfx_twinkle_cfg twinkle_cfg[MAX_LAYERS];
+static struct vfx_plasma_cfg plasma_cfg[MAX_LAYERS];
+static struct vfx_ripple_cfg ripple_cfg[MAX_LAYERS];
+static struct vfx_ripple_state ripple_state[MAX_LAYERS];
+static struct vfx_keyflash_cfg keyflash_cfg[MAX_LAYERS];
+static struct vfx_keyflash_state keyflash_state[MAX_LAYERS];
+static struct vfx_trail_cfg trail_cfg[MAX_LAYERS];
+static struct vfx_trail_state trail_state[MAX_LAYERS];
+static struct vfx_layer_state_cfg layer_state_cfg[MAX_LAYERS];
+static uint32_t layer_state_colors[MAX_LAYERS][MAX_STOPS];
+static struct vfx_battery_cfg battery_cfg[MAX_LAYERS];
+static struct vfx_ble_profile_cfg ble_cfg[MAX_LAYERS];
+static struct vfx_caps_word_cfg caps_cfg[MAX_LAYERS];
+
+/* Stateless generators still need a state pointer. */
+static uint8_t stateless[MAX_LAYERS];
+
 static uint8_t scratch[SCRATCH_BYTES];
+
+/* The key map needs storage of its own rather than pointing into the shared
+ * staging buffer: loading a scene writes gradient stops through scratch, which
+ * would leave ctx.key_pixels aimed at colour data and every reactive effect
+ * originating from a nonsense pixel.
+ */
+static uint8_t key_map[MAX_PIXELS];
 
 static struct vfx_scene scene = {.name = "sim", .layers = layers, .num_layers = 0};
 
@@ -220,6 +252,221 @@ EXPORT int vfx_sim_add_gradient(int zone, int blend, int opacity, int scroll_spe
     return num_layers - 1;
 }
 
+/* Generator ids shared with app.js. Adding one means appending here and in
+ * the LAYER_TYPES table on the page.
+ */
+enum sim_layer_type {
+    SIM_SOLID = 0,
+    SIM_GRADIENT,
+    SIM_BREATHE,
+    SIM_WAVE,
+    SIM_TWINKLE,
+    SIM_PLASMA,
+    SIM_RIPPLE,
+    SIM_KEYFLASH,
+    SIM_TRAIL,
+    SIM_LAYER_STATE,
+    SIM_BATTERY,
+    SIM_BLE_PROFILE,
+    SIM_CAPS_WORD,
+};
+
+/* One entry point for every generator whose config is a colour plus up to
+ * three numbers, which is all of them but the three below.
+ */
+EXPORT int vfx_sim_add_layer(int type, int zone, int blend, int opacity, uint32_t color, int a,
+                             int b, int c) {
+    struct vfx_layer *l = next_layer(zone, blend, opacity);
+
+    if (!l) {
+        return -1;
+    }
+
+    const int i = num_layers;
+
+    l->state = &stateless[i];
+
+    switch (type) {
+    case SIM_BREATHE:
+        breathe_cfg[i] = (struct vfx_breathe_cfg){
+            .color = color, .period_ms = (uint16_t)a, .min_level = (uint8_t)b};
+        l->api = &vfx_layer_breathe_api;
+        l->config = &breathe_cfg[i];
+        l->state = &breathe_state[i];
+        break;
+
+    case SIM_WAVE:
+        wave_cfg[i] = (struct vfx_wave_cfg){.color = color,
+                                            .wavelength = (uint16_t)a,
+                                            .period_ms = (uint16_t)b,
+                                            .depth = (uint8_t)c};
+        l->api = &vfx_layer_wave_api;
+        l->config = &wave_cfg[i];
+        break;
+
+    case SIM_TWINKLE:
+        twinkle_cfg[i] = (struct vfx_twinkle_cfg){
+            .color = color, .period_ms = (uint16_t)a, .density = (uint8_t)b};
+        l->api = &vfx_layer_twinkle_api;
+        l->config = &twinkle_cfg[i];
+        break;
+
+    case SIM_PLASMA:
+        plasma_cfg[i] = (struct vfx_plasma_cfg){.color = color,
+                                                .scale = (uint16_t)a,
+                                                .period_ms = (uint16_t)b,
+                                                .hue_spread = (uint8_t)c};
+        l->api = &vfx_layer_plasma_api;
+        l->config = &plasma_cfg[i];
+        break;
+
+    case SIM_RIPPLE:
+        ripple_cfg[i] = (struct vfx_ripple_cfg){
+            .color = color, .decay_ms = (uint16_t)a, .speed = (uint16_t)b, .width = (uint8_t)c};
+        l->api = &vfx_layer_ripple_api;
+        l->config = &ripple_cfg[i];
+        l->state = &ripple_state[i];
+        ripple_state[i] = (struct vfx_ripple_state){0};
+        break;
+
+    case SIM_KEYFLASH:
+        keyflash_cfg[i] = (struct vfx_keyflash_cfg){
+            .color = color, .decay_ms = (uint16_t)a, .spread = (uint8_t)b};
+        l->api = &vfx_layer_keyflash_api;
+        l->config = &keyflash_cfg[i];
+        l->state = &keyflash_state[i];
+        keyflash_state[i] = (struct vfx_keyflash_state){0};
+        break;
+
+    case SIM_TRAIL:
+        trail_cfg[i] = (struct vfx_trail_cfg){
+            .color = color, .decay_ms = (uint16_t)a, .spread = (uint8_t)b};
+        l->api = &vfx_layer_trail_api;
+        l->config = &trail_cfg[i];
+        l->state = &trail_state[i];
+        trail_state[i] = (struct vfx_trail_state){0};
+        break;
+
+    case SIM_CAPS_WORD:
+        caps_cfg[i] = (struct vfx_caps_word_cfg){.color = color, .period_ms = (uint16_t)a};
+        l->api = &vfx_layer_caps_word_api;
+        l->config = &caps_cfg[i];
+        break;
+
+    default:
+        return -1;
+    }
+
+    scene.num_layers = (uint8_t)(++num_layers);
+
+    return i;
+}
+
+EXPORT int vfx_sim_add_layer_state(int zone, int blend, int opacity, int num_colors) {
+    struct vfx_layer *l = next_layer(zone, blend, opacity);
+
+    if (!l || num_colors < 1 || num_colors > MAX_STOPS) {
+        return -1;
+    }
+
+    const int i = num_layers;
+    const uint32_t *staged = (const uint32_t *)(void *)scratch;
+
+    for (int k = 0; k < num_colors; k++) {
+        layer_state_colors[i][k] = staged[k];
+    }
+
+    layer_state_cfg[i] = (struct vfx_layer_state_cfg){.colors = layer_state_colors[i],
+                                                      .num_colors = (uint8_t)num_colors};
+
+    l->api = &vfx_layer_layer_state_api;
+    l->config = &layer_state_cfg[i];
+    l->state = &stateless[i];
+
+    scene.num_layers = (uint8_t)(++num_layers);
+
+    return i;
+}
+
+EXPORT int vfx_sim_add_battery(int zone, int blend, int opacity, uint32_t low, uint32_t high,
+                               uint32_t empty, int warn_below) {
+    struct vfx_layer *l = next_layer(zone, blend, opacity);
+
+    if (!l) {
+        return -1;
+    }
+
+    const int i = num_layers;
+
+    battery_cfg[i] = (struct vfx_battery_cfg){.low_color = low,
+                                              .high_color = high,
+                                              .empty_color = empty,
+                                              .warn_below = (uint8_t)warn_below};
+
+    l->api = &vfx_layer_battery_api;
+    l->config = &battery_cfg[i];
+    l->state = &stateless[i];
+
+    scene.num_layers = (uint8_t)(++num_layers);
+
+    return i;
+}
+
+EXPORT int vfx_sim_add_ble_profile(int zone, int blend, int opacity, uint32_t connected,
+                                   uint32_t disconnected, uint32_t usb) {
+    struct vfx_layer *l = next_layer(zone, blend, opacity);
+
+    if (!l) {
+        return -1;
+    }
+
+    const int i = num_layers;
+
+    ble_cfg[i] = (struct vfx_ble_profile_cfg){.connected_color = connected,
+                                              .disconnected_color = disconnected,
+                                              .usb_color = usb};
+
+    l->api = &vfx_layer_ble_profile_api;
+    l->config = &ble_cfg[i];
+    l->state = &stateless[i];
+
+    scene.num_layers = (uint8_t)(++num_layers);
+
+    return i;
+}
+
+EXPORT void vfx_sim_set_status(int active_layer, int battery, int profile, int connected, int usb,
+                               int caps) {
+    struct vfx_status *st = vfx_status_mutable();
+
+    st->active_layer = (uint8_t)active_layer;
+    st->battery_level = (uint8_t)battery;
+    st->ble_profile = (uint8_t)profile;
+    st->ble_connected = connected != 0;
+    st->usb_output = usb != 0;
+    st->caps_word = caps != 0;
+}
+
+EXPORT void vfx_sim_set_key_map(int num_keys) {
+    if (num_keys <= 0) {
+        ctx.key_pixels = NULL;
+        ctx.num_keys = 0;
+        return;
+    }
+
+    if (num_keys > MAX_PIXELS) {
+        num_keys = MAX_PIXELS;
+    }
+
+    /* Copied out of the staging buffer, not aliased to it. */
+    for (int i = 0; i < num_keys; i++) {
+        key_map[i] = scratch[i];
+    }
+
+    ctx.key_pixels = key_map;
+    ctx.num_keys = (uint16_t)num_keys;
+}
+
 /* ------------------------------------------------------------------- render */
 
 EXPORT void vfx_sim_set_power_policy(int blackout_delay_ms, int settle_ms) {
@@ -267,5 +514,5 @@ EXPORT int vfx_sim_any_lit(void) { return last_lit ? 1 : 0; }
 EXPORT int vfx_sim_is_animating(void) { return vfx_scene_is_animating(&scene, &ctx) ? 1 : 0; }
 
 EXPORT void vfx_sim_key_event(int position, int pressed) {
-    vfx_scene_key_event(&scene, (uint32_t)position, pressed != 0);
+    vfx_scene_key_event(&scene, &ctx, (uint32_t)position, pressed != 0, ctx.time_ms);
 }

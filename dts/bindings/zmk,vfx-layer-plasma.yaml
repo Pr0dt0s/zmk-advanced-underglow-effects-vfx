@@ -1,0 +1,32 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Two sine waves at different rates, summed, driving a hue swing around
+  the base color. Reads as slow organic movement rather than a sweep.
+
+compatible: "zmk,vfx-layer-plasma"
+
+include: vfx-layer-common.yaml
+
+properties:
+  color:
+    type: int
+    required: true
+    description: |
+      Packed color, built with VFX_HSB(h, s, b).
+  scale:
+    type: int
+    default: 0
+    description: |
+      Virtual pixels per cycle of the first wave. 0 fits one to the board.
+  period-ms:
+    type: int
+    default: 6000
+    description: |
+      Milliseconds per cycle of the animation.
+  hue-spread:
+    type: int
+    default: 40
+    description: |
+      Degrees of hue swing either side of the base color.

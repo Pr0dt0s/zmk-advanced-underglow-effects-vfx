@@ -67,6 +67,71 @@
             };
         };
 
+        vfx_breathe: vfx_breathe {
+            compatible = "zmk,vfx-scene";
+            display-name = "Breathe";
+
+            base {
+                compatible = "zmk,vfx-layer-breathe";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(155, 90, 100)>;
+                period-ms = <4500>;
+                /* Never reaches black, so the power gate stays out of it. */
+                min-level = <20>;
+            };
+        };
+
+        vfx_plasma: vfx_plasma {
+            compatible = "zmk,vfx-scene";
+            display-name = "Plasma";
+
+            base {
+                compatible = "zmk,vfx-layer-plasma";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(275, 90, 85)>;
+                scale = <14>;
+                period-ms = <7000>;
+                hue-spread = <70>;
+            };
+        };
+
+        vfx_twinkle: vfx_twinkle {
+            compatible = "zmk,vfx-scene";
+            display-name = "Twinkle";
+
+            night {
+                compatible = "zmk,vfx-layer-solid";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(235, 100, 10)>;
+            };
+
+            stars {
+                compatible = "zmk,vfx-layer-twinkle";
+                zone = <&vfx_all>;
+                blend = <VFX_BLEND_SCREEN>;
+                color = <VFX_HSB(45, 25, 100)>;
+                period-ms = <1600>;
+                density = <55>;
+            };
+        };
+
+        /* Reactive only, so between keypresses every pixel is black and the
+         * power gate cuts the rail. Typing wakes it.
+         */
+        vfx_reactive: vfx_reactive {
+            compatible = "zmk,vfx-scene";
+            display-name = "Reactive";
+
+            ripples {
+                compatible = "zmk,vfx-layer-ripple";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(190, 40, 100)>;
+                decay-ms = <700>;
+                speed = <45>;
+                width = <3>;
+            };
+        };
+
         vfx_ember: vfx_ember {
             compatible = "zmk,vfx-scene";
             display-name = "Ember";
@@ -89,6 +154,64 @@
                 stops = <VFX_HSB(10, 100, 55) VFX_HSB(35, 100, 10)>;
                 scroll-speed = <5>;
                 span = <12>;
+            };
+        };
+
+        /* Splits the strip into three bands and shows real state in each.
+         * The zone ranges assume at least 36 pixels per half; adjust them to
+         * your own strip.
+         */
+        vfx_status_zones {
+            vfx_battery_zone: vfx_battery_zone {
+                compatible = "zmk,vfx-zone";
+                range = <0 6>;
+            };
+
+            vfx_profile_zone: vfx_profile_zone {
+                compatible = "zmk,vfx-zone";
+                range = <8 5>;
+            };
+
+            vfx_layer_zone: vfx_layer_zone {
+                compatible = "zmk,vfx-zone";
+                range = <30 6>;
+            };
+        };
+
+        vfx_status: vfx_status {
+            compatible = "zmk,vfx-scene";
+            display-name = "Status";
+
+            wash {
+                compatible = "zmk,vfx-layer-solid";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(220, 40, 6)>;
+            };
+
+            battery {
+                compatible = "zmk,vfx-layer-battery";
+                zone = <&vfx_battery_zone>;
+                high-color = <VFX_HSB(120, 100, 70)>;
+                low-color = <VFX_HSB(0, 100, 80)>;
+                warn-below = <25>;
+            };
+
+            profile {
+                compatible = "zmk,vfx-layer-ble-profile";
+                zone = <&vfx_profile_zone>;
+                connected-color = <VFX_HSB(210, 100, 80)>;
+                disconnected-color = <VFX_HSB(20, 100, 50)>;
+                usb-color = <VFX_HSB(120, 100, 70)>;
+            };
+
+            layers {
+                compatible = "zmk,vfx-layer-layer-state";
+                zone = <&vfx_layer_zone>;
+                /* Base layer is black, so it draws nothing and the wash
+                 * underneath shows through.
+                 */
+                colors = <VFX_BLACK VFX_HSB(50, 100, 70) VFX_HSB(280, 100, 70)
+                          VFX_HSB(0, 100, 70)>;
             };
         };
     };

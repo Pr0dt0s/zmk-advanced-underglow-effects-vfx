@@ -1,0 +1,27 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Lights the pixels nearest a pressed key and fades them in place.
+  The cheaper, more legible cousin of the ripple.
+
+compatible: "zmk,vfx-layer-keyflash"
+
+include: vfx-layer-common.yaml
+
+properties:
+  color:
+    type: int
+    required: true
+    description: |
+      Packed color, built with VFX_HSB(h, s, b).
+  decay-ms:
+    type: int
+    default: 400
+    description: |
+      How long a flash takes to fade out.
+  spread:
+    type: int
+    default: 2
+    description: |
+      Virtual pixels either side of the key that light up.

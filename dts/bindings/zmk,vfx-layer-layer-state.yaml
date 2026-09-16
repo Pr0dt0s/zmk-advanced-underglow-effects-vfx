@@ -1,0 +1,19 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Colors its zone according to the highest active keymap layer.
+  List one color per layer, in layer order.
+
+compatible: "zmk,vfx-layer-layer-state"
+
+include: vfx-layer-common.yaml
+
+properties:
+  colors:
+    type: array
+    required: true
+    description: |
+      One packed color per keymap layer. A layer given a color with
+      zero brightness draws nothing, which is the usual choice for the
+      base layer so it stays out of the way.

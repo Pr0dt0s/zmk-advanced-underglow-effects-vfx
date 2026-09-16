@@ -1,0 +1,28 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  A decaying heat map: keypresses deposit heat around the key, which
+  bleeds away over time. Overlapping presses build up rather than
+  competing for a fixed number of slots, so fast typing leaves a wake.
+
+compatible: "zmk,vfx-layer-trail"
+
+include: vfx-layer-common.yaml
+
+properties:
+  color:
+    type: int
+    required: true
+    description: |
+      Packed color, built with VFX_HSB(h, s, b).
+  decay-ms:
+    type: int
+    default: 1500
+    description: |
+      How long heat takes to fall from full to nothing.
+  spread:
+    type: int
+    default: 2
+    description: |
+      Virtual pixels either side of the key that receive heat.

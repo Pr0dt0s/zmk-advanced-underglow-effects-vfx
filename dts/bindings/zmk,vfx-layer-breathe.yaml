@@ -1,0 +1,30 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Pulses its zone between a floor and the full color.
+  Equivalent to ZMK's built-in breathe effect, but the floor means it
+  need not dip all the way to black.
+
+compatible: "zmk,vfx-layer-breathe"
+
+include: vfx-layer-common.yaml
+
+properties:
+  color:
+    type: int
+    required: true
+    description: |
+      Packed color, built with VFX_HSB(h, s, b).
+  period-ms:
+    type: int
+    default: 4000
+    description: |
+      Milliseconds for one full in-and-out cycle at speed 3.
+      The engine's speed setting scales this.
+  min-level:
+    type: int
+    default: 0
+    description: |
+      0-255 floor. 0 breathes to black; raise it to keep the zone lit
+      throughout, which also keeps the power gate from firing.

@@ -14,6 +14,8 @@ if(CONFIG_ZMK_VFX)
     src/scenes.c
     src/behavior_vfx.c
     src/power_policy.c
+    src/mathtab.c
+    src/status.c
   )
 
   zephyr_library_sources_ifdef(CONFIG_ZMK_VFX_AUTO_POWER_GATE src/power.c)
@@ -21,6 +23,11 @@ if(CONFIG_ZMK_VFX)
   zephyr_library_sources_ifdef(CONFIG_ZMK_VFX_RGB_UNDERGLOW_COMPAT
                                src/behavior_rgb_compat.c)
 
-  zephyr_library_sources(src/layers/solid.c)
-  zephyr_library_sources(src/layers/gradient.c)
+  zephyr_library_sources(
+    src/layers/solid.c
+    src/layers/gradient.c
+    src/layers/ambient.c
+    src/layers/reactive.c
+    src/layers/indicators.c
+  )
 endif()

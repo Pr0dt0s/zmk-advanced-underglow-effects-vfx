@@ -115,6 +115,16 @@ config ZMK_VFX_RGB_UNDERGLOW_COMPAT
       ignored: VFX sets saturation per layer in devicetree rather than
       globally.
 
+config ZMK_VFX_INDICATORS
+    bool "Feed keyboard state to the indicator layers"
+    default y
+    help
+      Subscribes to layer, battery, Bluetooth profile and caps word events
+      and makes them available to the zmk,vfx-layer-layer-state,
+      -battery, -ble-profile and -caps-word generators.
+
+      Turn off to drop those subscriptions if no scene uses them.
+
 config ZMK_VFX_AUTO_OFF_IDLE
     bool "Turn underglow off when the keyboard goes idle"
     default y

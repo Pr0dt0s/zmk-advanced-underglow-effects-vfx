@@ -90,7 +90,8 @@ bool vfx_scene_is_animating(const struct vfx_scene *scene, const struct vfx_fram
     return false;
 }
 
-void vfx_scene_key_event(const struct vfx_scene *scene, uint32_t position, bool pressed) {
+void vfx_scene_key_event(const struct vfx_scene *scene, const struct vfx_frame_ctx *ctx,
+                         uint32_t position, bool pressed, uint32_t time_ms) {
     if (!scene) {
         return;
     }
@@ -99,7 +100,7 @@ void vfx_scene_key_event(const struct vfx_scene *scene, uint32_t position, bool 
         const struct vfx_layer *layer = &scene->layers[l];
 
         if (layer->api->key_event) {
-            layer->api->key_event(layer, position, pressed);
+            layer->api->key_event(layer, ctx, position, pressed, time_ms);
         }
     }
 }

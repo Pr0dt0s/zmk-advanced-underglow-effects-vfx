@@ -10,7 +10,9 @@ CPPFLAGS = -DVFX_SIM -I../include
 LDLIBS   = -lm
 
 CORE = ../src/color.c ../src/zone.c ../src/render.c ../src/power_policy.c \
-       ../src/layers/solid.c ../src/layers/gradient.c
+       ../src/mathtab.c ../src/status.c \
+       ../src/layers/solid.c ../src/layers/gradient.c ../src/layers/ambient.c \
+       ../src/layers/reactive.c ../src/layers/indicators.c
 
 .PHONY: test clean
 test: test_core

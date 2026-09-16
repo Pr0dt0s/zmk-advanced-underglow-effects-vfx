@@ -15,6 +15,7 @@
 #include <zmk/vfx/engine.h>
 #include <zmk/vfx/power.h>
 #include <zmk/vfx/scenes.h>
+#include <zmk/vfx/status.h>
 #include <zmk/vfx/vfx.h>
 #include <zmk/workqueue.h>
 
@@ -22,10 +23,25 @@
 #include <zephyr/settings/settings.h>
 #endif
 
+#include <zmk/event_manager.h>
+#include <zmk/events/position_state_changed.h>
+
 #if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_OFF_IDLE)
 #include <zmk/activity.h>
-#include <zmk/event_manager.h>
 #include <zmk/events/activity_state_changed.h>
+#endif
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_INDICATORS)
+#include <zmk/events/battery_state_changed.h>
+#include <zmk/events/layer_state_changed.h>
+#include <zmk/keymap.h>
+#if IS_ENABLED(CONFIG_ZMK_BLE)
+#include <zmk/ble.h>
+#include <zmk/events/ble_active_profile_changed.h>
+#endif
+#if IS_ENABLED(CONFIG_ZMK_CAPS_WORD) || IS_ENABLED(CONFIG_ZMK_BEHAVIOR_CAPS_WORD)
+#include <zmk/events/caps_word_state_changed.h>
+#endif
 #endif
 
 LOG_MODULE_REGISTER(zmk_vfx, CONFIG_ZMK_VFX_LOG_LEVEL);
@@ -49,6 +65,18 @@ BUILD_ASSERT(!IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW),
 #define VFX_FRAME_MS (1000 / VFX_FPS)
 #define VFX_VIRTUAL_LENGTH DT_PROP_OR(VFX_ENGINE_NODE, virtual_length, STRIP_NUM_PIXELS)
 #define VFX_STRIP_OFFSET DT_PROP(VFX_ENGINE_NODE, strip_offset)
+
+#if DT_NODE_HAS_PROP(VFX_ENGINE_NODE, key_pixels)
+static const uint8_t key_pixels[] = DT_PROP(VFX_ENGINE_NODE, key_pixels);
+#define VFX_KEY_PIXELS key_pixels
+#define VFX_NUM_KEYS ((uint16_t)ARRAY_SIZE(key_pixels))
+#else
+/* No map given: vfx_key_pixel() spreads key positions evenly over the strip.
+ * Reactive effects still animate, they just will not line up with the keys.
+ */
+#define VFX_KEY_PIXELS NULL
+#define VFX_NUM_KEYS 0
+#endif
 
 static const struct device *const led_strip = DEVICE_DT_GET(STRIP_NODE);
 
@@ -95,6 +123,8 @@ static struct vfx_frame_ctx build_ctx(void) {
         .speed = state.speed,
         .brightness = brightness_ceiling(state.brightness),
         .hue_shift = state.hue_shift,
+        .key_pixels = VFX_KEY_PIXELS,
+        .num_keys = VFX_NUM_KEYS,
     };
 }
 
@@ -430,13 +460,7 @@ int32_t zmk_vfx_get_time_offset(void) { return state.time_offset; }
 #if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_OFF_IDLE)
 static bool on_before_idle;
 
-static int vfx_activity_listener(const zmk_event_t *eh) {
-    if (as_zmk_activity_state_changed(eh) == NULL) {
-        return -ENOTSUP;
-    }
-
-    const bool awake = zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE;
-
+static int vfx_auto_off(bool awake) {
     if (awake) {
         return on_before_idle ? zmk_vfx_on() : 0;
     }
@@ -445,9 +469,96 @@ static int vfx_activity_listener(const zmk_event_t *eh) {
 
     return state.on ? zmk_vfx_off() : 0;
 }
+#endif
 
-ZMK_LISTENER(zmk_vfx, vfx_activity_listener);
+static int vfx_event_listener(const zmk_event_t *eh) {
+    const struct zmk_position_state_changed *pos = as_zmk_position_state_changed(eh);
+
+    if (pos != NULL) {
+        /* Hand the press to the scene's reactive layers, stamped with the
+         * engine timebase rather than raw uptime so that a synced peripheral
+         * places it correctly, then ask for a frame: a scene that is purely
+         * reactive is idle until exactly this moment, and would otherwise
+         * stay parked with the rail gated.
+         */
+        const struct vfx_frame_ctx ctx = build_ctx();
+
+        vfx_scene_key_event(vfx_scene_get(state.scene), &ctx, pos->position, pos->state,
+                            ctx.time_ms);
+
+        if (pos->state) {
+            zmk_vfx_request_frame();
+        }
+
+        return ZMK_EV_EVENT_BUBBLE;
+    }
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_OFF_IDLE)
+    if (as_zmk_activity_state_changed(eh) != NULL) {
+        return vfx_auto_off(zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE);
+    }
+#endif
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_INDICATORS)
+    {
+        struct vfx_status *status = vfx_status_mutable();
+        bool changed = false;
+
+        if (as_zmk_layer_state_changed(eh) != NULL) {
+            status->active_layer = (uint8_t)zmk_keymap_highest_layer_active();
+            changed = true;
+        }
+
+        const struct zmk_battery_state_changed *bat = as_zmk_battery_state_changed(eh);
+        if (bat != NULL) {
+            status->battery_level = bat->state_of_charge;
+            changed = true;
+        }
+
+#if IS_ENABLED(CONFIG_ZMK_BLE)
+        if (as_zmk_ble_active_profile_changed(eh) != NULL) {
+            status->ble_profile = (uint8_t)zmk_ble_active_profile_index();
+            status->ble_connected = zmk_ble_active_profile_is_connected();
+            changed = true;
+        }
+#endif
+
+#if IS_ENABLED(CONFIG_ZMK_CAPS_WORD) || IS_ENABLED(CONFIG_ZMK_BEHAVIOR_CAPS_WORD)
+        const struct zmk_caps_word_state_changed *caps = as_zmk_caps_word_state_changed(eh);
+        if (caps != NULL) {
+            status->caps_word = caps->active;
+            changed = true;
+        }
+#endif
+
+        if (changed) {
+            /* Indicator layers are static between events, so the engine parks
+             * its timer; without this the new state would not be drawn.
+             */
+            zmk_vfx_request_frame();
+        }
+    }
+#endif
+
+    return ZMK_EV_EVENT_BUBBLE;
+}
+
+ZMK_LISTENER(zmk_vfx, vfx_event_listener);
+ZMK_SUBSCRIPTION(zmk_vfx, zmk_position_state_changed);
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_OFF_IDLE)
 ZMK_SUBSCRIPTION(zmk_vfx, zmk_activity_state_changed);
+#endif
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_INDICATORS)
+ZMK_SUBSCRIPTION(zmk_vfx, zmk_layer_state_changed);
+ZMK_SUBSCRIPTION(zmk_vfx, zmk_battery_state_changed);
+#if IS_ENABLED(CONFIG_ZMK_BLE)
+ZMK_SUBSCRIPTION(zmk_vfx, zmk_ble_active_profile_changed);
+#endif
+#if IS_ENABLED(CONFIG_ZMK_CAPS_WORD) || IS_ENABLED(CONFIG_ZMK_BEHAVIOR_CAPS_WORD)
+ZMK_SUBSCRIPTION(zmk_vfx, zmk_caps_word_state_changed);
+#endif
 #endif
 
 static int zmk_vfx_init(void) {
