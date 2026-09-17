@@ -40,6 +40,7 @@ extern const struct vfx_layer_api vfx_layer_wave_api;
 extern const struct vfx_layer_api vfx_layer_twinkle_api;
 extern const struct vfx_layer_api vfx_layer_plasma_api;
 extern const struct vfx_layer_api vfx_layer_ripple_api;
+extern const struct vfx_layer_api vfx_layer_water_api;
 extern const struct vfx_layer_api vfx_layer_keyflash_api;
 extern const struct vfx_layer_api vfx_layer_trail_api;
 extern const struct vfx_layer_api vfx_layer_layer_state_api;

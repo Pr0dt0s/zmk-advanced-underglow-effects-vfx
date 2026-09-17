@@ -28,6 +28,8 @@ const LAYER_SPECS = {
   ripple:     { id: 6,  args: [['decay_ms', 600], ['speed', 40], ['width', 3]] },
   keyflash:   { id: 7,  args: [['decay_ms', 400], ['spread', 2]] },
   trail:      { id: 8,  args: [['decay_ms', 1500], ['spread', 2]] },
+  water:      { id: 13, args: [['wavelength', 8], ['speed', 30], ['lifetime_ms', 2500],
+                              ['drop_rate_ms', 0], ['amplitude', 200], ['damping', 8]] },
   'layer-state': { id: 9,  args: [] },
   battery:       { id: 10, args: [['warn_below', 20]] },
   'ble-profile': { id: 11, args: [] },
@@ -110,6 +112,15 @@ class Half {
           rc = this.e.vfx_sim_add_layer_state(zid, blend, opacity, l.colors.length);
           break;
         }
+
+        case 'water':
+          rc = this.e.vfx_sim_add_water(zid, blend, opacity,
+                                        packHsb(...l.color),
+                                        l.crest_color ? packHsb(...l.crest_color) : 0,
+                                        l.wavelength ?? 8, l.speed ?? 30,
+                                        l.lifetime_ms ?? 2500, l.drop_rate_ms ?? 0,
+                                        l.amplitude ?? 200, l.damping ?? 8);
+          break;
 
         case 'battery':
           rc = this.e.vfx_sim_add_battery(zid, blend, opacity,
@@ -375,6 +386,8 @@ function toDevicetree(scene, ledsPerHalf) {
     } else if (l.type === 'layer-state') {
       const colors = l.colors.map(c => (c === null ? 'VFX_BLACK' : hsb(c)));
       out.push(`${ind}    colors = <${colors.join(' ')}>;`);
+    } else if (l.type === 'water') {
+      if (l.crest_color) out.push(`${ind}    crest-color = <${hsb(l.crest_color)}>;`);
     } else if (l.type === 'battery') {
       out.push(`${ind}    high-color = <${hsb(l.high_color)}>;`);
       out.push(`${ind}    low-color = <${hsb(l.low_color)}>;`);
@@ -469,6 +482,26 @@ const PRESETS = {
     zones: { all: { range: [0, 255] } },
     layers: [
       { type: 'breathe', zone: 'all', color: [155, 90, 100], period_ms: 4500, min_level: 20 },
+    ],
+  },
+  Water: {
+    name: 'Water',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'water', zone: 'all',
+        color: [205, 95, 30], crest_color: [190, 30, 100],
+        wavelength: 10, speed: 26, lifetime_ms: 3200, drop_rate_ms: 700,
+        amplitude: 255, damping: 5 },
+    ],
+  },
+  'Water (typing only)': {
+    name: 'Water (typing only)',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'water', zone: 'all',
+        color: [205, 95, 14], crest_color: [185, 25, 100],
+        wavelength: 9, speed: 34, lifetime_ms: 2400, drop_rate_ms: 0,
+        amplitude: 255, damping: 6 },
     ],
   },
   'Status bar': {

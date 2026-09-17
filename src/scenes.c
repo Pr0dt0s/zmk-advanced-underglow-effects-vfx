@@ -136,6 +136,22 @@ DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_plasma, VFX_PLASMA_DEFINE)
 
 DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_ripple, VFX_RIPPLE_DEFINE)
 
+#define VFX_WATER_DEFINE(node)                                                                     \
+    static const struct vfx_water_cfg VFX_CFG_SYM(node) = {                                        \
+        .color = DT_PROP(node, color),                                                             \
+        .crest_color = DT_PROP(node, crest_color),                                                 \
+        .wavelength = DT_PROP(node, wavelength),                                                   \
+        .speed = DT_PROP(node, speed),                                                             \
+        .lifetime_ms = DT_PROP(node, lifetime_ms),                                                 \
+        .drop_rate_ms = DT_PROP(node, drop_rate_ms),                                               \
+        .amplitude = DT_PROP(node, amplitude),                                                     \
+        .damping = DT_PROP(node, damping),                                                         \
+    };                                                                                             \
+    static struct vfx_water_state VFX_STATE_SYM(node);                                             \
+    static const struct vfx_layer_api *const VFX_API_SYM(node) = &vfx_layer_water_api;
+
+DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_water, VFX_WATER_DEFINE)
+
 #define VFX_KEYFLASH_DEFINE(node)                                                                  \
     static const struct vfx_keyflash_cfg VFX_CFG_SYM(node) = {                                     \
         .color = DT_PROP(node, color),                                                             \

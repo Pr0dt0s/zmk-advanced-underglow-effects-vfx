@@ -85,6 +85,30 @@ struct vfx_ripple_state {
     uint8_t next;
 };
 
+/* Overlapping ambient drops. Four is enough that rain reads as continuous
+ * without the per-pixel loop growing expensive.
+ */
+#define VFX_WATER_MAX_AMBIENT 4
+
+struct vfx_water_cfg {
+    uint32_t color;        /* still water */
+    uint32_t crest_color;  /* wave peaks; 0 just brightens `color` */
+    uint16_t wavelength;   /* virtual pixels per wave cycle */
+    uint16_t speed;        /* virtual pixels per second the wavefront travels */
+    uint16_t lifetime_ms;  /* how long one drop keeps rippling */
+    uint16_t drop_rate_ms; /* gap between ambient drops; 0 = keypresses only */
+    uint8_t amplitude;     /* 0-255, how hard the waves move the surface */
+    uint8_t damping;       /* how quickly waves lose height with distance */
+};
+
+struct vfx_water_state {
+    /* Keypress drops only. Ambient ones are a function of time, so they need
+     * no storage and both halves of a split agree on them for free.
+     */
+    struct vfx_ripple_slot drops[VFX_MAX_RIPPLES];
+    uint8_t next;
+};
+
 struct vfx_keyflash_cfg {
     uint32_t color;
     uint16_t decay_ms;

@@ -29,6 +29,7 @@ if(CONFIG_ZMK_VFX)
     src/layers/gradient.c
     src/layers/ambient.c
     src/layers/reactive.c
+    src/layers/water.c
     src/layers/indicators.c
   )
 

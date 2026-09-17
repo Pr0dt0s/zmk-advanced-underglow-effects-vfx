@@ -132,6 +132,49 @@
             };
         };
 
+        /* Rain on a dark pool, which typing also disturbs. Drops from the
+         * two sources are the same kind of drop, so they interfere.
+         */
+        vfx_water: vfx_water {
+            compatible = "zmk,vfx-scene";
+            display-name = "Water";
+
+            surface {
+                compatible = "zmk,vfx-layer-water";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(205, 95, 30)>;
+                crest-color = <VFX_HSB(190, 30, 100)>;
+                wavelength = <10>;
+                speed = <26>;
+                lifetime-ms = <3200>;
+                drop-rate-ms = <700>;
+                amplitude = <255>;
+                damping = <5>;
+            };
+        };
+
+        /* No rain, so the surface is still until you type. The still water is
+         * dim rather than black, so the board is not dark at rest; drop the
+         * colour's brightness to 0 to let the power gate cut the rail between
+         * keypresses instead.
+         */
+        vfx_water_keys: vfx_water_keys {
+            compatible = "zmk,vfx-scene";
+            display-name = "Water (typing)";
+
+            surface {
+                compatible = "zmk,vfx-layer-water";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(205, 95, 14)>;
+                crest-color = <VFX_HSB(185, 25, 100)>;
+                wavelength = <9>;
+                speed = <34>;
+                lifetime-ms = <2400>;
+                amplitude = <255>;
+                damping = <6>;
+            };
+        };
+
         vfx_ember: vfx_ember {
             compatible = "zmk,vfx-scene";
             display-name = "Ember";

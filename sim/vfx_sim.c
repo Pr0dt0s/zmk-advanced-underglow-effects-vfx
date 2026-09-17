@@ -64,6 +64,8 @@ static struct vfx_ripple_cfg ripple_cfg[MAX_LAYERS];
 static struct vfx_ripple_state ripple_state[MAX_LAYERS];
 static struct vfx_keyflash_cfg keyflash_cfg[MAX_LAYERS];
 static struct vfx_keyflash_state keyflash_state[MAX_LAYERS];
+static struct vfx_water_cfg water_cfg[MAX_LAYERS];
+static struct vfx_water_state water_state[MAX_LAYERS];
 static struct vfx_trail_cfg trail_cfg[MAX_LAYERS];
 static struct vfx_trail_state trail_state[MAX_LAYERS];
 static struct vfx_layer_state_cfg layer_state_cfg[MAX_LAYERS];
@@ -268,6 +270,7 @@ enum sim_layer_type {
     SIM_LAYER_STATE,
     SIM_BATTERY,
     SIM_BLE_PROFILE,
+    SIM_WATER,
 };
 
 /* One entry point for every generator whose config is a colour plus up to
@@ -350,6 +353,38 @@ EXPORT int vfx_sim_add_layer(int type, int zone, int blend, int opacity, uint32_
     default:
         return -1;
     }
+
+    scene.num_layers = (uint8_t)(++num_layers);
+
+    return i;
+}
+
+EXPORT int vfx_sim_add_water(int zone, int blend, int opacity, uint32_t color, uint32_t crest,
+                             int wavelength, int speed, int lifetime_ms, int drop_rate_ms,
+                             int amplitude, int damping) {
+    struct vfx_layer *l = next_layer(zone, blend, opacity);
+
+    if (!l) {
+        return -1;
+    }
+
+    const int i = num_layers;
+
+    water_cfg[i] = (struct vfx_water_cfg){
+        .color = color,
+        .crest_color = crest,
+        .wavelength = (uint16_t)wavelength,
+        .speed = (uint16_t)speed,
+        .lifetime_ms = (uint16_t)lifetime_ms,
+        .drop_rate_ms = (uint16_t)drop_rate_ms,
+        .amplitude = (uint8_t)amplitude,
+        .damping = (uint8_t)damping,
+    };
+    water_state[i] = (struct vfx_water_state){0};
+
+    l->api = &vfx_layer_water_api;
+    l->config = &water_cfg[i];
+    l->state = &water_state[i];
 
     scene.num_layers = (uint8_t)(++num_layers);
 

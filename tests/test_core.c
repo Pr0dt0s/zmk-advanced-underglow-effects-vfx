@@ -878,6 +878,188 @@ static void test_sync_desired_survives_wrapping(void) {
     CHECK(want == 356, "expected a small positive delta across the wrap, got %d", want);
 }
 
+
+/* ---- water -------------------------------------------------------------- */
+
+static struct vfx_water_cfg water_cfg_base(void) {
+    return (struct vfx_water_cfg){
+        .color = VFX_HSB(210, 90, 30),
+        .crest_color = VFX_HSB(190, 40, 100),
+        .wavelength = 8,
+        .speed = 30,
+        .lifetime_ms = 2500,
+        .drop_rate_ms = 0, /* reactive only unless a test says otherwise */
+        .amplitude = 200,
+        .damping = 24,
+    };
+}
+
+static void test_water_still_until_disturbed(void) {
+    /* A reactive-only surface must be idle with nothing happening, so the
+     * engine parks its timer and the power gate can cut the rail.
+     */
+    struct vfx_water_cfg cfg = water_cfg_base();
+    struct vfx_water_state st = {0};
+    SCENE1(scene, &vfx_layer_water_api, &cfg, &st);
+
+    struct vfx_frame_ctx ctx = test_ctx();
+    ctx.num_keys = NPX;
+
+    CHECK(!vfx_scene_is_animating(&scene, &ctx),
+          "reactive-only water must report idle before any drop");
+
+    vfx_scene_key_event(&scene, &ctx, 18, true, 0);
+    CHECK(vfx_scene_is_animating(&scene, &ctx), "a drop must wake the surface");
+
+    /* And settle again once the drop has run its life. */
+    ctx.time_ms = cfg.lifetime_ms + 1;
+    struct vfx_rgb out[NPX];
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    CHECK(!vfx_scene_is_animating(&scene, &ctx), "the surface must settle after lifetime-ms");
+}
+
+static void test_water_rain_runs_without_keys(void) {
+    /* The general effect: drops keep falling with no input at all. */
+    struct vfx_water_cfg cfg = water_cfg_base();
+    cfg.drop_rate_ms = 400;
+    struct vfx_water_state st = {0};
+    SCENE1(scene, &vfx_layer_water_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    CHECK(vfx_scene_is_animating(&scene, &ctx), "raining water is always animating");
+
+    int changed = 0;
+    struct vfx_rgb prev[NPX];
+    ctx.time_ms = 1000;
+    vfx_render_frame(&scene, &ctx, prev, NULL);
+
+    for (uint32_t t = 1100; t <= 4000; t += 100) {
+        ctx.time_ms = t;
+        vfx_render_frame(&scene, &ctx, out, NULL);
+        if (memcmp(prev, out, sizeof(out)) != 0) changed++;
+        memcpy(prev, out, sizeof(out));
+    }
+
+    CHECK(changed > 20, "rain should keep the surface moving, only %d frames differed", changed);
+}
+
+static void test_water_wavefront_travels_outward(void) {
+    /* Pixels far from the drop must stay still until the front reaches them.
+     * That delay is what makes a disturbance spread rather than appear.
+     */
+    struct vfx_water_cfg cfg = water_cfg_base();
+    cfg.speed = 20;
+    cfg.damping = 0; /* isolate propagation from falloff */
+    struct vfx_water_state st = {0};
+    SCENE1(scene, &vfx_layer_water_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+    ctx.num_keys = NPX;
+    ctx.speed = 3; /* so the configured speed is used as-is */
+
+    vfx_scene_key_event(&scene, &ctx, 0, true, 0);
+
+    /* The far pixel is NPX-1 away, so at `speed` px/s the front reaches it
+     * only after this long. Sampling either side of that is the test.
+     */
+    const uint32_t arrival_ms = (uint32_t)(NPX - 1) * 1000U / cfg.speed;
+
+    ctx.time_ms = arrival_ms / 4; /* front still well short of the far end */
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    struct vfx_rgb before = out[NPX - 1];
+
+    ctx.time_ms = arrival_ms + 250; /* front has now passed it */
+    CHECK(ctx.time_ms < cfg.lifetime_ms, "test setup: the drop dies before the front arrives");
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    CHECK(memcmp(&before, &out[NPX - 1], sizeof(before)) != 0,
+          "the far pixel never moved, so the wavefront is not propagating");
+}
+
+static void test_water_drops_interfere(void) {
+    /* The point of carrying signed height: two drops must combine into one
+     * surface, not paint over each other. Rendering them together has to
+     * differ from either one alone.
+     */
+    struct vfx_water_cfg cfg = water_cfg_base();
+    struct vfx_rgb one[NPX], two[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+    ctx.num_keys = NPX;
+
+    struct vfx_water_state st_a = {0};
+    SCENE1(scene_a, &vfx_layer_water_api, &cfg, &st_a);
+    vfx_scene_key_event(&scene_a, &ctx, 8, true, 0);
+    ctx.time_ms = 400;
+    vfx_render_frame(&scene_a, &ctx, one, NULL);
+
+    struct vfx_water_state st_b = {0};
+    SCENE1(scene_b, &vfx_layer_water_api, &cfg, &st_b);
+    vfx_scene_key_event(&scene_b, &ctx, 8, true, 0);
+    vfx_scene_key_event(&scene_b, &ctx, 24, true, 0);
+    vfx_render_frame(&scene_b, &ctx, two, NULL);
+
+    CHECK(memcmp(one, two, sizeof(one)) != 0,
+          "a second drop changed nothing, so drops are not superposing");
+}
+
+static void test_water_rain_identical_on_both_halves(void) {
+    /* Ambient drops are hashed from the epoch number rather than stored, so
+     * two halves sharing a timebase must produce the same rain with nothing
+     * exchanged, exactly as the gradient and twinkle do.
+     */
+    struct vfx_water_cfg cfg = water_cfg_base();
+    cfg.drop_rate_ms = 500;
+
+    static struct vfx_zone whole = {.pixels = NULL, .start = 0, .len = NPX * 2};
+    struct vfx_water_state st_h = {0}, st_w = {0};
+
+    struct vfx_layer half_l = {.api = &vfx_layer_water_api, .zone = &full_zone, .config = &cfg,
+                               .state = &st_h, .blend = VFX_BLEND_NORMAL, .opacity = 255};
+    struct vfx_layer whole_l = half_l;
+    whole_l.zone = &whole;
+    whole_l.state = &st_w;
+
+    struct vfx_scene right = {.name = "r", .layers = &half_l, .num_layers = 1};
+    struct vfx_scene board = {.name = "w", .layers = &whole_l, .num_layers = 1};
+
+    struct vfx_rgb rout[NPX], wout[NPX * 2];
+    struct vfx_frame_ctx rctx = test_ctx(), wctx = test_ctx();
+
+    rctx.virtual_length = wctx.virtual_length = NPX * 2;
+    rctx.strip_offset = NPX;
+    wctx.num_pixels = NPX * 2;
+
+    for (uint32_t t = 0; t <= 3000; t += 700) {
+        rctx.time_ms = wctx.time_ms = t;
+        vfx_render_frame(&right, &rctx, rout, NULL);
+        vfx_render_frame(&board, &wctx, wout, NULL);
+
+        CHECK(memcmp(rout, wout + NPX, sizeof(rout)) == 0,
+              "rain differs between the half and whole-board render at t=%u", t);
+    }
+}
+
+static void test_water_still_surface_can_be_transparent(void) {
+    /* With an unlit base the layer must decline still pixels, so it can sit
+     * over another effect instead of flooding the strip.
+     */
+    struct vfx_water_cfg cfg = water_cfg_base();
+    cfg.color = VFX_HSB(210, 90, 0);
+    cfg.drop_rate_ms = 0;
+    struct vfx_water_state st = {0};
+    SCENE1(scene, &vfx_layer_water_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+    bool lit = true;
+
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(!lit, "an unlit still surface must draw nothing at all");
+}
+
 int main(void) {
     struct {
         const char *name;
@@ -917,6 +1099,12 @@ int main(void) {
         {"sync converges and settles", test_sync_converges_and_settles},
         {"sync handles negative drift", test_sync_handles_negative_drift},
         {"sync desired survives wrapping", test_sync_desired_survives_wrapping},
+        {"water still until disturbed", test_water_still_until_disturbed},
+        {"water rain runs without keys", test_water_rain_runs_without_keys},
+        {"water wavefront travels outward", test_water_wavefront_travels_outward},
+        {"water drops interfere", test_water_drops_interfere},
+        {"water rain identical on both halves", test_water_rain_identical_on_both_halves},
+        {"water still surface can be transparent", test_water_still_surface_can_be_transparent},
     };
 
     for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {

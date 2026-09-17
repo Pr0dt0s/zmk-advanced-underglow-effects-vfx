@@ -165,6 +165,7 @@ A zone length is clamped to the real `chain-length`, so `range = <0 255>` means
 | `zmk,vfx-layer-wave` | Travelling sine along the strip |
 | `zmk,vfx-layer-twinkle` | Scattered pixels fading up and out |
 | `zmk,vfx-layer-plasma` | Two summed sines swinging the hue |
+| `zmk,vfx-layer-water` | A rippling surface, disturbed by rain and by typing |
 | `zmk,vfx-layer-ripple` | Rings expanding from each pressed key |
 | `zmk,vfx-layer-keyflash` | Lights the pressed key and fades in place |
 | `zmk,vfx-layer-trail` | Decaying heat map that builds up as you type |
@@ -183,6 +184,14 @@ Battery works on both, and shows each half's own cell.
 Every generator takes `zone`, `blend` (`VFX_BLEND_NORMAL`, `_ADD`,
 `_MULTIPLY`, `_SCREEN`, `_MAX`) and `opacity`. See `dts/bindings/` for each
 one's own properties; `dts/vfx/presets.dtsi` has nine ready-made scenes.
+
+`water` is both an ambient and a reactive effect. Each drop sends out a
+decaying wavetrain, and overlapping drops sum as signed surface height before
+being coloured, so they interfere rather than drawing as separate rings.
+Ambient drops are derived from the clock, so both halves of a split agree on
+where the rain falls without exchanging anything. Set `drop-rate-ms = <0>` for
+a surface that only moves when you type, and give the still water zero
+brightness if you want the power gate to cut the rail between keypresses.
 
 Reactive generators need `key-pixels` on the engine node to know where a key
 sits on the strip. Without it, key positions are spread evenly over the board:
