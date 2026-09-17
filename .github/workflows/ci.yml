@@ -36,6 +36,12 @@ jobs:
       - name: Build
         run: ./sim/build.sh
 
+      # The self-contained build is what gets published as a Claude Artifact,
+      # where fetch is blocked. Building it here keeps the inlining in step
+      # with the page rather than breaking the next time it is needed.
+      - name: Build the single-file version
+        run: python3 sim/build-artifact.py
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/sim

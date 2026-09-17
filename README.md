@@ -83,6 +83,12 @@ keyboard produces.
 ./sim/build.sh && python3 -m http.server -d docs/sim
 ```
 
+`sim/build-artifact.py` folds the whole thing into one self-contained HTML
+file, inlining the stylesheet, the script, the key geometry and the
+WebAssembly module as base64. That version needs no server and no network at
+all, which is what makes it publishable somewhere the page cannot fetch its
+own assets.
+
 It runs two instances side by side, one per half, each with its own memory and
 animation state, which is what two MCUs actually are. You can:
 
