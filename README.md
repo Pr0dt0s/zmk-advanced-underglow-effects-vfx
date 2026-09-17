@@ -114,6 +114,11 @@ cd tests && make test
 
 Layers composite bottom to top in devicetree order.
 
+Zones and scenes are matched by `compatible` wherever they sit in the tree,
+and they must **not** sit under the engine node: a phandle from a node to its
+own descendant is a dependency cycle, which devicetree rejects outright.
+Give them a container of their own alongside it.
+
 ```dts
 #include <dt-bindings/zmk/vfx.h>
 
@@ -129,7 +134,9 @@ Layers composite bottom to top in devicetree order.
         strip-offset = <0>;      /* 36 on the right half */
 
         default-scene = <&aurora>;
+    };
 
+    my_vfx {
         zones {
             all:  all  { compatible = "zmk,vfx-zone"; range = <0 255>; };
             edge: edge { compatible = "zmk,vfx-zone"; pixels = <0 1 2 33 34 35>; };

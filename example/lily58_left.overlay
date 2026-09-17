@@ -35,11 +35,20 @@
         default-scene = <&vfx_aurora>;
 
         /* Everything added since the first release, so CI compiles every
-         * devicetree macro rather than only the ones the presets use.
+         * devicetree macro rather than only the ones the presets use. The
+         * scene itself is declared outside this node, below.
          */
         transition-ms = <350>;
         layer-scenes = <&vfx_aurora &vfx_matrix &example_status>;
+    };
 
+    /* Zones and scenes are matched by compatible wherever they sit in the
+     * tree, and they must not sit under the engine node: a phandle from a
+     * node to its own descendant is a dependency cycle, which devicetree
+     * rejects. <vfx/presets.dtsi> puts them in a container for the same
+     * reason.
+     */
+    example_vfx {
         zones {
             /* Written as the keys it is about rather than LED indices: the
              * engine resolves them through key-pixels at startup.

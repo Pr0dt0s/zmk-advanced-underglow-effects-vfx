@@ -480,7 +480,13 @@ function toDevicetree(scene, ledsPerHalf) {
   out.push('        /* 0 on the left half, ' + ledsPerHalf + ' on the right. */');
   out.push('        strip-offset = <0>;');
   out.push(`        default-scene = <&${ident(scene.name)}>;`);
+  out.push('    };');
   out.push('');
+  /* Zones and scenes go beside the engine, never inside it: a phandle from a
+   * node to its own descendant is a dependency cycle and devicetree rejects
+   * it outright. They are matched by compatible wherever they sit.
+   */
+  out.push('    vfx_scenes {');
   out.push('        zones {');
   for (const [name, z] of Object.entries(scene.zones || {})) {
     const body = Array.isArray(z.pixels)
