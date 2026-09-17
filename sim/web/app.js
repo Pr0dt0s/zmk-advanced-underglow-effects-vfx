@@ -7,6 +7,13 @@
  */
 
 const BLEND = { normal: 0, add: 1, multiply: 2, screen: 3, max: 4 };
+
+/* Which way an effect runs across the board. Named rather than numbered in
+ * the scene JSON, and turned back into VFX_AXIS_* on the way out.
+ */
+const AXIS = { strip: 0, x: 1, y: 2, radial: 3, angle: 4, spiral: 5 };
+const AXIS_NAME = ['VFX_AXIS_STRIP', 'VFX_AXIS_X', 'VFX_AXIS_Y',
+                   'VFX_AXIS_RADIAL', 'VFX_AXIS_ANGLE', 'VFX_AXIS_SPIRAL'];
 const BLEND_NAME = ['VFX_BLEND_NORMAL', 'VFX_BLEND_ADD', 'VFX_BLEND_MULTIPLY',
                     'VFX_BLEND_SCREEN', 'VFX_BLEND_MAX'];
 
@@ -21,9 +28,12 @@ const BLEND_NAME = ['VFX_BLEND_NORMAL', 'VFX_BLEND_ADD', 'VFX_BLEND_MULTIPLY',
 const LAYER_SPECS = {
   solid:      { id: 0,  args: [] },
   gradient:   { id: 1,  args: [] },
-  breathe:    { id: 2,  args: [['period_ms', 4000], ['min_level', 0]] },
-  wave:       { id: 3,  args: [['wavelength', 0], ['period_ms', 2000], ['depth', 255]] },
-  twinkle:    { id: 4,  args: [['period_ms', 1200], ['density', 40]] },
+  breathe:    { id: 2,  args: [['period_ms', 4000], ['min_level', 0], [null, 0],
+                              ['hue_swing', 0]] },
+  wave:       { id: 3,  args: [['wavelength', 0], ['period_ms', 2000], ['depth', 255],
+                              ['axis', 0]] },
+  twinkle:    { id: 4,  args: [['period_ms', 1200], ['density', 40], [null, 0],
+                              ['hue_spread', 0]] },
   plasma:     { id: 5,  args: [['scale', 0], ['period_ms', 6000], ['hue_spread', 40]] },
   ripple:     { id: 6,  args: [['decay_ms', 600], ['speed', 50], ['width', 10]] },
   keyflash:   { id: 7,  args: [['decay_ms', 400], ['spread', 12]] },
@@ -88,8 +98,15 @@ class Half {
       if (blend === undefined) throw new Error(`layer ${i} has unknown blend "${l.blend}"`);
       const opacity = l.opacity ?? 255;
 
-      const args = spec.args.map(([name, dflt]) => l[name] ?? dflt);
-      while (args.length < 3) args.push(0);
+      /* A null name is a gap in the generator's argument list: the config
+       * field it would fill does not exist for this type.
+       */
+      const args = spec.args.map(([name, dflt]) => {
+        if (name === null) return dflt;
+        if (name === 'axis') return AXIS[l.axis ?? 'strip'] ?? 0;
+        return l[name] ?? dflt;
+      });
+      while (args.length < 4) args.push(0);
 
       let rc;
       switch (l.type) {
@@ -102,7 +119,8 @@ class Half {
           const scratch = this.e.vfx_sim_scratch();
           l.stops.forEach((c, k) => view.setUint32(scratch + k * 4, packHsb(...c), true));
           rc = this.e.vfx_sim_add_gradient(zid, blend, opacity,
-                                           l.scroll_speed ?? 0, l.span ?? 0, l.stops.length);
+                                           l.scroll_speed ?? 0, l.span ?? 0, l.stops.length,
+                                           AXIS[l.axis ?? 'strip'] ?? 0);
           break;
         }
 
@@ -148,7 +166,7 @@ class Half {
 
         default:
           rc = this.e.vfx_sim_add_layer(spec.id, zid, blend, opacity, packHsb(...l.color),
-                                        args[0], args[1], args[2]);
+                                        args[0], args[1], args[2], args[3]);
           break;
       }
 
@@ -437,10 +455,16 @@ function toDevicetree(scene, ledsPerHalf) {
       if (l.usb_color) out.push(`${ind}    usb-color = <${hsb(l.usb_color)}>;`);
     }
 
+    if (l.axis && l.axis !== 'strip') {
+      out.push(`${ind}    axis = <${AXIS_NAME[AXIS[l.axis]]}>;`);
+    }
+
     /* Only emit numeric properties that differ from the binding's default,
      * so the pasted devicetree stays as short as what was actually chosen.
      */
     for (const [name, dflt] of spec.args) {
+      if (name === null || name === 'axis') continue; /* a gap, or emitted above */
+
       const v = l[name];
       if (v !== undefined && v !== dflt) {
         out.push(`${ind}    ${name.replace(/_/g, '-')} = <${v}>;`);
@@ -559,6 +583,33 @@ const PRESETS = {
       { type: 'matrix', zone: 'all',
         color: [125, 100, 60], head_color: [110, 20, 100],
         speed: 150, tail: 24, drop_rate_ms: 0, columns: 12, jitter: 0, head_size: 8 },
+    ],
+  },
+  Pinwheel: {
+    name: 'Pinwheel',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'gradient', zone: 'all', axis: 'angle',
+        stops: [[0, 100, 70], [60, 100, 70], [120, 100, 70],
+                [200, 100, 70], [280, 100, 70], [330, 100, 70]],
+        scroll_speed: 40 },
+    ],
+  },
+  Spiral: {
+    name: 'Spiral',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'gradient', zone: 'all', axis: 'spiral',
+        stops: [[190, 95, 75], [230, 100, 20], [280, 95, 70], [230, 100, 20]],
+        scroll_speed: 55 },
+    ],
+  },
+  'Out and in': {
+    name: 'Out and in',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'wave', zone: 'all', axis: 'radial',
+        color: [175, 85, 90], wavelength: 0, period_ms: 2600, depth: 220 },
     ],
   },
   'Status bar': {

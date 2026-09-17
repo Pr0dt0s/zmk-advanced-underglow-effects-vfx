@@ -1573,6 +1573,235 @@ static void test_water_typing_preset_gates_the_rail(void) {
     CHECK(lit, "a keypress must still disturb the surface visibly");
 }
 
+/* ---- axes ---------------------------------------------------------------- */
+
+static void test_atan2_matches_the_real_thing(void) {
+    /* A pinwheel is only as straight as this is accurate, and the cheap
+     * approximations are exactly the ones that visibly bend one.
+     */
+    int worst = 0;
+
+    for (int deg = 0; deg < 360; deg++) {
+        const double rad = deg * 3.14159265358979323846 / 180.0;
+        const int32_t x = (int32_t)(1000 * cos(rad));
+        const int32_t y = (int32_t)(1000 * sin(rad));
+
+        const int got = vfx_atan2_8(y, x);
+        const int want = (int)lround(deg * 256.0 / 360.0) & 0xFF;
+
+        int d = abs(got - want);
+        if (d > 128) {
+            d = 256 - d; /* the turn wraps */
+        }
+        if (d > worst) {
+            worst = d;
+        }
+    }
+
+    printf("  atan2 worst error: %d/256 of a turn\n", worst);
+    CHECK(worst <= 2, "atan2 is off by %d/256 of a turn", worst);
+
+    CHECK(vfx_atan2_8(0, 0) == 0, "the centre has no angle, but must not divide by zero");
+    CHECK(vfx_atan2_8(0, 100) == 0, "the positive x axis is turn 0");
+    CHECK(vfx_atan2_8(100, 0) == 64, "quarter turn");
+    CHECK(vfx_atan2_8(0, -100) == 128, "half turn");
+    CHECK(vfx_atan2_8(-100, 0) == 192, "three quarter turn");
+}
+
+static void test_axes_fall_back_to_the_strip(void) {
+    /* No map means no board to run across. Every axis has to keep working,
+     * or a scene written on a mapped board goes dark on an unmapped one.
+     */
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    for (uint8_t axis = VFX_AXIS_STRIP; axis <= VFX_AXIS_SPIRAL; axis++) {
+        CHECK(vfx_axis_pos(&ctx, 7, axis) == 7, "axis %u should fall back to the strip", axis);
+        CHECK(vfx_axis_span(&ctx, axis) == NPX, "axis %u span should be the strip length", axis);
+    }
+}
+
+static void test_axes_measure_the_board(void) {
+    /* The 6x6 grid is 50 wide and 40 tall, so the axes have known answers. */
+    struct vfx_frame_ctx ctx = grid_ctx();
+
+    CHECK(vfx_axis_span(&ctx, VFX_AXIS_X) == 51, "x span, got %u", vfx_axis_span(&ctx, VFX_AXIS_X));
+    CHECK(vfx_axis_span(&ctx, VFX_AXIS_Y) == 41, "y span, got %u", vfx_axis_span(&ctx, VFX_AXIS_Y));
+    CHECK(vfx_axis_span(&ctx, VFX_AXIS_ANGLE) == 256, "a turn is 256 units");
+
+    /* Pixel 0 is the top left corner, pixel 35 the bottom left (serpentine). */
+    CHECK(vfx_axis_pos(&ctx, 0, VFX_AXIS_X) == 0, "top left is at x 0");
+    CHECK(vfx_axis_pos(&ctx, 0, VFX_AXIS_Y) == 0, "top left is at y 0");
+    CHECK(vfx_axis_pos(&ctx, 5, VFX_AXIS_X) == 50, "the end of the first row is at x 50");
+    CHECK(vfx_axis_pos(&ctx, 5, VFX_AXIS_Y) == 0, "the first row is all at y 0");
+
+    /* Two pixels the same distance out from the middle must agree on radius
+     * however far apart they are on the wire: that is the whole point.
+     */
+    const uint32_t tl = vfx_axis_pos(&ctx, 0, VFX_AXIS_RADIAL);
+    const uint32_t tr = vfx_axis_pos(&ctx, 5, VFX_AXIS_RADIAL);
+    CHECK(tl == tr, "opposite corners should be the same radius, %u vs %u", tl, tr);
+
+    /* Opposite corners are half a turn apart. Serpentine wiring puts the
+     * bottom right corner at index 30, a long way from index 0 on the wire
+     * and exactly across the board from it.
+     */
+    const int a = (int)vfx_axis_pos(&ctx, 0, VFX_AXIS_ANGLE);
+    const int b = (int)vfx_axis_pos(&ctx, 30, VFX_AXIS_ANGLE);
+    int apart = abs(a - b);
+    if (apart > 128) {
+        apart = 256 - apart;
+    }
+    CHECK(apart == 128, "opposite corners should be half a turn apart, got %d", apart);
+}
+
+static void test_gradient_runs_along_its_axis(void) {
+    /* The point of the axis: a left-right gradient gives every pixel in a
+     * column the same colour, and a top-bottom one every pixel in a row --
+     * even though on a serpentine strip neither is contiguous on the wire.
+     */
+    static uint32_t stops[] = {VFX_HSB(0, 100, 100), VFX_HSB(240, 100, 100)};
+    struct vfx_gradient_cfg cfg = {
+        .stops = stops, .num_stops = 2, .scroll_speed = 0, .span = 0, .axis = VFX_AXIS_X};
+    struct vfx_gradient_state st = {0};
+    SCENE1(scene, &vfx_layer_gradient_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = grid_ctx();
+
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    for (int i = 0; i < NPX; i++) {
+        for (int j = 0; j < NPX; j++) {
+            if (grid_xy[i * 2] != grid_xy[j * 2]) {
+                continue; /* different column */
+            }
+
+            CHECK(memcmp(&out[i], &out[j], sizeof(out[0])) == 0,
+                  "pixels %d and %d share a column but differ under an x gradient", i, j);
+            if (memcmp(&out[i], &out[j], sizeof(out[0])) != 0) {
+                return;
+            }
+        }
+    }
+
+    /* And it really is a gradient: the two ends of a row differ. */
+    CHECK(memcmp(&out[0], &out[5], sizeof(out[0])) != 0,
+          "opposite ends of a row should be different colours");
+
+    /* Turn it 90 degrees and rows match instead of columns. */
+    cfg.axis = VFX_AXIS_Y;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    CHECK(memcmp(&out[0], &out[5], sizeof(out[0])) == 0,
+          "a top-to-bottom gradient should give a row one colour");
+}
+
+static void test_pinwheel_sweeps_around_the_board(void) {
+    /* An angular gradient has to come back to where it started: the pixel at
+     * the far side of the board is half a cycle away, not a whole board away.
+     */
+    static uint32_t stops[] = {VFX_HSB(0, 100, 100), VFX_HSB(180, 100, 100)};
+    struct vfx_gradient_cfg cfg = {
+        .stops = stops, .num_stops = 2, .scroll_speed = 0, .span = 0, .axis = VFX_AXIS_ANGLE};
+    struct vfx_gradient_state st = {0};
+    SCENE1(scene, &vfx_layer_gradient_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = grid_ctx();
+
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    /* Pixels 0 and 30 are opposite corners, so half a turn apart and
+     * therefore at opposite ends of the two-stop cycle.
+     */
+    const int top = out[0].r - out[0].b;
+    const int bottom = out[30].r - out[30].b;
+
+    CHECK((top > 0) != (bottom > 0),
+          "opposite corners should sit on opposite sides of the colour cycle");
+
+    /* Every pixel must land somewhere: an angular axis that divided by zero
+     * or ran off the table would leave black.
+     */
+    for (int i = 0; i < NPX; i++) {
+        CHECK(!rgb_is_black(out[i]), "pixel %d came out black under a pinwheel", i);
+        if (rgb_is_black(out[i])) {
+            return;
+        }
+    }
+}
+
+static void test_plasma_is_two_dimensional_with_a_map(void) {
+    /* With real coordinates the plasma varies down the board as well as
+     * across it. Without a map both axes collapse onto the strip, which is
+     * the old behaviour and still has to work.
+     */
+    struct vfx_plasma_cfg cfg = {
+        .color = VFX_HSB(280, 90, 80), .scale = 0, .period_ms = 6000, .hue_spread = 60};
+    uint8_t st = 0; /* stateless generator */
+    SCENE1(scene, &vfx_layer_plasma_api, &cfg, &st);
+
+    struct vfx_rgb mapped[NPX], plain[NPX];
+    struct vfx_frame_ctx ctx = grid_ctx();
+    struct vfx_frame_ctx bare = test_ctx();
+
+    ctx.time_ms = bare.time_ms = 1500;
+    vfx_render_frame(&scene, &ctx, mapped, NULL);
+    vfx_render_frame(&scene, &bare, plain, NULL);
+
+    CHECK(memcmp(mapped, plain, sizeof(mapped)) != 0,
+          "the plasma ignored the position map, so it is still one dimensional");
+
+    /* Pixels 0 and 35 sit in the same column, five rows apart. A plasma that
+     * only knew the strip would have nothing but their 35 places of
+     * separation to go on.
+     */
+    CHECK(memcmp(&mapped[0], &mapped[35], sizeof(mapped[0])) != 0,
+          "a column should not come out flat");
+
+    int lit = 0;
+    for (int i = 0; i < NPX; i++) {
+        if (!rgb_is_black(mapped[i])) {
+            lit++;
+        }
+    }
+    CHECK(lit == NPX, "plasma should cover the zone, only %d of %d lit", lit, NPX);
+}
+
+static void test_twinkle_hue_spread_stays_deterministic(void) {
+    /* Scattered hues still have to be a pure function of the clock, or the
+     * two halves of a split stop agreeing on them.
+     */
+    struct vfx_twinkle_cfg cfg = {
+        .color = VFX_HSB(200, 90, 100), .period_ms = 1200, .density = 200, .hue_spread = 120};
+    uint8_t st_a = 0, st_b = 0; /* stateless generator */
+    SCENE1(a, &vfx_layer_twinkle_api, &cfg, &st_a);
+    SCENE1(b, &vfx_layer_twinkle_api, &cfg, &st_b);
+
+    struct vfx_rgb out_a[NPX], out_b[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    int coloured = 0;
+
+    for (uint32_t t = 0; t <= 4000; t += 250) {
+        ctx.time_ms = t;
+        vfx_render_frame(&a, &ctx, out_a, NULL);
+        vfx_render_frame(&b, &ctx, out_b, NULL);
+
+        CHECK(memcmp(out_a, out_b, sizeof(out_a)) == 0, "twinkle diverged between halves at t=%u",
+              t);
+
+        /* And the hues really do differ from each other. */
+        for (int i = 1; i < NPX; i++) {
+            if (!rgb_is_black(out_a[i]) && !rgb_is_black(out_a[i - 1]) &&
+                memcmp(&out_a[i], &out_a[i - 1], sizeof(out_a[0])) != 0) {
+                coloured++;
+            }
+        }
+    }
+
+    CHECK(coloured > 20, "hue-spread twinkles came out all the same colour (%d)", coloured);
+}
+
 static void test_isqrt(void) {
     CHECK(vfx_isqrt(0) == 0, "isqrt(0)");
     CHECK(vfx_isqrt(1) == 1, "isqrt(1)");
@@ -1633,6 +1862,13 @@ int main(void) {
         {"water rain identical on both halves", test_water_rain_identical_on_both_halves},
         {"water still surface can be transparent", test_water_still_surface_can_be_transparent},
         {"water typing preset gates the rail", test_water_typing_preset_gates_the_rail},
+        {"atan2 matches the real thing", test_atan2_matches_the_real_thing},
+        {"axes fall back to the strip", test_axes_fall_back_to_the_strip},
+        {"axes measure the board", test_axes_measure_the_board},
+        {"gradient runs along its axis", test_gradient_runs_along_its_axis},
+        {"pinwheel sweeps around the board", test_pinwheel_sweeps_around_the_board},
+        {"plasma is two dimensional with a map", test_plasma_is_two_dimensional_with_a_map},
+        {"twinkle hue spread stays deterministic", test_twinkle_hue_spread_stays_deterministic},
         {"isqrt", test_isqrt},
         {"distance falls back to the strip", test_distance_falls_back_to_the_strip},
         {"distance is across the board with a map", test_distance_is_across_the_board_with_a_map},

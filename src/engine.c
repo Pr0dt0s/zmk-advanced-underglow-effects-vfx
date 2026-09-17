@@ -141,7 +141,26 @@ static uint8_t brightness_ceiling(uint8_t v) {
     return v > ceiling ? (uint8_t)ceiling : v;
 }
 
+/* The position map never changes at runtime, so its bounds are worth
+ * measuring once. Effects that run across the board ask for them per pixel,
+ * and re-walking every position each time would be the most expensive thing
+ * in the frame.
+ */
+static struct vfx_board_box board_box;
+static bool board_box_ready;
+
 static struct vfx_frame_ctx build_ctx(void) {
+    if (!board_box_ready) {
+        const struct vfx_frame_ctx probe = {
+            .virtual_length = VFX_VIRTUAL_LENGTH,
+            .pixel_xy = VFX_PIXEL_XY,
+            .num_positions = VFX_NUM_POSITIONS,
+        };
+
+        board_box = vfx_board_bounds(&probe);
+        board_box_ready = true;
+    }
+
     return (struct vfx_frame_ctx){
         .time_ms = (uint32_t)((int64_t)k_uptime_get() + state.time_offset),
         .virtual_length = VFX_VIRTUAL_LENGTH,
@@ -154,6 +173,7 @@ static struct vfx_frame_ctx build_ctx(void) {
         .num_keys = VFX_NUM_KEYS,
         .pixel_xy = VFX_PIXEL_XY,
         .num_positions = VFX_NUM_POSITIONS,
+        .board = board_box,
     };
 }
 

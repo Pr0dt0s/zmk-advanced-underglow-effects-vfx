@@ -71,6 +71,7 @@ DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_solid, VFX_SOLID_DEFINE)
         .num_stops = DT_PROP_LEN(node, stops),                                                     \
         .scroll_speed = DT_PROP(node, scroll_speed),                                               \
         .span = DT_PROP(node, span),                                                               \
+        .axis = DT_PROP(node, axis),                                                               \
     };                                                                                             \
     static struct vfx_gradient_state VFX_STATE_SYM(node);                                          \
     static const struct vfx_layer_api *const VFX_API_SYM(node) = &vfx_layer_gradient_api;
@@ -83,6 +84,7 @@ DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_gradient, VFX_GRADIENT_DEFINE)
         .color = DT_PROP(node, color),                                                             \
         .period_ms = DT_PROP(node, period_ms),                                                     \
         .min_level = DT_PROP(node, min_level),                                                      \
+        .hue_swing = DT_PROP(node, hue_swing),                                                     \
     };                                                                                             \
     static struct vfx_breathe_state VFX_STATE_SYM(node);                                           \
     static const struct vfx_layer_api *const VFX_API_SYM(node) = &vfx_layer_breathe_api;
@@ -95,6 +97,7 @@ DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_breathe, VFX_BREATHE_DEFINE)
         .wavelength = DT_PROP(node, wavelength),                                                   \
         .period_ms = DT_PROP(node, period_ms),                                                     \
         .depth = DT_PROP(node, depth),                                                             \
+        .axis = DT_PROP(node, axis),                                                               \
     };                                                                                             \
     static uint8_t VFX_STATE_SYM(node);                                                             \
     static const struct vfx_layer_api *const VFX_API_SYM(node) = &vfx_layer_wave_api;
@@ -106,6 +109,7 @@ DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_wave, VFX_WAVE_DEFINE)
         .color = DT_PROP(node, color),                                                             \
         .period_ms = DT_PROP(node, period_ms),                                                     \
         .density = DT_PROP(node, density),                                                         \
+        .hue_spread = DT_PROP(node, hue_spread),                                                   \
     };                                                                                             \
     static uint8_t VFX_STATE_SYM(node);                                                             \
     static const struct vfx_layer_api *const VFX_API_SYM(node) = &vfx_layer_twinkle_api;

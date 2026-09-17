@@ -18,6 +18,14 @@
  */
 #define VFX_UNUSED(x) ((void)(x))
 
+/* The box the pixels occupy. Anything with a direction (falling, sweeping)
+ * needs it to know where the board starts and ends.
+ */
+struct vfx_board_box {
+    int16_t min_x, min_y, max_x, max_y;
+    bool known; /* false when there is no position map to measure */
+};
+
 /* Everything the generators are allowed to know about the current frame.
  *
  * Coordinates: a split keyboard renders one virtual strip that spans both
@@ -49,6 +57,14 @@ struct vfx_frame_ctx {
      */
     const int16_t *pixel_xy;
     uint16_t num_positions;
+
+    /* Bounds of pixel_xy, measured once when the map is set. Effects that run
+     * across the board need them per pixel, and walking every position to
+     * find them again each time would be the most expensive thing in the
+     * frame. Left unset (known = false) they are measured on demand, which is
+     * what keeps a hand-built context in a test correct.
+     */
+    struct vfx_board_box board;
 };
 
 /* Virtual (whole board) index of a local strip index. */
@@ -80,16 +96,12 @@ static inline uint16_t vfx_pixel_distance(const struct vfx_frame_ctx *ctx, uint1
  * have covered the whole board. With positions this is the diagonal; without
  * it, the strip length.
  */
-/* The box the pixels occupy. Anything with a direction (falling, sweeping)
- * needs it to know where the board starts and ends.
- */
-struct vfx_board_box {
-    int16_t min_x, min_y, max_x, max_y;
-    bool known; /* false when there is no position map to measure */
-};
-
 static inline struct vfx_board_box vfx_board_bounds(const struct vfx_frame_ctx *ctx) {
     struct vfx_board_box box = {0, 0, 0, 0, false};
+
+    if (ctx->board.known) {
+        return ctx->board;
+    }
 
     if (!ctx->pixel_xy || ctx->num_positions == 0) {
         return box;
@@ -123,6 +135,86 @@ static inline uint16_t vfx_board_extent(const struct vfx_frame_ctx *ctx) {
     const int32_t h = box.max_y - box.min_y;
 
     return (uint16_t)vfx_isqrt((uint32_t)(w * w + h * h));
+}
+
+/* Which way an effect runs across the board. The VFX_AXIS_* values come from
+ * <dt-bindings/zmk/vfx.h>, so devicetree and C name them the same way, as with
+ * the blend modes.
+ *
+ * Without a position map there is no board to run across, so every axis falls
+ * back to the strip. That is not a fudge: strip order is genuinely all the
+ * engine knows without a map, and a scene written for one board then still
+ * animates on another rather than going dark.
+ */
+
+/* One full cycle of an axis, in that axis's own units. A generator that
+ * leaves its span or wavelength at 0 gets this, so "unset" means "one cycle
+ * across the board" whichever way the effect is pointing.
+ */
+static inline uint32_t vfx_axis_span(const struct vfx_frame_ctx *ctx, uint8_t axis) {
+    const struct vfx_board_box box = vfx_board_bounds(ctx);
+
+    if (!box.known || axis == VFX_AXIS_STRIP) {
+        return ctx->virtual_length ? ctx->virtual_length : 1;
+    }
+
+    switch (axis) {
+    case VFX_AXIS_X:
+        return (uint32_t)(box.max_x - box.min_x) + 1U;
+    case VFX_AXIS_Y:
+        return (uint32_t)(box.max_y - box.min_y) + 1U;
+    case VFX_AXIS_RADIAL: {
+        /* Half the diagonal: the furthest any pixel can be from the middle. */
+        const int32_t w = (box.max_x - box.min_x) / 2;
+        const int32_t h = (box.max_y - box.min_y) / 2;
+
+        return vfx_isqrt((uint32_t)(w * w + h * h)) + 1U;
+    }
+    default:
+        return 256U; /* angle and spiral are measured in 256ths of a turn */
+    }
+}
+
+/* Where a pixel sits along that axis. */
+static inline uint32_t vfx_axis_pos(const struct vfx_frame_ctx *ctx, uint16_t vidx,
+                                    uint8_t axis) {
+    const struct vfx_board_box box = vfx_board_bounds(ctx);
+
+    if (!box.known || !ctx->pixel_xy || axis == VFX_AXIS_STRIP ||
+        vidx >= ctx->num_positions) {
+        return vidx;
+    }
+
+    const int32_t x = ctx->pixel_xy[vidx * 2];
+    const int32_t y = ctx->pixel_xy[vidx * 2 + 1];
+
+    switch (axis) {
+    case VFX_AXIS_X:
+        return (uint32_t)(x - box.min_x);
+    case VFX_AXIS_Y:
+        return (uint32_t)(y - box.min_y);
+    default:
+        break;
+    }
+
+    const int32_t dx = x - (box.min_x + box.max_x) / 2;
+    const int32_t dy = y - (box.min_y + box.max_y) / 2;
+    const uint32_t radius = vfx_isqrt((uint32_t)(dx * dx + dy * dy));
+
+    if (axis == VFX_AXIS_RADIAL) {
+        return radius;
+    }
+
+    const uint32_t angle = vfx_atan2_8(dy, dx);
+
+    if (axis == VFX_AXIS_ANGLE) {
+        return angle;
+    }
+
+    /* Spiral: one extra turn per radius, which is what bends the pinwheel's
+     * arms into a spiral rather than leaving them straight.
+     */
+    return (angle + radius * 256U / vfx_axis_span(ctx, VFX_AXIS_RADIAL)) & 0xFFU;
 }
 
 /* Virtual pixel a key sits nearest. Reactive layers work in virtual space so

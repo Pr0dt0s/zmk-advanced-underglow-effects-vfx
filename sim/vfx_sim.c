@@ -233,7 +233,7 @@ EXPORT int vfx_sim_add_solid(int zone, int blend, int opacity, uint32_t color) {
 }
 
 EXPORT int vfx_sim_add_gradient(int zone, int blend, int opacity, int scroll_speed, int span,
-                                int num_stops) {
+                                int num_stops, int axis) {
     struct vfx_layer *l = next_layer(zone, blend, opacity);
 
     if (!l || num_stops < 1 || num_stops > MAX_STOPS) {
@@ -251,6 +251,7 @@ EXPORT int vfx_sim_add_gradient(int zone, int blend, int opacity, int scroll_spe
     grad_cfg[num_layers].num_stops = (uint8_t)num_stops;
     grad_cfg[num_layers].scroll_speed = (int16_t)scroll_speed;
     grad_cfg[num_layers].span = (uint16_t)span;
+    grad_cfg[num_layers].axis = (uint8_t)axis;
 
     l->api = &vfx_layer_gradient_api;
     l->config = &grad_cfg[num_layers];
@@ -285,7 +286,7 @@ enum sim_layer_type {
  * three numbers, which is all of them but the three below.
  */
 EXPORT int vfx_sim_add_layer(int type, int zone, int blend, int opacity, uint32_t color, int a,
-                             int b, int c) {
+                             int b, int c, int d) {
     struct vfx_layer *l = next_layer(zone, blend, opacity);
 
     if (!l) {
@@ -299,7 +300,10 @@ EXPORT int vfx_sim_add_layer(int type, int zone, int blend, int opacity, uint32_
     switch (type) {
     case SIM_BREATHE:
         breathe_cfg[i] = (struct vfx_breathe_cfg){
-            .color = color, .period_ms = (uint16_t)a, .min_level = (uint8_t)b};
+            .color = color,
+            .period_ms = (uint16_t)a,
+            .min_level = (uint8_t)b,
+            .hue_swing = (uint8_t)d};
         l->api = &vfx_layer_breathe_api;
         l->config = &breathe_cfg[i];
         l->state = &breathe_state[i];
@@ -316,7 +320,10 @@ EXPORT int vfx_sim_add_layer(int type, int zone, int blend, int opacity, uint32_
 
     case SIM_TWINKLE:
         twinkle_cfg[i] = (struct vfx_twinkle_cfg){
-            .color = color, .period_ms = (uint16_t)a, .density = (uint8_t)b};
+            .color = color,
+            .period_ms = (uint16_t)a,
+            .density = (uint8_t)b,
+            .hue_spread = (uint8_t)d};
         l->api = &vfx_layer_twinkle_api;
         l->config = &twinkle_cfg[i];
         break;
@@ -551,6 +558,7 @@ EXPORT void vfx_sim_set_positions(int count) {
     if (count <= 0) {
         ctx.pixel_xy = NULL;
         ctx.num_positions = 0;
+        ctx.board = (struct vfx_board_box){0, 0, 0, 0, false};
         return;
     }
 
@@ -566,6 +574,12 @@ EXPORT void vfx_sim_set_positions(int count) {
 
     ctx.pixel_xy = pixel_xy;
     ctx.num_positions = (uint16_t)count;
+
+    /* Measure the bounds once, as the firmware does: effects that run across
+     * the board ask for them per pixel.
+     */
+    ctx.board = (struct vfx_board_box){0, 0, 0, 0, false};
+    ctx.board = vfx_board_bounds(&ctx);
 }
 
 EXPORT const uint8_t *vfx_sim_render(uint32_t time_ms) {

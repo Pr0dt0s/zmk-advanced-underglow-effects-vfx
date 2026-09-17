@@ -213,6 +213,39 @@ the rail. It is the one generator that needs to know which way is *down*, so
 give it `pixel-positions` below; without a map it treats strip order as the
 direction of travel and falls in a single column.
 
+### Pointing an effect across the board
+
+`gradient` and `wave` take an `axis`, which is what turns one generator into
+the whole family of directional effects other boards ship separately:
+
+| `axis` | What it does |
+|---|---|
+| `VFX_AXIS_STRIP` | Along the wire. The default, and the only one that works without a position map |
+| `VFX_AXIS_X` | Left to right across the board |
+| `VFX_AXIS_Y` | Top to bottom |
+| `VFX_AXIS_RADIAL` | Out from the middle — a ring that expands, or a radial gradient |
+| `VFX_AXIS_ANGLE` | Around the middle: a pinwheel |
+| `VFX_AXIS_SPIRAL` | Around and outward at once |
+
+```dts
+pinwheel {
+    compatible = "zmk,vfx-layer-gradient";
+    zone = <&all>;
+    axis = <VFX_AXIS_ANGLE>;
+    stops = <VFX_HSB(0,100,70) VFX_HSB(120,100,70) VFX_HSB(240,100,70)>;
+    scroll-speed = <40>;
+};
+```
+
+`span` and `wavelength` are in that axis's own units — pixels along the strip,
+`pixel-positions` units for X, Y and RADIAL, and 256ths of a turn for ANGLE and
+SPIRAL. Leaving either at `0` means "one cycle across the board" whichever way
+the effect is pointing, so you rarely have to work the number out.
+
+`plasma` is 2-D whenever a map exists: it sums sines over both board axes,
+which is what makes the cells drift around each other rather than sliding
+along in step.
+
 ### Effects that radiate need to know where the LEDs are
 
 By default the engine's only notion of position is a pixel's index on the

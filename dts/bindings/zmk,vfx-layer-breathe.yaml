@@ -28,3 +28,12 @@ properties:
     description: |
       0-255 floor. 0 breathes to black; raise it to keep the zone lit
       throughout, which also keeps the power gate from firing.
+
+  hue-swing:
+    type: int
+    default: 0
+    description: |
+      Degrees the hue moves over the cycle, either side of the colour. 0 keeps
+      the hue fixed and only the brightness breathes. The hue leads the
+      brightness by a quarter cycle, so the colour arrives before each peak
+      rather than with it.

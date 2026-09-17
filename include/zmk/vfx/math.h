@@ -16,6 +16,12 @@
 /* Sine over a 0-255 turn, returned as 0-255 centred on 128. */
 uint8_t vfx_sin8(uint8_t turn);
 
+/* Angle of (x, y) as a 0-255 turn, clockwise from the positive x axis in
+ * screen coordinates (y growing downward). This is what lets an effect run
+ * around the board rather than across it.
+ */
+uint8_t vfx_atan2_8(int32_t y, int32_t x);
+
 /* Triangle wave over a 0-255 turn: 0 at the ends, 255 in the middle. */
 static inline uint8_t vfx_tri8(uint8_t turn) {
     return turn < 128 ? (uint8_t)(turn * 2) : (uint8_t)((255 - turn) * 2);

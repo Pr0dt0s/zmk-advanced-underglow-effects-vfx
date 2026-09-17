@@ -26,8 +26,9 @@ struct vfx_solid_state {
 struct vfx_gradient_cfg {
     const uint32_t *stops; /* packed VFX_HSB, cyclic: last wraps to first */
     uint8_t num_stops;
-    int16_t scroll_speed; /* virtual pixels per second; negative reverses */
-    uint16_t span;        /* virtual pixels per full cycle; 0 = whole board */
+    int16_t scroll_speed; /* axis units per second; negative reverses */
+    uint16_t span;        /* axis units per full cycle; 0 = one cycle across */
+    uint8_t axis;         /* VFX_AXIS_*: which way the gradient runs */
 };
 
 struct vfx_gradient_state {
@@ -39,6 +40,7 @@ struct vfx_breathe_cfg {
     uint32_t color;
     uint16_t period_ms; /* one full in-and-out cycle at speed 3 */
     uint8_t min_level;  /* 0-255, floor so a breathe need not reach black */
+    uint8_t hue_swing;  /* degrees the hue moves over the cycle; 0 = fixed */
 };
 
 struct vfx_breathe_state {
@@ -47,20 +49,22 @@ struct vfx_breathe_state {
 
 struct vfx_wave_cfg {
     uint32_t color;
-    uint16_t wavelength; /* virtual pixels per cycle */
+    uint16_t wavelength; /* axis units per cycle; 0 = one cycle across */
     uint16_t period_ms;  /* time for the wave to travel one wavelength */
     uint8_t depth;       /* 0-255, how far the trough dips */
+    uint8_t axis;        /* VFX_AXIS_*: which way the wave travels */
 };
 
 struct vfx_twinkle_cfg {
     uint32_t color;
     uint16_t period_ms; /* lifetime of one twinkle */
     uint8_t density;    /* 0-255, roughly the fraction of pixels lit at once */
+    uint8_t hue_spread; /* degrees each twinkle may stray from the colour */
 };
 
 struct vfx_plasma_cfg {
     uint32_t color;
-    uint16_t scale;     /* virtual pixels per cycle of the first wave */
+    uint16_t scale;     /* units per cycle of the first wave; 0 = across */
     uint16_t period_ms;
     uint8_t hue_spread; /* degrees of hue swing around the base color */
 };

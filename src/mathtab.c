@@ -36,3 +36,60 @@ static const uint8_t sin_lut[256] = {
 };
 
 uint8_t vfx_sin8(uint8_t turn) { return sin_lut[turn]; }
+
+/* atan(r/256) as a 0-255 turn, for r in 0..256, so the whole table covers the
+ * first eighth of a turn and the octant folding in vfx_atan2_8() covers the
+ * rest. A table again rather than a polynomial: the approximations that are
+ * cheap enough to run per pixel are the ones that visibly bend a pinwheel.
+ */
+static const uint8_t atan_lut[257] = {
+    0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2,
+    3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 5, 5, 5,
+    5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7,
+    8, 8, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 9, 10, 10, 10,
+    10, 10, 10, 10, 11, 11, 11, 11, 11, 11, 11, 12, 12, 12, 12, 12,
+    12, 12, 13, 13, 13, 13, 13, 13, 13, 14, 14, 14, 14, 14, 14, 14,
+    15, 15, 15, 15, 15, 15, 15, 16, 16, 16, 16, 16, 16, 16, 17, 17,
+    17, 17, 17, 17, 17, 17, 18, 18, 18, 18, 18, 18, 18, 19, 19, 19,
+    19, 19, 19, 19, 19, 20, 20, 20, 20, 20, 20, 20, 20, 21, 21, 21,
+    21, 21, 21, 21, 21, 21, 22, 22, 22, 22, 22, 22, 22, 22, 23, 23,
+    23, 23, 23, 23, 23, 23, 23, 24, 24, 24, 24, 24, 24, 24, 24, 24,
+    25, 25, 25, 25, 25, 25, 25, 25, 25, 25, 26, 26, 26, 26, 26, 26,
+    26, 26, 26, 27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 28, 28, 28,
+    28, 28, 28, 28, 28, 28, 28, 28, 29, 29, 29, 29, 29, 29, 29, 29,
+    29, 29, 29, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 31, 31,
+    31, 31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32,
+    32,
+};
+
+uint8_t vfx_atan2_8(int32_t y, int32_t x) {
+    if (x == 0 && y == 0) {
+        return 0;
+    }
+
+    const int32_t ax = x < 0 ? -x : x;
+    const int32_t ay = y < 0 ? -y : y;
+
+    /* Fold into the first octant, where the table is defined, by taking the
+     * ratio of the shorter side to the longer one.
+     */
+    int32_t angle;
+
+    if (ax >= ay) {
+        angle = atan_lut[(ay * 256) / ax];
+    } else {
+        angle = 64 - atan_lut[(ax * 256) / ay];
+    }
+
+    /* Then back out to the right quadrant. Screen coordinates, so y grows
+     * downward and the turn runs clockwise from the positive x axis.
+     */
+    if (x < 0) {
+        angle = 128 - angle;
+    }
+    if (y < 0) {
+        angle = 256 - angle;
+    }
+
+    return (uint8_t)(angle & 0xFF);
+}

@@ -35,9 +35,24 @@ static void breathe_frame(const struct vfx_layer *layer, const struct vfx_frame_
     struct vfx_breathe_state *st = layer->state;
 
     struct vfx_hsb hsb = vfx_hsb_unpack(cfg->color);
-    hsb.h = vfx_hue_add(hsb.h, ctx->hue_shift);
+    const uint32_t turns = phase_turns(ctx, cfg->period_ms);
 
-    const uint8_t level = vfx_sin8((uint8_t)phase_turns(ctx, cfg->period_ms));
+    /* With a hue swing the colour moves over the cycle as well as the
+     * brightness, which is the difference between a pulse and something that
+     * looks alive. A quarter turn behind the brightness so the colour leads
+     * into each peak rather than arriving with it.
+     */
+    int16_t hue = ctx->hue_shift;
+
+    if (cfg->hue_swing != 0) {
+        const int32_t swing = (int32_t)vfx_sin8((uint8_t)(turns - 64U)) - 128;
+
+        hue = (int16_t)(hue + swing * cfg->hue_swing / 128);
+    }
+
+    hsb.h = vfx_hue_add(hsb.h, hue);
+
+    const uint8_t level = vfx_sin8((uint8_t)turns);
     const uint8_t floored =
         (uint8_t)(cfg->min_level + ((255U - cfg->min_level) * level) / 255U);
 
@@ -72,13 +87,14 @@ static bool wave_pixel(const struct vfx_layer *layer, const struct vfx_frame_ctx
     VFX_UNUSED(zone_i);
 
     const struct vfx_wave_cfg *cfg = layer->config;
-    const uint16_t wavelength = cfg->wavelength ? cfg->wavelength : ctx->virtual_length;
+    const uint32_t wavelength = cfg->wavelength ? cfg->wavelength : vfx_axis_span(ctx, cfg->axis);
 
     if (wavelength == 0) {
         return false;
     }
 
-    const uint32_t spatial = ((uint32_t)vfx_virtual_idx(ctx, strip_i) * 256U) / wavelength;
+    const uint32_t along = vfx_axis_pos(ctx, vfx_virtual_idx(ctx, strip_i), cfg->axis);
+    const uint32_t spatial = (along * 256U) / wavelength;
     const uint8_t level = vfx_sin8((uint8_t)(spatial + phase_turns(ctx, cfg->period_ms)));
 
     /* depth 0 leaves the colour flat; 255 takes the trough to black. */
@@ -128,7 +144,17 @@ static bool twinkle_pixel(const struct vfx_layer *layer, const struct vfx_frame_
     const uint8_t level = vfx_tri8((uint8_t)((local * 256U) / cfg->period_ms));
 
     struct vfx_hsb hsb = vfx_hsb_unpack(cfg->color);
-    hsb.h = vfx_hue_add(hsb.h, ctx->hue_shift);
+    int16_t hue = ctx->hue_shift;
+
+    /* Give each twinkle its own hue, from the same roll that chose it, so a
+     * scattering of colours costs nothing to keep identical on both halves.
+     */
+    if (cfg->hue_spread != 0) {
+        hue = (int16_t)(hue + (int16_t)((roll >> 8) % (cfg->hue_spread * 2U + 1U)) -
+                        cfg->hue_spread);
+    }
+
+    hsb.h = vfx_hue_add(hsb.h, hue);
     hsb.b = (uint8_t)((uint16_t)hsb.b * level / 255U);
 
     *out = vfx_hsb_to_rgb(hsb);
@@ -147,21 +173,27 @@ static bool plasma_pixel(const struct vfx_layer *layer, const struct vfx_frame_c
     VFX_UNUSED(zone_i);
 
     const struct vfx_plasma_cfg *cfg = layer->config;
-    const uint16_t scale = cfg->scale ? cfg->scale : ctx->virtual_length;
+    const uint16_t vidx = vfx_virtual_idx(ctx, strip_i);
+    const uint32_t scale = cfg->scale ? cfg->scale : vfx_axis_span(ctx, VFX_AXIS_X);
 
     if (scale == 0) {
         return false;
     }
 
-    const uint16_t vidx = vfx_virtual_idx(ctx, strip_i);
     const uint32_t turns = phase_turns(ctx, cfg->period_ms);
 
-    /* Two waves at different rates and directions. Their sum never repeats on
-     * a short cycle, which is what stops it reading as an obvious sine.
+    /* Real plasma is sines summed over two axes, which is what makes the
+     * cells drift around each other instead of sliding along in step. With a
+     * position map both axes are real; without one they collapse onto the
+     * strip and this degrades to the two-wave version it used to be.
      */
-    const uint8_t a = vfx_sin8((uint8_t)(((uint32_t)vidx * 256U) / scale + turns));
-    const uint8_t b = vfx_sin8((uint8_t)(((uint32_t)vidx * 384U) / scale - turns * 2U));
-    const uint8_t mixed = (uint8_t)(((uint16_t)a + b) / 2U);
+    const uint32_t px = vfx_axis_pos(ctx, vidx, VFX_AXIS_X);
+    const uint32_t py = vfx_axis_pos(ctx, vidx, VFX_AXIS_Y);
+
+    const uint8_t a = vfx_sin8((uint8_t)((px * 256U) / scale + turns));
+    const uint8_t b = vfx_sin8((uint8_t)((py * 384U) / scale - turns * 2U));
+    const uint8_t c = vfx_sin8((uint8_t)(((px + py) * 192U) / scale + turns * 3U / 2U));
+    const uint8_t mixed = (uint8_t)(((uint16_t)a + b + c) / 3U);
 
     struct vfx_hsb hsb = vfx_hsb_unpack(cfg->color);
 

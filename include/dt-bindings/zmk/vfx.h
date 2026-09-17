@@ -25,6 +25,17 @@
 #define VFX_BLEND_SCREEN 3
 #define VFX_BLEND_MAX 4
 
+/* Which way an effect runs across the board. Everything but VFX_AXIS_STRIP
+ * needs pixel-positions on the engine node; without it they all fall back to
+ * the strip, so a scene stays animated on a board that has no map.
+ */
+#define VFX_AXIS_STRIP 0  /* along the wire */
+#define VFX_AXIS_X 1      /* left to right */
+#define VFX_AXIS_Y 2      /* top to bottom */
+#define VFX_AXIS_RADIAL 3 /* out from the middle */
+#define VFX_AXIS_ANGLE 4  /* around the middle: a pinwheel */
+#define VFX_AXIS_SPIRAL 5 /* around and outward at once */
+
 /* &vfx behavior commands. */
 #define VFX_TOG_CMD 0
 #define VFX_ON_CMD 1

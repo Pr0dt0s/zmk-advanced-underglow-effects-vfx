@@ -27,3 +27,12 @@ properties:
     default: 40
     description: |
       0-255, roughly the fraction of pixels lit at any moment.
+
+  hue-spread:
+    type: int
+    default: 0
+    description: |
+      Degrees each twinkle may stray from the colour, picked per twinkle. 0
+      keeps them all one colour; a large spread gives the scattered-confetti
+      look. It comes from the same hash that decides which pixels light, so
+      both halves of a split still agree without exchanging anything.

@@ -7,7 +7,9 @@
 #include <zmk/vfx/engine.h>
 #include <zmk/vfx/layers.h>
 
-/* A cyclic multi-stop gradient over the virtual (whole board) strip.
+/* A cyclic multi-stop gradient, running along whichever axis it is pointed
+ * at: the strip by default, or across, down, out from the middle, or around
+ * it once the engine has a position map.
  *
  * Position is derived from ctx->time_ms rather than accumulated into state, so
  * two halves that agree on the timebase render the same phase with no further
@@ -18,11 +20,11 @@ static void gradient_frame(const struct vfx_layer *layer, const struct vfx_frame
     const struct vfx_gradient_cfg *cfg = layer->config;
     struct vfx_gradient_state *state = layer->state;
 
-    uint16_t span = cfg->span ? cfg->span : ctx->virtual_length;
+    uint32_t span = cfg->span ? cfg->span : vfx_axis_span(ctx, cfg->axis);
     if (span == 0) {
         span = 1;
     }
-    state->span = span;
+    state->span = (uint16_t)span;
 
     /* 64 bit intermediate: time_ms runs to 2^32 and scroll_speed * speed can
      * be a few hundred, which overflows 32 bits after roughly two hours up.
@@ -49,7 +51,8 @@ static bool gradient_pixel(const struct vfx_layer *layer, const struct vfx_frame
     }
 
     const uint16_t span = state->span;
-    const uint32_t pos = ((uint32_t)vfx_virtual_idx(ctx, strip_i) + state->scroll_px) % span;
+    const uint32_t axis_pos = vfx_axis_pos(ctx, vfx_virtual_idx(ctx, strip_i), cfg->axis);
+    const uint32_t pos = (axis_pos + state->scroll_px) % span;
 
     /* Where we are around the cycle, 0-255. */
     const uint32_t t = (pos * 256U) / span;

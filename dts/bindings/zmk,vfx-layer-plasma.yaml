@@ -19,7 +19,11 @@ properties:
     type: int
     default: 0
     description: |
-      Virtual pixels per cycle of the first wave. 0 fits one to the board.
+      Units per cycle of the first wave. 0 fits one across the board.
+
+      With pixel-positions the plasma is summed over both board axes, which is
+      what makes the cells drift around each other. Without a map both axes
+      collapse onto the strip and it degrades to a pair of travelling waves.
   period-ms:
     type: int
     default: 6000
