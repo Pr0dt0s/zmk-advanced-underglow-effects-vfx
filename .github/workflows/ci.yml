@@ -1,0 +1,194 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Compositor tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Builds the engine core with no Zephyr in scope at all. If this stops
+      # working, the compositor has grown a kernel dependency it should not
+      # have, and the simulator would stop matching the firmware.
+      - name: Build and run
+        working-directory: tests
+        run: make test
+
+  simulator:
+    name: WebAssembly simulator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang and wasm-ld
+        run: sudo apt-get update && sudo apt-get install -y clang lld
+
+      - name: Build
+        run: ./sim/build.sh
+
+      # The self-contained build is what gets published as a Claude Artifact,
+      # where fetch is blocked. Building it here keeps the inlining in step
+      # with the page rather than breaking the next time it is needed.
+      - name: Build the single-file version
+        run: python3 sim/build-artifact.py
+
+      # The README's clips are recorded from this page by the Pages workflow.
+      # Recording two of them here means a broken recorder fails on the push
+      # that broke it, rather than on the next deploy to main.
+      - name: Check the clip recorder still runs
+        run: |
+          sudo apt-get install -y gifsicle
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+          pip install Pillow
+          node tools/record-gifs.mjs fire nexus
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sample-clips
+          path: docs/img
+
+  firmware:
+    name: Firmware (${{ matrix.shield }})
+    runs-on: ubuntu-latest
+    container:
+      image: zmkfirmware/zmk-build-arm:stable
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shield: lily58_left
+            board: "nice_nano//zmk"
+          - shield: lily58_right
+            board: "nice_nano//zmk"
+    steps:
+      - name: Checkout the module
+        uses: actions/checkout@v4
+        with:
+          path: module
+
+      # The west workspace is built beside the module rather than on top of
+      # it. west init -l would make the module checkout the workspace root,
+      # and west would then clone Zephyr into module/zephyr, colliding with
+      # the module's own zephyr/module.yml.
+      - name: Stage the manifest
+        run: |
+          mkdir -p ws
+          cp -r module/example ws/config
+
+      - name: Cache the west workspace
+        uses: actions/cache@v4
+        with:
+          path: |
+            ws/modules
+            ws/tools
+            ws/zephyr
+            ws/bootloader
+            ws/zmk
+          key: zmk-${{ hashFiles('module/example/west.yml') }}
+
+      - name: Initialise the workspace
+        working-directory: ws
+        run: |
+          west init -l config
+          west update --fetch-opt=--filter=blob:none
+          west zephyr-export
+
+      # -DZMK_EXTRA_MODULES points the build at this checkout rather than a
+      # published copy, so CI compiles the code in the pull request. This is
+      # the only place the devicetree macros in src/scenes.c are exercised
+      # against a real devicetree.
+      - name: Build
+        working-directory: ws
+        run: |
+          west build -s zmk/app -b "${{ matrix.board }}" -- \
+            -DSHIELD=${{ matrix.shield }} \
+            -DZMK_CONFIG="${GITHUB_WORKSPACE}/ws/config" \
+            -DZMK_EXTRA_MODULES="${GITHUB_WORKSPACE}/module"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.shield }}
+          path: ws/build/zephyr/zmk.uf2
+
+  # Builds with the settings the defaults do not cover, so a Kconfig
+  # combination cannot rot unnoticed.
+  firmware-variants:
+    name: Firmware (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    container:
+      image: zmkfirmware/zmk-build-arm:stable
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: split sync
+            args: -DCONFIG_ZMK_VFX_SPLIT_SYNCED=y -DCONFIG_ZMK_VFX_SPLIT_FREE=n
+            prep: "true"
+          - name: no power gate
+            args: -DCONFIG_ZMK_VFX_AUTO_POWER_GATE=n
+            prep: "true"
+          # Turning the shim off unbinds rgb_ug, and Zephyr resolves
+          # devicetree before Kconfig, so a keymap cannot guard its bindings
+          # with #if. Strip them instead, which is exactly what a user
+          # disabling the shim has to do to their own keymap.
+          - name: no rgb_ug shim
+            args: -DCONFIG_ZMK_VFX_RGB_UNDERGLOW_COMPAT=n
+            prep: "sed -i -E 's/&rgb_ug [A-Z_]+/\\&trans/g' ws/config/lily58.keymap"
+          - name: no indicators
+            args: -DCONFIG_ZMK_VFX_INDICATORS=n
+            prep: "true"
+    steps:
+      - name: Checkout the module
+        uses: actions/checkout@v4
+        with:
+          path: module
+
+      # The west workspace is built beside the module rather than on top of
+      # it. west init -l would make the module checkout the workspace root,
+      # and west would then clone Zephyr into module/zephyr, colliding with
+      # the module's own zephyr/module.yml.
+      - name: Stage the manifest
+        run: |
+          mkdir -p ws
+          cp -r module/example ws/config
+
+      - name: Cache the west workspace
+        uses: actions/cache@v4
+        with:
+          path: |
+            ws/modules
+            ws/tools
+            ws/zephyr
+            ws/bootloader
+            ws/zmk
+          key: zmk-${{ hashFiles('module/example/west.yml') }}
+
+      - name: Initialise the workspace
+        working-directory: ws
+        run: |
+          west init -l config
+          west update --fetch-opt=--filter=blob:none
+          west zephyr-export
+
+      - name: Adjust the config for this variant
+        run: ${{ matrix.prep }}
+
+      - name: Build
+        working-directory: ws
+        run: |
+          west build -s zmk/app -b "nice_nano//zmk" -- \
+            -DSHIELD=lily58_left \
+            -DZMK_CONFIG="${GITHUB_WORKSPACE}/ws/config" \
+            -DZMK_EXTRA_MODULES="${GITHUB_WORKSPACE}/module" \
+            ${{ matrix.args }}

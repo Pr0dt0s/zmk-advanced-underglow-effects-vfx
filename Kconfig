@@ -1,0 +1,189 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+menuconfig ZMK_VFX
+    bool "Advanced addressable underglow effects (VFX)"
+    select LED_STRIP
+    help
+      Replaces ZMK's built-in RGB underglow with a devicetree-configurable
+      compositor: scenes are stacks of effect layers, each scoped to a pixel
+      zone and combined with a blend mode.
+
+      This owns the strip referenced by the "zmk,underglow" chosen node, so
+      CONFIG_ZMK_RGB_UNDERGLOW must be disabled.
+
+if ZMK_VFX
+
+config ZMK_VFX_FPS
+    int "Target frames per second"
+    range 1 120
+    default 50
+    help
+      Upper bound on the render rate. The engine renders no faster than this
+      and may render slower when the active scene is static.
+
+config ZMK_VFX_BRT_MAX
+    int "Maximum global brightness in percent"
+    range 1 100
+    default 100
+    help
+      Hard ceiling applied after compositing. Lower this to cap current draw.
+
+config ZMK_VFX_BRT_START
+    int "Startup global brightness in percent"
+    range 0 100
+    default 60
+
+config ZMK_VFX_SPD_START
+    int "Startup animation speed"
+    range 1 5
+    default 3
+
+config ZMK_VFX_ON_START
+    bool "Underglow starts on"
+    default y
+
+config ZMK_VFX_GAMMA
+    bool "Apply perceptual (CIE 1931) gamma correction"
+    default y
+    help
+      Maps composited linear values through a CIE 1931 lightness curve so
+      brightness ramps look even to the eye. Costs 256 bytes of flash.
+
+config ZMK_VFX_AUTO_POWER_GATE
+    bool "Cut power to the LEDs when every pixel is off"
+    default y
+    help
+      WS2812s draw close to 1 mA each even while displaying black, so a 36
+      pixel strip sits around 30 mA whether or not anything is lit. When a
+      rendered frame comes out entirely black this switches the external
+      power rail off, and switches it back on as soon as a frame has
+      something to show.
+
+      The engine keeps rendering while gated, which costs almost nothing
+      without the bus transfer, so a keypress ripple still wakes the strip.
+
+      Requires a zmk,ext-power-generic node. Note that on many boards that
+      rail feeds everything external, not just the LEDs: if a display shares
+      it, the display will switch off too.
+
+config ZMK_VFX_BLACKOUT_DELAY_MS
+    int "Milliseconds of continuous black before cutting the rail"
+    depends on ZMK_VFX_AUTO_POWER_GATE
+    range 0 60000
+    default 500
+    help
+      Stops a scene that blinks, or one that dips through black between
+      cycles, from switching the rail on and off continuously.
+
+config ZMK_VFX_POWER_SETTLE_MS
+    int "Milliseconds to let the rail stabilise before the first frame"
+    depends on ZMK_VFX_AUTO_POWER_GATE
+    range 0 1000
+    default 50
+    help
+      Driving data at a strip whose supply has not come up yet shows as
+      garbage on the first few pixels. The default matches the init-delay-ms
+      the nice_nano board uses for the same rail.
+
+config ZMK_VFX_SUSPEND_STRIP_BUS
+    bool "Suspend the LED strip's bus while the rail is gated"
+    depends on ZMK_VFX_AUTO_POWER_GATE && PM_DEVICE
+    default y
+    help
+      Applies the bus node's sleep pinctrl state, parking the data line low.
+      A data pin left high into an unpowered strip leaks current through the
+      chip's protection diode, which would undo much of the saving.
+
+config ZMK_VFX_SKIP_UNCHANGED_FRAMES
+    bool "Skip the bus transfer when a frame is identical to the last"
+    default y
+    help
+      Saves the SPI transfer and its DMA activity on static or slow scenes
+      even while the strip is lit.
+
+choice ZMK_VFX_SPLIT_MODE
+    prompt "How the halves of a split agree on an animation"
+    default ZMK_VFX_SPLIT_FREE
+    depends on ZMK_SPLIT
+
+config ZMK_VFX_SPLIT_FREE
+    bool "Free-running"
+    help
+      Each half renders its own slice of one whole-board coordinate space
+      from its own clock. Effects are written so that two halves agreeing on
+      the time produce identical frames, so gradients and waves line up
+      across the seam with no radio traffic at all.
+
+      What the halves do not share is a clock, so over hours of uptime two
+      crystals drift apart and the seam gradually loses alignment. Reactive
+      effects respond only to the keys their own half can see.
+
+config ZMK_VFX_SPLIT_SYNCED
+    bool "Synchronised over the split link"
+    help
+      The central periodically tells the peripheral what time it thinks it
+      is, and relays its own key positions, so the halves stay aligned
+      indefinitely and a ripple started on one side crosses to the other.
+
+      Uses ZMK's existing behavior relay rather than a separate GATT
+      service. Corrections are eased in rather than stepped, so they are not
+      visible in whatever is on screen.
+
+      Costs a little radio traffic and therefore a little battery.
+
+endchoice
+
+config ZMK_VFX_SYNC_INTERVAL_MS
+    int "Milliseconds between synchronisation beacons"
+    depends on ZMK_VFX_SPLIT_SYNCED
+    range 200 60000
+    default 2000
+    help
+      Lower keeps the halves tighter at the cost of more radio traffic.
+      Crystal drift is parts per million, so seconds between beacons is
+      plenty once the initial offset has been established.
+
+config ZMK_VFX_SYNC_RELAY_KEYS
+    bool "Relay the central's key positions to the peripheral"
+    depends on ZMK_VFX_SPLIT_SYNCED
+    default y
+    help
+      Lets a ripple started by a key on the central half continue onto the
+      peripheral. Without it each half only reacts to its own keys.
+
+      This sends a message per keypress on the central half, which is the
+      most expensive part of synced mode.
+
+config ZMK_VFX_RGB_UNDERGLOW_COMPAT
+    bool "Bind &rgb_ug to the VFX engine"
+    default y
+    help
+      ZMK always declares the rgb_ug behavior node, but only compiles its
+      driver under CONFIG_ZMK_RGB_UNDERGLOW, which VFX requires to be off.
+      Without this shim a keymap that uses &rgb_ug will not build.
+
+      RGB_EFF and RGB_EFR cycle scenes, brightness, speed and hue map onto
+      their engine equivalents, and the saturation commands are accepted but
+      ignored: VFX sets saturation per layer in devicetree rather than
+      globally.
+
+config ZMK_VFX_INDICATORS
+    bool "Feed keyboard state to the indicator layers"
+    default y
+    help
+      Subscribes to layer, battery, Bluetooth profile and caps word events
+      and makes them available to the zmk,vfx-layer-layer-state,
+      -battery, -ble-profile and -caps-word generators.
+
+      Turn off to drop those subscriptions if no scene uses them.
+
+config ZMK_VFX_AUTO_OFF_IDLE
+    bool "Turn underglow off when the keyboard goes idle"
+    default y
+
+module = ZMK_VFX
+module-str = zmk_vfx
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # ZMK_VFX

@@ -1,0 +1,18 @@
+/*
+ * Copyright (c) 2026 The ZMK VFX Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+/ {
+    behaviors {
+        /* Invoked on peripherals over the split relay, where the device name
+         * travels in a 16 byte field, so keep it short.
+         */
+        vfx: vfx {
+            compatible = "zmk,behavior-vfx";
+            #binding-cells = <2>;
+            display-name = "Underglow VFX";
+        };
+    };
+};

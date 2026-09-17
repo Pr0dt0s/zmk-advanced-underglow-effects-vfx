@@ -1,0 +1,56 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  A bright head running round the board with a fading tail.
+
+  Matrix rain is the same idea with drops that start and stop; this one never
+  stops and wraps, so it suits the axes that are a loop (VFX_AXIS_ANGLE,
+  VFX_AXIS_SPIRAL) as well as the ones that are a line.
+
+  Its position comes from the clock rather than being accumulated, so the two
+  halves of a split stay in step with nothing exchanged and a dropped frame
+  does not shift it.
+
+compatible: "zmk,vfx-layer-comet"
+
+include: vfx-layer-common.yaml
+
+properties:
+  color:
+    type: int
+    required: true
+    description: The tail, built with VFX_HSB(h, s, b).
+
+  head-color:
+    type: int
+    default: 0
+    description: |
+      The leading pixel. 0 uses `color` at full brightness. A pale head
+      against a saturated tail is what gives it direction.
+
+  period-ms:
+    type: int
+    default: 3000
+    description: Milliseconds for one lap of the axis.
+
+  tail:
+    type: int
+    default: 60
+    description: |
+      Axis units of trail behind the head: pixel-positions units for X, Y and
+      RADIAL, 256ths of a turn for ANGLE and SPIRAL, strip positions otherwise.
+
+  count:
+    type: int
+    default: 1
+    description: |
+      How many comets, spread evenly around the lap. Two opposite each other
+      on an angular axis is the classic dual beacon.
+
+  axis:
+    type: int
+    default: 0
+    description: |
+      Which way it runs, as a VFX_AXIS_* value. VFX_AXIS_ANGLE sends it round
+      the board; the default runs it along the strip.

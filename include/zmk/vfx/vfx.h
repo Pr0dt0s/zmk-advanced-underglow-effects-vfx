@@ -1,0 +1,65 @@
+/*
+ * Copyright (c) 2026 The ZMK VFX Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+
+/* Runtime control surface. The &vfx behavior and the rgb_ug compatibility
+ * shim both drive the engine through these.
+ */
+
+int zmk_vfx_on(void);
+int zmk_vfx_off(void);
+int zmk_vfx_toggle(void);
+bool zmk_vfx_is_on(void);
+
+int zmk_vfx_select_scene(uint8_t index);
+int zmk_vfx_cycle_scene(int direction);
+uint8_t zmk_vfx_current_scene(void);
+const char *zmk_vfx_scene_name(uint8_t index);
+
+int zmk_vfx_set_brightness(uint8_t value);
+int zmk_vfx_set_speed(uint8_t value);
+int zmk_vfx_set_hue(uint16_t degrees);
+
+int zmk_vfx_change_brightness(int direction);
+int zmk_vfx_change_speed(int direction);
+int zmk_vfx_change_hue(int direction);
+
+uint8_t zmk_vfx_get_brightness(void);
+uint8_t zmk_vfx_get_speed(void);
+int16_t zmk_vfx_get_hue_shift(void);
+
+/* What a relative step would produce, without applying it. The behavior uses
+ * these on the central to turn a relative press into an absolute command
+ * before relaying it to the peripherals.
+ */
+uint8_t zmk_vfx_calc_scene(int direction);
+uint8_t zmk_vfx_calc_brightness(int direction);
+uint8_t zmk_vfx_calc_speed(int direction);
+uint16_t zmk_vfx_calc_hue(int direction);
+
+/* Persist the current state, debounced. */
+int zmk_vfx_save_state(void);
+
+/* Shift the engine timebase, used by the synced split mode to follow central.
+ * Applied as a slew rather than a jump so corrections are not visible.
+ */
+void zmk_vfx_set_time_offset(int32_t offset_ms);
+int32_t zmk_vfx_get_time_offset(void);
+
+/* A synchronisation beacon from the central carrying its uptime. */
+void zmk_vfx_apply_sync(uint32_t central_time_ms);
+
+/* A key position relayed from the other half, for reactive effects. */
+void zmk_vfx_inject_key(uint32_t position);
+
+/* Ask for a frame now, outside the normal cadence, after something changed
+ * that the scene itself cannot observe.
+ */
+void zmk_vfx_request_frame(void);

@@ -1,0 +1,89 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Advanced underglow effect engine. Owns the strip named by the zmk,underglow
+  chosen node and renders scenes onto it.
+
+compatible: "zmk,vfx-engine"
+
+properties:
+  fps:
+    type: int
+    description: |
+      Target frame rate. Defaults to CONFIG_ZMK_VFX_FPS. The engine never
+      renders faster than this and drops to an idle heartbeat when the active
+      scene reports it has nothing left to animate.
+
+  virtual-length:
+    type: int
+    description: |
+      Pixel count of the whole keyboard, across both halves of a split. Effects
+      are positioned in this space so a gradient flows continuously across the
+      seam. Defaults to this half's chain-length.
+
+  strip-offset:
+    type: int
+    default: 0
+    description: |
+      Index of this half's first pixel within virtual-length. Set 0 on the left
+      half and the left half's pixel count on the right.
+
+  default-scene:
+    type: phandle
+    description: Scene selected on first boot, before any saved setting.
+
+  layer-scenes:
+    type: phandles
+    description: |
+      A scene per keymap layer, indexed by layer number, so changing layer
+      changes the whole lighting rather than one indicator strip:
+
+        layer-scenes = <&vfx_warm &vfx_matrix &vfx_status>;
+
+      Layers past the end of the list have no scene of their own and leave
+      whatever is showing alone, so you can map only the ones you care about.
+
+      This follows the active layer and is not saved: it would otherwise
+      overwrite the scene chosen with the &vfx behavior. On a split it works
+      on the central only, since that is the half with a keymap.
+
+  transition-ms:
+    type: int
+    default: 0
+    description: |
+      Milliseconds to crossfade over when the scene changes. 0 cuts straight
+      across, which is what it did before this existed.
+
+      Both scenes render for the duration, so the cost is one extra frame's
+      work and one extra frame buffer while a fade is running, and nothing at
+      all when one is not.
+
+  pixel-positions:
+    type: array
+    description: |
+      Where each pixel physically sits, as x,y pairs across the whole board:
+      <x0 y0 x1 y1 ...>, virtual-length pairs in total. Both halves of a split
+      give the same full-board list; strip-offset selects this half's slice.
+
+      Without it the engine knows only a pixel's position along the wire, so
+      anything that radiates (water, ripple, keyflash, trail) spreads to
+      whichever LEDs are adjacent on the strip. On a serpentine strip those
+      are scattered across the board, which is why a ripple looks like it
+      jumps around instead of expanding. Matrix needs it for a different
+      reason: without a y axis it has no idea which way is down, and falls
+      along the strip in a single column.
+
+      Units are yours to choose; distances in effect properties are in the
+      same ones. Roughly 10 per LED spacing works well: it leaves sub-LED
+      resolution so wavefronts move smoothly, while keeping the numbers small.
+      <vfx/lily58-positions.dtsi> follows that convention.
+
+      Gradients, waves and the indicators are unaffected: those are meant to
+      follow the strip.
+
+  key-pixels:
+    type: array
+    description: |
+      Pixel index nearest each key position, indexed by key position. Reactive
+      effects use it to place a ripple. Omit for a linear key-to-pixel mapping.

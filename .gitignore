@@ -1,0 +1,7 @@
+tests/test_core
+build/
+docs/sim/
+docs/vfx-simulator.html
+docs/img/
+*.o
+node_modules/

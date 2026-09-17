@@ -1,0 +1,47 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Lights its zone while a host lock LED is on, or while a modifier is held.
+
+  Locks and modifiers are the same shape of thing -- a bit set somewhere and a
+  colour to show for it -- so one generator reads either and `source` picks.
+
+  A word on caps lock: a keyboard cannot know it by itself. Pressing the key
+  is a request to the host, not a toggle, and the keyboard only learns the
+  answer when the host sends an LED report back. So this needs
+  CONFIG_ZMK_HID_INDICATORS=y, and on a split it only works on the central,
+  which is the half ZMK compiles the HID code for.
+
+  There is still no caps-word indicator: ZMK exposes neither a state accessor
+  nor an event for that one, so it could not be driven on hardware.
+
+compatible: "zmk,vfx-layer-flag"
+
+include: vfx-layer-common.yaml
+
+properties:
+  color:
+    type: int
+    required: true
+    description: |
+      Shown while any of the masked bits is set, built with VFX_HSB(h, s, b).
+      The layer draws nothing at all when they are clear, so it sits over
+      another effect rather than blanking it.
+
+  source:
+    type: int
+    default: 0
+    description: |
+      VFX_FLAG_LOCKS (the default) reads the host's lock LEDs;
+      VFX_FLAG_MODIFIERS reads the modifiers currently held.
+
+  mask:
+    type: int
+    default: 2
+    description: |
+      Which bits light the zone; any one of them is enough. Locks are
+      VFX_LOCK_CAPS (the default), VFX_LOCK_NUM, VFX_LOCK_SCROLL,
+      VFX_LOCK_COMPOSE and VFX_LOCK_KANA. Modifiers are VFX_MOD_CTRL,
+      VFX_MOD_SHIFT, VFX_MOD_ALT and VFX_MOD_GUI, each covering both sides.
+      Or them together for more than one.

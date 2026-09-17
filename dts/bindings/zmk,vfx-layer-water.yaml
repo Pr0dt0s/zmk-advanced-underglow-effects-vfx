@@ -1,0 +1,85 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  A rippling water surface.
+
+  Each drop sends out a decaying wavetrain, and overlapping drops sum as
+  signed surface height before being coloured, so they interfere the way real
+  ripples do rather than drawing as separate rings.
+
+  Drops come from two places, and both can run at once:
+
+    - ambient rain, set by drop-rate-ms, derived from the clock so both
+      halves of a split agree without exchanging anything;
+    - keypresses, which drop into the surface where the key sits.
+
+  Set drop-rate-ms to 0 for a purely reactive surface. With a low-brightness
+  color the still water draws nothing, so it layers over other effects.
+
+  Reactive placement needs key-pixels on the engine node; without it key
+  positions are spread evenly over the strip.
+
+compatible: "zmk,vfx-layer-water"
+
+include: vfx-layer-common.yaml
+
+# Distance properties below are in the units pixel-positions uses. The shipped
+# maps put about 10 units between adjacent LEDs and these defaults assume that;
+# without a position map distances are strip indices, so scale them down.
+
+properties:
+  color:
+    type: int
+    required: true
+    description: |
+      Still water, built with VFX_HSB(h, s, b). Troughs darken toward black
+      from here. A brightness of 0 means still water draws nothing, which is
+      what you want when layering this over something else.
+
+  crest-color:
+    type: int
+    default: 0
+    description: |
+      Colour at the top of a wave. 0 simply brightens `color` instead, which
+      is flatter looking; giving crests their own colour is what produces
+      highlights on the surface.
+
+  wavelength:
+    type: int
+    default: 20
+    description: Virtual pixels per wave cycle. Larger is a longer, lazier swell.
+
+  speed:
+    type: int
+    default: 45
+    description: |
+      Virtual pixels per second the wavefront travels, scaled by the engine's
+      global speed setting.
+
+  lifetime-ms:
+    type: int
+    default: 2500
+    description: How long one drop keeps rippling before the surface settles.
+
+  drop-rate-ms:
+    type: int
+    default: 0
+    description: |
+      Milliseconds between ambient drops. 0 leaves only keypress drops.
+      Values near lifetime-ms give occasional drops; much smaller values give
+      continuous rain.
+
+  amplitude:
+    type: int
+    default: 200
+    description: 0-255, how far the waves move the surface from its resting colour.
+
+  damping:
+    type: int
+    default: 7
+    description: |
+      How quickly a wave loses height with distance from its drop. A wave
+      falls to half height after roughly 256/damping pixels, so 8 carries
+      across a 36 pixel half and 32 keeps ripples close to where they landed.
+      0 lets them cross the whole board undiminished.

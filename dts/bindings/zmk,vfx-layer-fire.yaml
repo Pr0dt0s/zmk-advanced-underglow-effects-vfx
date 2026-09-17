@@ -1,0 +1,70 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  A hot bed with flames licking up from it.
+
+  The usual way to do fire is a heat buffer that cools and diffuses each
+  frame. That is both state and a dependency on every previous frame, so a
+  dropped frame changes the fire and the two halves of a split drift apart
+  within seconds. This is a pure function of position and time instead: each
+  flame's height wanders from a hash of its column and the current instant,
+  interpolated so it drifts rather than steps. Both halves burn the same fire
+  with nothing exchanged.
+
+  It wants pixel-positions so it knows which way is up. Without a map it
+  burns along the strip, which still flickers but will not line up with the
+  board.
+
+compatible: "zmk,vfx-layer-fire"
+
+include: vfx-layer-common.yaml
+
+properties:
+  base-color:
+    type: int
+    required: true
+    description: |
+      The coolest part, at the bottom of a flame. Built with VFX_HSB(h, s, b).
+      A deep red or orange.
+
+  tip-color:
+    type: int
+    required: true
+    description: |
+      The hottest part, at the tip. A pale yellow against a red base is what
+      makes it read as fire rather than as an orange gradient.
+
+  period-ms:
+    type: int
+    default: 500
+    description: |
+      Milliseconds between flame shapes. Shorter is a more agitated fire.
+
+  cell:
+    type: int
+    default: 12
+    description: |
+      Units across per flame, in pixel-positions units. Around one LED pitch
+      gives a flame per column; larger merges columns into broader flames.
+
+  height:
+    type: int
+    default: 200
+    description: |
+      0-255, how far up the board the flames reach at full stretch. 255 lets
+      them cover it entirely.
+
+  flicker:
+    type: int
+    default: 180
+    description: |
+      0-255, how much a flame's height varies. 0 is a steady glow of constant
+      height; 255 is every flame independently wandering the full range.
+
+  axis:
+    type: int
+    default: 2
+    description: |
+      Which way is up, as a VFX_AXIS_* value. VFX_AXIS_Y (the default) burns
+      up the board. VFX_AXIS_RADIAL burns outward from the middle.

@@ -1,0 +1,27 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  One pixel per Bluetooth profile, lighting the selected one.
+  The zone's length decides how many profile slots are shown.
+
+compatible: "zmk,vfx-layer-ble-profile"
+
+include: vfx-layer-common.yaml
+
+properties:
+  connected-color:
+    type: int
+    required: true
+    description: |
+      Selected profile, connected.
+  disconnected-color:
+    type: int
+    required: true
+    description: |
+      Selected profile, not connected.
+  usb-color:
+    type: int
+    default: 0
+    description: |
+      Shown instead when output is USB rather than Bluetooth.

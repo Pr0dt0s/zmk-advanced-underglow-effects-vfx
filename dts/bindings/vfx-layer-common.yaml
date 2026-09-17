@@ -1,0 +1,23 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+# Included by every zmk,vfx-layer-* binding.
+
+properties:
+  zone:
+    type: phandle
+    required: true
+    description: The zmk,vfx-zone this layer is allowed to draw into.
+
+  blend:
+    type: int
+    default: 0
+    description: |
+      How this layer combines with what is already composited beneath it. Use
+      the VFX_BLEND_* constants from dt-bindings/zmk/vfx.h.
+    enum: [0, 1, 2, 3, 4]
+
+  opacity:
+    type: int
+    default: 255
+    description: Layer opacity, 0-255. A layer at 0 is skipped entirely.

@@ -1,0 +1,45 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  A travelling sine along the strip, modulating brightness.
+  Unlike a scrolling gradient this keeps one color and varies its level.
+
+compatible: "zmk,vfx-layer-wave"
+
+include: vfx-layer-common.yaml
+
+properties:
+  color:
+    type: int
+    required: true
+    description: |
+      Packed color, built with VFX_HSB(h, s, b).
+  wavelength:
+    type: int
+    default: 0
+    description: |
+      Axis units per cycle. 0 fits exactly one cycle to the board. Units follow
+      the axis, as for the gradient's span.
+  period-ms:
+    type: int
+    default: 2000
+    description: |
+      Milliseconds for the wave to travel one wavelength.
+  depth:
+    type: int
+    default: 255
+    description: |
+      0-255. 0 leaves the color flat, 255 takes the trough to black.
+
+  axis:
+    type: int
+    default: 0
+    description: |
+      Which way it runs across the board: VFX_AXIS_STRIP (along the wire, the
+      default), VFX_AXIS_X, VFX_AXIS_Y, VFX_AXIS_RADIAL (out from the middle),
+      VFX_AXIS_ANGLE (around it) or VFX_AXIS_SPIRAL.
+
+      Everything but VFX_AXIS_STRIP needs pixel-positions on the engine node.
+      Without a map there is no board to run across, so they all fall back to
+      the strip rather than going dark.

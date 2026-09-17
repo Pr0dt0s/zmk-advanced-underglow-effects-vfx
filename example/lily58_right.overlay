@@ -1,0 +1,147 @@
+/*
+ * VFX engine for the right half of a Lily58.
+ *
+ * virtual-length is the whole keyboard and strip-offset is where this half
+ * starts in it, which is what lets a gradient run continuously across the
+ * seam while each half only renders its own pixels.
+ */
+
+#include <dt-bindings/zmk/vfx.h>
+#include <vfx/lily58-positions.dtsi>
+#include <vfx/presets.dtsi>
+
+/* The lily58 shield ships an arbitrary chain-length of 10; set yours.
+ * led_strip is only defined by the shield for the nice_nano//zmk board
+ * target, which is what example/build.yaml and CI use.
+ */
+&led_strip {
+    chain-length = <36>;
+};
+
+/ {
+    vfx_engine: vfx_engine {
+        compatible = "zmk,vfx-engine";
+        status = "okay";
+
+        virtual-length = <72>;
+        strip-offset = <36>;
+
+        /* Where each LED physically sits, so effects that radiate spread
+         * across the board rather than along the wire. Derived, not
+         * measured: correct it if ripples come out the wrong shape.
+         */
+        pixel-positions = <VFX_LILY58_POSITIONS>;
+
+        default-scene = <&vfx_aurora>;
+
+        /* Everything added since the first release, so CI compiles every
+         * devicetree macro rather than only the ones the presets use. The
+         * scene itself is declared outside this node, below.
+         */
+        transition-ms = <350>;
+        layer-scenes = <&vfx_aurora &vfx_matrix &example_status>;
+    };
+
+    /* Zones and scenes are matched by compatible wherever they sit in the
+     * tree, and they must not sit under the engine node: a phandle from a
+     * node to its own descendant is a dependency cycle, which devicetree
+     * rejects. <vfx/presets.dtsi> puts them in a container for the same
+     * reason.
+     */
+    example_vfx {
+        zones {
+            /* Written as the keys it is about rather than LED indices: the
+             * engine resolves them through key-pixels at startup.
+             */
+            example_mods: example_mods {
+                compatible = "zmk,vfx-zone";
+                keys = <0 1 11 12 13 22 23 24 25 34 35
+                        42 43 50 51 52 53 54 55 56 57>;
+            };
+
+            example_battery: example_battery {
+                compatible = "zmk,vfx-zone";
+                range = <0 6>;
+            };
+
+            example_other_half: example_other_half {
+                compatible = "zmk,vfx-zone";
+                range = <6 6>;
+            };
+
+            example_speed: example_speed {
+                compatible = "zmk,vfx-zone";
+                range = <14 8>;
+            };
+        };
+
+        example_status: example_status {
+            compatible = "zmk,vfx-scene";
+            display-name = "Example status";
+
+            bed {
+                compatible = "zmk,vfx-layer-fire";
+                zone = <&vfx_all>;
+                base-color = <VFX_HSB(0, 100, 30)>;
+                tip-color = <VFX_HSB(40, 70, 70)>;
+                axis = <VFX_AXIS_Y>;
+            };
+
+            sweep {
+                compatible = "zmk,vfx-layer-comet";
+                zone = <&vfx_all>;
+                blend = <VFX_BLEND_ADD>;
+                axis = <VFX_AXIS_X>;
+                color = <VFX_HSB(265, 95, 40)>;
+                count = <2>;
+            };
+
+            mods {
+                compatible = "zmk,vfx-layer-solid";
+                zone = <&example_mods>;
+                color = <VFX_HSB(25, 95, 40)>;
+            };
+
+            typed {
+                compatible = "zmk,vfx-layer-cross";
+                zone = <&vfx_all>;
+                blend = <VFX_BLEND_ADD>;
+                color = <VFX_HSB(190, 90, 60)>;
+                centre-color = <VFX_HSB(40, 20, 100)>;
+                radius = <22>;
+            };
+
+            batt {
+                compatible = "zmk,vfx-layer-battery";
+                zone = <&example_battery>;
+                high-color = <VFX_HSB(120, 100, 70)>;
+                low-color = <VFX_HSB(0, 100, 80)>;
+            };
+
+            other_half {
+                compatible = "zmk,vfx-layer-peripheral-battery";
+                zone = <&example_other_half>;
+                high-color = <VFX_HSB(170, 100, 70)>;
+                low-color = <VFX_HSB(0, 100, 80)>;
+                unknown-color = <VFX_HSB(230, 60, 18)>;
+            };
+
+            speed {
+                compatible = "zmk,vfx-layer-wpm";
+                zone = <&example_speed>;
+                idle-color = <VFX_HSB(200, 90, 30)>;
+                fast-color = <VFX_HSB(0, 95, 100)>;
+                bar = <1>;
+            };
+
+            caps {
+                compatible = "zmk,vfx-layer-flag";
+                zone = <&vfx_all>;
+                blend = <VFX_BLEND_ADD>;
+                color = <VFX_HSB(0, 90, 30)>;
+                source = <VFX_FLAG_LOCKS>;
+                mask = <VFX_LOCK_CAPS>;
+            };
+        };
+    };
+};

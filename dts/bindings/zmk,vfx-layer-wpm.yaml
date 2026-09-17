@@ -1,0 +1,39 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Colours the zone by how fast you are typing, or fills it as a bar.
+
+  Needs CONFIG_ZMK_WPM=y, which is what computes the estimate. Without it the
+  reading stays at zero and the layer sits at its idle colour.
+
+compatible: "zmk,vfx-layer-wpm"
+
+include: vfx-layer-common.yaml
+
+properties:
+  idle-color:
+    type: int
+    required: true
+    description: |
+      At rest, built with VFX_HSB(h, s, b). Brightness 0 makes the layer draw
+      nothing while you are not typing, which lets the power gate cut the rail.
+
+  fast-color:
+    type: int
+    required: true
+    description: At `full` words per minute and above.
+
+  full:
+    type: int
+    default: 80
+    description: |
+      The words per minute that counts as flat out. Set it near your own top
+      speed, or the colour spends all its time at the slow end.
+
+  bar:
+    type: int
+    default: 0
+    description: |
+      Non-zero fills the zone in proportion to speed instead of colouring all
+      of it, the way the battery indicator fills.
