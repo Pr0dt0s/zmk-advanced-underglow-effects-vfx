@@ -30,6 +30,7 @@ if(CONFIG_ZMK_VFX)
     src/layers/ambient.c
     src/layers/reactive.c
     src/layers/water.c
+    src/layers/matrix.c
     src/layers/indicators.c
   )
 

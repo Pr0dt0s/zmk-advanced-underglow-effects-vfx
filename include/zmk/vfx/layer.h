@@ -80,26 +80,47 @@ static inline uint16_t vfx_pixel_distance(const struct vfx_frame_ctx *ctx, uint1
  * have covered the whole board. With positions this is the diagonal; without
  * it, the strip length.
  */
-static inline uint16_t vfx_board_extent(const struct vfx_frame_ctx *ctx) {
+/* The box the pixels occupy. Anything with a direction (falling, sweeping)
+ * needs it to know where the board starts and ends.
+ */
+struct vfx_board_box {
+    int16_t min_x, min_y, max_x, max_y;
+    bool known; /* false when there is no position map to measure */
+};
+
+static inline struct vfx_board_box vfx_board_bounds(const struct vfx_frame_ctx *ctx) {
+    struct vfx_board_box box = {0, 0, 0, 0, false};
+
     if (!ctx->pixel_xy || ctx->num_positions == 0) {
-        return ctx->virtual_length;
+        return box;
     }
 
-    int16_t min_x = ctx->pixel_xy[0], max_x = min_x;
-    int16_t min_y = ctx->pixel_xy[1], max_y = min_y;
+    box.known = true;
+    box.min_x = box.max_x = ctx->pixel_xy[0];
+    box.min_y = box.max_y = ctx->pixel_xy[1];
 
     for (uint16_t i = 1; i < ctx->num_positions; i++) {
         const int16_t x = ctx->pixel_xy[i * 2];
         const int16_t y = ctx->pixel_xy[i * 2 + 1];
 
-        min_x = x < min_x ? x : min_x;
-        max_x = x > max_x ? x : max_x;
-        min_y = y < min_y ? y : min_y;
-        max_y = y > max_y ? y : max_y;
+        box.min_x = x < box.min_x ? x : box.min_x;
+        box.max_x = x > box.max_x ? x : box.max_x;
+        box.min_y = y < box.min_y ? y : box.min_y;
+        box.max_y = y > box.max_y ? y : box.max_y;
     }
 
-    const int32_t w = max_x - min_x;
-    const int32_t h = max_y - min_y;
+    return box;
+}
+
+static inline uint16_t vfx_board_extent(const struct vfx_frame_ctx *ctx) {
+    const struct vfx_board_box box = vfx_board_bounds(ctx);
+
+    if (!box.known) {
+        return ctx->virtual_length;
+    }
+
+    const int32_t w = box.max_x - box.min_x;
+    const int32_t h = box.max_y - box.min_y;
 
     return (uint16_t)vfx_isqrt((uint32_t)(w * w + h * h));
 }

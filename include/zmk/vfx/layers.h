@@ -109,6 +109,41 @@ struct vfx_water_state {
     uint8_t next;
 };
 
+/* Overlapping ambient columns. Eight keeps rain reading as continuous
+ * without the per-pixel loop growing expensive.
+ */
+#define VFX_MATRIX_MAX_AMBIENT 8
+
+struct vfx_matrix_cfg {
+    uint32_t color;      /* the trail */
+    uint32_t head_color; /* leading pixel; 0 just brightens `color` */
+    uint16_t speed;      /* units per second the head falls */
+    uint16_t tail;       /* units of trail behind the head */
+    uint16_t drop_rate_ms; /* gap between ambient drops; 0 = keypresses only */
+    uint8_t columns;     /* how many columns the board is divided into */
+    uint8_t jitter;      /* 0-255, spread of per-drop speeds */
+    uint8_t head_size;   /* units at the front drawn as the head */
+};
+
+struct vfx_matrix_drop {
+    uint32_t start_ms;
+    int32_t y0;       /* where the head began */
+    uint8_t column;
+    uint8_t speed_pct; /* 100 is the configured speed */
+    bool active;
+};
+
+struct vfx_matrix_state {
+    /* Keypress drops only; ambient ones are a function of time. */
+    struct vfx_matrix_drop drops[VFX_MAX_RIPPLES];
+    uint8_t next;
+
+    /* Board geometry, measured once per frame. */
+    int16_t min_x, min_y;
+    uint16_t col_w;
+    uint16_t fall_len;
+};
+
 struct vfx_keyflash_cfg {
     uint32_t color;
     uint16_t decay_ms;

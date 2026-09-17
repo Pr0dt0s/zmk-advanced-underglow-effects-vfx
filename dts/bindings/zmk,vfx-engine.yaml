@@ -44,7 +44,9 @@ properties:
       anything that radiates (water, ripple, keyflash, trail) spreads to
       whichever LEDs are adjacent on the strip. On a serpentine strip those
       are scattered across the board, which is why a ripple looks like it
-      jumps around instead of expanding.
+      jumps around instead of expanding. Matrix needs it for a different
+      reason: without a y axis it has no idea which way is down, and falls
+      along the strip in a single column.
 
       Units are yours to choose; distances in effect properties are in the
       same ones. Roughly 10 per LED spacing works well: it leaves sub-LED

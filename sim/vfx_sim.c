@@ -66,6 +66,8 @@ static struct vfx_keyflash_cfg keyflash_cfg[MAX_LAYERS];
 static struct vfx_keyflash_state keyflash_state[MAX_LAYERS];
 static struct vfx_water_cfg water_cfg[MAX_LAYERS];
 static struct vfx_water_state water_state[MAX_LAYERS];
+static struct vfx_matrix_cfg matrix_cfg[MAX_LAYERS];
+static struct vfx_matrix_state matrix_state[MAX_LAYERS];
 static struct vfx_trail_cfg trail_cfg[MAX_LAYERS];
 static struct vfx_trail_state trail_state[MAX_LAYERS];
 static struct vfx_layer_state_cfg layer_state_cfg[MAX_LAYERS];
@@ -276,6 +278,7 @@ enum sim_layer_type {
     SIM_BATTERY,
     SIM_BLE_PROFILE,
     SIM_WATER,
+    SIM_MATRIX,
 };
 
 /* One entry point for every generator whose config is a colour plus up to
@@ -390,6 +393,38 @@ EXPORT int vfx_sim_add_water(int zone, int blend, int opacity, uint32_t color, u
     l->api = &vfx_layer_water_api;
     l->config = &water_cfg[i];
     l->state = &water_state[i];
+
+    scene.num_layers = (uint8_t)(++num_layers);
+
+    return i;
+}
+
+EXPORT int vfx_sim_add_matrix(int zone, int blend, int opacity, uint32_t color, uint32_t head,
+                              int speed, int tail, int drop_rate_ms, int columns, int jitter,
+                              int head_size) {
+    struct vfx_layer *l = next_layer(zone, blend, opacity);
+
+    if (!l) {
+        return -1;
+    }
+
+    const int i = num_layers;
+
+    matrix_cfg[i] = (struct vfx_matrix_cfg){
+        .color = color,
+        .head_color = head,
+        .speed = (uint16_t)speed,
+        .tail = (uint16_t)tail,
+        .drop_rate_ms = (uint16_t)drop_rate_ms,
+        .columns = (uint8_t)columns,
+        .jitter = (uint8_t)jitter,
+        .head_size = (uint8_t)head_size,
+    };
+    matrix_state[i] = (struct vfx_matrix_state){0};
+
+    l->api = &vfx_layer_matrix_api;
+    l->config = &matrix_cfg[i];
+    l->state = &matrix_state[i];
 
     scene.num_layers = (uint8_t)(++num_layers);
 

@@ -1,0 +1,79 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Matrix rain: columns of light falling down the board, each a bright head
+  with a fading trail behind it.
+
+  Drops come from two places, and both can run at once:
+
+    - ambient rain, set by drop-rate-ms, hashed from the clock so both halves
+      of a split agree on it without exchanging anything;
+    - keypresses, which start a drop at the key you pressed so the reaction
+      shows under your finger and then falls away from it.
+
+  Set drop-rate-ms to 0 for keypress-only rain, which leaves the board dark
+  between presses and lets the power gate cut the rail.
+
+  This is the one generator that needs to know which way is down, so give the
+  engine pixel-positions. Without a map it treats strip order as the direction
+  of travel: still animated, but not falling down the board.
+
+compatible: "zmk,vfx-layer-matrix"
+
+include: vfx-layer-common.yaml
+
+# Distances below are in the units pixel-positions uses. The shipped maps put
+# about 10 units between adjacent LEDs and these defaults assume that.
+
+properties:
+  color:
+    type: int
+    required: true
+    description: The trail, built with VFX_HSB(h, s, b). Classically a green.
+
+  head-color:
+    type: int
+    default: 0
+    description: |
+      The leading pixel of a drop. 0 brightens `color` instead. A pale,
+      desaturated head against a saturated trail is what makes rain read as
+      falling rather than as a moving stripe.
+
+  speed:
+    type: int
+    default: 60
+    description: Units per second the head falls.
+
+  tail:
+    type: int
+    default: 40
+    description: |
+      Units of trail behind the head. Around the height of the board gives
+      continuous columns; much shorter gives distinct comets.
+
+  drop-rate-ms:
+    type: int
+    default: 0
+    description: |
+      Milliseconds between ambient drops. 0 leaves only keypress drops.
+      Smaller values give denser rain.
+
+  columns:
+    type: int
+    default: 6
+    description: |
+      How many columns the board is divided into. Match it to the number of
+      LED columns in your position map, or use fewer for wider bands.
+
+  jitter:
+    type: int
+    default: 60
+    description: |
+      0-255, how much per-drop speeds vary. Without some spread the columns
+      march in step, which reads as a sweep rather than as rain.
+
+  head-size:
+    type: int
+    default: 8
+    description: Units at the front of a drop drawn with head-color.

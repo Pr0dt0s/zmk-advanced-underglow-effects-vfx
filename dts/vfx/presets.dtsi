@@ -175,6 +175,48 @@
             };
         };
 
+        /* Columns of green falling down the board, with typing starting a
+         * drop under the key you pressed. Twelve columns matches the LED
+         * columns of the shipped Lily58 map.
+         */
+        vfx_matrix: vfx_matrix {
+            compatible = "zmk,vfx-scene";
+            display-name = "Matrix";
+
+            rain {
+                compatible = "zmk,vfx-layer-matrix";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(125, 100, 55)>;
+                head-color = <VFX_HSB(110, 25, 100)>;
+                speed = <55>;
+                tail = <34>;
+                drop-rate-ms = <260>;
+                columns = <12>;
+                jitter = <90>;
+                head-size = <9>;
+            };
+        };
+
+        /* The same rain, but only where you type: the board is dark between
+         * keypresses, so the power gate can cut the rail.
+         */
+        vfx_matrix_keys: vfx_matrix_keys {
+            compatible = "zmk,vfx-scene";
+            display-name = "Matrix (typing)";
+
+            rain {
+                compatible = "zmk,vfx-layer-matrix";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(125, 100, 60)>;
+                head-color = <VFX_HSB(110, 20, 100)>;
+                speed = <70>;
+                tail = <26>;
+                columns = <12>;
+                jitter = <0>;
+                head-size = <8>;
+            };
+        };
+
         vfx_ember: vfx_ember {
             compatible = "zmk,vfx-scene";
             display-name = "Ember";

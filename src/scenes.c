@@ -152,6 +152,22 @@ DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_ripple, VFX_RIPPLE_DEFINE)
 
 DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_water, VFX_WATER_DEFINE)
 
+#define VFX_MATRIX_DEFINE(node)                                                                    \
+    static const struct vfx_matrix_cfg VFX_CFG_SYM(node) = {                                       \
+        .color = DT_PROP(node, color),                                                             \
+        .head_color = DT_PROP(node, head_color),                                                   \
+        .speed = DT_PROP(node, speed),                                                             \
+        .tail = DT_PROP(node, tail),                                                               \
+        .drop_rate_ms = DT_PROP(node, drop_rate_ms),                                               \
+        .columns = DT_PROP(node, columns),                                                         \
+        .jitter = DT_PROP(node, jitter),                                                           \
+        .head_size = DT_PROP(node, head_size),                                                     \
+    };                                                                                             \
+    static struct vfx_matrix_state VFX_STATE_SYM(node);                                            \
+    static const struct vfx_layer_api *const VFX_API_SYM(node) = &vfx_layer_matrix_api;
+
+DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_matrix, VFX_MATRIX_DEFINE)
+
 #define VFX_KEYFLASH_DEFINE(node)                                                                  \
     static const struct vfx_keyflash_cfg VFX_CFG_SYM(node) = {                                     \
         .color = DT_PROP(node, color),                                                             \

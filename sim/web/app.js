@@ -30,6 +30,8 @@ const LAYER_SPECS = {
   trail:      { id: 8,  args: [['decay_ms', 1500], ['spread', 12]] },
   water:      { id: 13, args: [['wavelength', 20], ['speed', 45], ['lifetime_ms', 2500],
                               ['drop_rate_ms', 0], ['amplitude', 200], ['damping', 7]] },
+  matrix:     { id: 14, args: [['speed', 60], ['tail', 40], ['drop_rate_ms', 0],
+                              ['columns', 6], ['jitter', 60], ['head_size', 8]] },
   'layer-state': { id: 9,  args: [] },
   battery:       { id: 10, args: [['warn_below', 20]] },
   'ble-profile': { id: 11, args: [] },
@@ -120,6 +122,14 @@ class Half {
                                         l.wavelength ?? 20, l.speed ?? 45,
                                         l.lifetime_ms ?? 2500, l.drop_rate_ms ?? 0,
                                         l.amplitude ?? 200, l.damping ?? 7);
+          break;
+
+        case 'matrix':
+          rc = this.e.vfx_sim_add_matrix(zid, blend, opacity,
+                                         packHsb(...l.color),
+                                         l.head_color ? packHsb(...l.head_color) : 0,
+                                         l.speed ?? 60, l.tail ?? 40, l.drop_rate_ms ?? 0,
+                                         l.columns ?? 6, l.jitter ?? 60, l.head_size ?? 8);
           break;
 
         case 'battery':
@@ -415,6 +425,8 @@ function toDevicetree(scene, ledsPerHalf) {
       out.push(`${ind}    colors = <${colors.join(' ')}>;`);
     } else if (l.type === 'water') {
       if (l.crest_color) out.push(`${ind}    crest-color = <${hsb(l.crest_color)}>;`);
+    } else if (l.type === 'matrix') {
+      if (l.head_color) out.push(`${ind}    head-color = <${hsb(l.head_color)}>;`);
     } else if (l.type === 'battery') {
       out.push(`${ind}    high-color = <${hsb(l.high_color)}>;`);
       out.push(`${ind}    low-color = <${hsb(l.low_color)}>;`);
@@ -529,6 +541,24 @@ const PRESETS = {
         color: [205, 95, 14], crest_color: [185, 25, 100],
         wavelength: 18, speed: 55, lifetime_ms: 2400, drop_rate_ms: 0,
         amplitude: 255, damping: 7 },
+    ],
+  },
+  Matrix: {
+    name: 'Matrix',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'matrix', zone: 'all',
+        color: [125, 100, 55], head_color: [110, 25, 100],
+        speed: 55, tail: 34, drop_rate_ms: 260, columns: 12, jitter: 90, head_size: 9 },
+    ],
+  },
+  'Matrix (typing only)': {
+    name: 'Matrix (typing only)',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'matrix', zone: 'all',
+        color: [125, 100, 60], head_color: [110, 20, 100],
+        speed: 70, tail: 26, drop_rate_ms: 0, columns: 12, jitter: 0, head_size: 8 },
     ],
   },
   'Status bar': {

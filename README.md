@@ -172,6 +172,7 @@ A zone length is clamped to the real `chain-length`, so `range = <0 255>` means
 | `zmk,vfx-layer-twinkle` | Scattered pixels fading up and out |
 | `zmk,vfx-layer-plasma` | Two summed sines swinging the hue |
 | `zmk,vfx-layer-water` | A rippling surface, disturbed by rain and by typing |
+| `zmk,vfx-layer-matrix` | Falling columns of light, started by rain and by typing |
 | `zmk,vfx-layer-ripple` | Rings expanding from each pressed key |
 | `zmk,vfx-layer-keyflash` | Lights the pressed key and fades in place |
 | `zmk,vfx-layer-trail` | Decaying heat map that builds up as you type |
@@ -189,7 +190,7 @@ Battery works on both, and shows each half's own cell.
 
 Every generator takes `zone`, `blend` (`VFX_BLEND_NORMAL`, `_ADD`,
 `_MULTIPLY`, `_SCREEN`, `_MAX`) and `opacity`. See `dts/bindings/` for each
-one's own properties; `dts/vfx/presets.dtsi` has nine ready-made scenes.
+one's own properties; `dts/vfx/presets.dtsi` has thirteen ready-made scenes.
 
 `water` is both an ambient and a reactive effect. Each drop sends out a
 decaying wavetrain, and overlapping drops sum as signed surface height before
@@ -198,6 +199,17 @@ Ambient drops are derived from the clock, so both halves of a split agree on
 where the rain falls without exchanging anything. Set `drop-rate-ms = <0>` for
 a surface that only moves when you type, and give the still water zero
 brightness if you want the power gate to cut the rail between keypresses.
+
+`matrix` works the same way, and is the other generator that is ambient and
+reactive at once: drops fall down the board leaving a fading trail, started
+either by `drop-rate-ms` or by a keypress. A keypress drop starts at the key
+you pressed, so the reaction appears under your finger and then falls away
+from it, and its trail only covers ground the drop has actually fallen over.
+`drop-rate-ms = <0>` leaves keypress-only rain, which is dark and idle between
+presses and so lets the power gate cut the rail. It is the one generator that
+needs to know which way is *down*, so give it `pixel-positions` below; without
+a map it treats strip order as the direction of travel and falls in a single
+column.
 
 ### Effects that radiate need to know where the LEDs are
 
@@ -209,8 +221,8 @@ board, so a ripple "expanding" by three lights two scattered pixels rather
 than a ring.
 
 `pixel-positions` on the engine node fixes that — x,y for every pixel across
-the whole board, and `water`, `ripple`, `keyflash` and `trail` then measure
-real distance:
+the whole board. `water`, `ripple`, `keyflash` and `trail` then measure real
+distance, and `matrix` gets an axis to fall along and columns to fall in:
 
 ```dts
 #include <vfx/lily58-positions.dtsi>

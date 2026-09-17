@@ -1180,6 +1180,374 @@ static void test_trail_deposits_by_board_distance(void) {
           "pixels a full pitch away are outside a spread of 9");
 }
 
+/* ---- matrix rain -------------------------------------------------------- */
+
+static bool rgb_is_black(struct vfx_rgb c) { return c.r == 0 && c.g == 0 && c.b == 0; }
+
+static struct vfx_matrix_cfg matrix_cfg_base(void) {
+    return (struct vfx_matrix_cfg){
+        .color = VFX_HSB(120, 100, 60),
+        .head_color = VFX_HSB(120, 20, 100),
+        .speed = 60,
+        .tail = 40,
+        .drop_rate_ms = 0, /* keypress-only unless a test says otherwise */
+        .columns = 6,
+        .jitter = 0, /* deterministic speeds; one test turns it back on */
+        .head_size = 8,
+    };
+}
+
+/* In the 6x6 grid, these three pixels share a board column (x=20) and run
+ * down it, even though they are 5 and 12 apart along the wire.
+ */
+#define MX_TOP 9  /* (20, 8)  */
+#define MX_MID 14 /* (20, 16) */
+#define MX_LOW 21 /* (20, 24) */
+
+static void test_matrix_keypress_falls_down_the_board(void) {
+    /* The reaction: a drop starts at the key you pressed and travels down the
+     * board, not along the strip.
+     */
+    struct vfx_matrix_cfg cfg = matrix_cfg_base();
+    struct vfx_matrix_state st = {0};
+    SCENE1(scene, &vfx_layer_matrix_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = grid_ctx();
+    ctx.speed = 3; /* neutral, so the configured speed is used as-is */
+
+    vfx_render_frame(&scene, &ctx, out, NULL); /* frame() sizes the columns */
+    vfx_scene_key_event(&scene, &ctx, MX_MID, true, 0);
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    CHECK(!rgb_is_black(out[MX_MID]), "the pressed key's own pixel must light up");
+    CHECK(rgb_is_black(out[MX_TOP]), "the row above the key should still be dark at t=0");
+    CHECK(rgb_is_black(out[MX_LOW]), "the drop should not have fallen anywhere yet");
+
+    /* 150 ms at 60 units/s is 9 units: past the row below (8 away), and the
+     * row above is now trailing behind the head.
+     */
+    ctx.time_ms = 150;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    CHECK(!rgb_is_black(out[MX_LOW]), "the drop should have reached the row below");
+
+    /* And it keeps going: eventually it is past the bottom and the column is
+     * dark again.
+     */
+    ctx.time_ms = 5000;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    CHECK(rgb_is_black(out[MX_MID]) && rgb_is_black(out[MX_LOW]),
+          "the drop should have fallen off the bottom by now");
+}
+
+static void test_matrix_trail_never_precedes_the_drop(void) {
+    /* A drop cannot have trailed over ground it has not covered. Without the
+     * clamp a keypress lights its whole column the instant you press it,
+     * because the trail is drawn relative to the head rather than to how far
+     * the drop has actually fallen.
+     */
+    struct vfx_matrix_cfg cfg = matrix_cfg_base();
+    struct vfx_matrix_state st = {0};
+    SCENE1(scene, &vfx_layer_matrix_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = grid_ctx();
+    ctx.speed = 3;
+
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    vfx_scene_key_event(&scene, &ctx, MX_MID, true, 0);
+
+    /* The tail is 40 units, five rows: long enough to cover MX_TOP at any
+     * point in the fall, if it were allowed to reach back that far.
+     */
+    for (uint32_t t = 0; t <= 800; t += 50) {
+        ctx.time_ms = t;
+        vfx_render_frame(&scene, &ctx, out, NULL);
+
+        CHECK(rgb_is_black(out[MX_TOP]), "the trail reached above where the drop started, at t=%u",
+              t);
+        if (!rgb_is_black(out[MX_TOP])) {
+            return;
+        }
+    }
+
+    /* Meanwhile the ground it has covered does trail: by 250 ms the head is
+     * below MX_LOW and both rows behind it are lit.
+     */
+    ctx.time_ms = 250;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    CHECK(!rgb_is_black(out[MX_MID]) && !rgb_is_black(out[MX_LOW]),
+          "the drop should be trailing over the rows it has passed");
+}
+
+static void test_matrix_head_is_brighter_than_its_trail(void) {
+    /* What makes rain read as falling rather than as a moving stripe. */
+    struct vfx_matrix_cfg cfg = matrix_cfg_base();
+    cfg.head_size = 4; /* under one row, so MX_MID is trail and not head */
+    struct vfx_matrix_state st = {0};
+    SCENE1(scene, &vfx_layer_matrix_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = grid_ctx();
+    ctx.speed = 3;
+
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    vfx_scene_key_event(&scene, &ctx, MX_MID, true, 0);
+
+    ctx.time_ms = 150; /* head at y=25, just past MX_LOW at y=24 */
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    const int head = out[MX_LOW].r + out[MX_LOW].g + out[MX_LOW].b;
+    const int tail = out[MX_MID].r + out[MX_MID].g + out[MX_MID].b;
+
+    CHECK(head > tail, "the head (%d) should outshine the trail behind it (%d)", head, tail);
+}
+
+static void test_matrix_stays_in_its_column(void) {
+    /* Neighbouring columns must not light up: rain falls in lanes.
+     * Pixel 15 is beside MX_MID on the board and next to it on the wire.
+     */
+    struct vfx_matrix_cfg cfg = matrix_cfg_base();
+    struct vfx_matrix_state st = {0};
+    SCENE1(scene, &vfx_layer_matrix_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = grid_ctx();
+    ctx.speed = 3;
+
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    vfx_scene_key_event(&scene, &ctx, MX_MID, true, 0);
+
+    for (uint32_t t = 0; t <= 800; t += 100) {
+        ctx.time_ms = t;
+        vfx_render_frame(&scene, &ctx, out, NULL);
+
+        for (int i = 0; i < NPX; i++) {
+            if (grid_xy[i * 2] == 20) {
+                continue; /* the drop's own column */
+            }
+
+            CHECK(rgb_is_black(out[i]), "pixel %d in another column lit up at t=%u", i, t);
+            if (!rgb_is_black(out[i])) {
+                return;
+            }
+        }
+    }
+}
+
+static void test_matrix_idle_without_rain(void) {
+    /* drop-rate-ms = 0 is the keypress-only mode: dark and idle between
+     * presses, so the timer parks and the power gate can cut the rail.
+     */
+    struct vfx_matrix_cfg cfg = matrix_cfg_base();
+    struct vfx_matrix_state st = {0};
+    SCENE1(scene, &vfx_layer_matrix_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = grid_ctx();
+    bool lit = true;
+
+    ctx.speed = 3;
+
+    CHECK(!vfx_scene_is_animating(&scene, &ctx), "keypress-only rain must report idle");
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(!lit, "nothing should be lit before the first press");
+
+    vfx_scene_key_event(&scene, &ctx, MX_MID, true, 0);
+    CHECK(vfx_scene_is_animating(&scene, &ctx), "a press must wake the layer");
+
+    /* The drop has to be retired once it is gone, or the layer never settles
+     * and the rail stays up forever.
+     */
+    ctx.time_ms = 10000;
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(!vfx_scene_is_animating(&scene, &ctx), "the layer must settle once the drop is gone");
+}
+
+static void test_matrix_rain_runs_without_keys(void) {
+    /* And the general effect: it keeps raining with no input at all. */
+    struct vfx_matrix_cfg cfg = matrix_cfg_base();
+    cfg.drop_rate_ms = 200;
+    cfg.jitter = 80;
+    struct vfx_matrix_state st = {0};
+    SCENE1(scene, &vfx_layer_matrix_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX], prev[NPX];
+    struct vfx_frame_ctx ctx = grid_ctx();
+    ctx.speed = 3;
+
+    CHECK(vfx_scene_is_animating(&scene, &ctx), "raining matrix is always animating");
+
+    int changed = 0, ever_lit = 0;
+    ctx.time_ms = 1000;
+    vfx_render_frame(&scene, &ctx, prev, NULL);
+
+    for (uint32_t t = 1050; t <= 5000; t += 50) {
+        bool lit = false;
+
+        ctx.time_ms = t;
+        vfx_render_frame(&scene, &ctx, out, &lit);
+
+        if (memcmp(prev, out, sizeof(out)) != 0) {
+            changed++;
+        }
+        if (lit) {
+            ever_lit++;
+        }
+
+        memcpy(prev, out, sizeof(out));
+    }
+
+    CHECK(changed > 40, "rain should keep moving, only %d frames differed", changed);
+    CHECK(ever_lit > 60, "rain should light the board nearly always, only %d frames lit", ever_lit);
+}
+
+/* Two 6x6 grids side by side with a gap between them, as on a split: the
+ * whole-board map both halves are given.
+ */
+static int16_t board_xy[NPX * 2 * 2];
+
+static void build_board(void) {
+    build_grid();
+
+    for (int i = 0; i < NPX; i++) {
+        board_xy[i * 2] = grid_xy[i * 2];
+        board_xy[i * 2 + 1] = grid_xy[i * 2 + 1];
+        board_xy[(NPX + i) * 2] = (int16_t)(grid_xy[i * 2] + 80);
+        board_xy[(NPX + i) * 2 + 1] = grid_xy[i * 2 + 1];
+    }
+}
+
+static void test_matrix_rain_identical_on_both_halves(void) {
+    /* Ambient drops are hashed from the epoch number rather than stored, so
+     * two halves sharing a timebase agree on the rain with nothing exchanged.
+     * Rendering the right half alone must match the right half of a
+     * whole-board render, pixel for pixel.
+     */
+    build_board();
+
+    struct vfx_matrix_cfg cfg = matrix_cfg_base();
+    cfg.drop_rate_ms = 300;
+    cfg.jitter = 60;
+    cfg.columns = 12; /* both halves' columns */
+
+    static struct vfx_zone whole = {.pixels = NULL, .start = 0, .len = NPX * 2};
+    struct vfx_matrix_state st_h = {0}, st_w = {0};
+
+    struct vfx_layer half_l = {.api = &vfx_layer_matrix_api,
+                               .zone = &full_zone,
+                               .config = &cfg,
+                               .state = &st_h,
+                               .blend = VFX_BLEND_NORMAL,
+                               .opacity = 255};
+    struct vfx_layer whole_l = half_l;
+    whole_l.zone = &whole;
+    whole_l.state = &st_w;
+
+    struct vfx_scene right = {.name = "r", .layers = &half_l, .num_layers = 1};
+    struct vfx_scene board = {.name = "w", .layers = &whole_l, .num_layers = 1};
+
+    struct vfx_rgb rout[NPX], wout[NPX * 2];
+    struct vfx_frame_ctx rctx = test_ctx(), wctx = test_ctx();
+
+    rctx.virtual_length = wctx.virtual_length = NPX * 2;
+    rctx.strip_offset = NPX;
+    wctx.num_pixels = NPX * 2;
+    rctx.speed = wctx.speed = 3;
+    rctx.pixel_xy = wctx.pixel_xy = board_xy;
+    rctx.num_positions = wctx.num_positions = NPX * 2;
+
+    for (uint32_t t = 0; t <= 4000; t += 350) {
+        rctx.time_ms = wctx.time_ms = t;
+        vfx_render_frame(&right, &rctx, rout, NULL);
+        vfx_render_frame(&board, &wctx, wout, NULL);
+
+        CHECK(memcmp(rout, wout + NPX, sizeof(rout)) == 0,
+              "rain differs between the half and whole-board render at t=%u", t);
+    }
+}
+
+static void test_matrix_rain_lands_where_the_leds_are(void) {
+    /* A column is a slice of the board's width, and nothing says an LED sits
+     * in every slice: the gap between the halves of a split is one such empty
+     * slice, and a strip that reaches past the key field makes far more of
+     * them. If a drop picked a column number, every empty slice would swallow
+     * its share of the rain.
+     *
+     * The map here is the usual grid plus one pixel out on its own, which
+     * stretches the board wide enough that eleven of the twelve columns hold
+     * nothing.
+     */
+    static int16_t sparse_xy[NPX * 2];
+
+    build_grid();
+    for (int i = 0; i < NPX * 2; i++) {
+        sparse_xy[i] = grid_xy[i];
+    }
+    sparse_xy[(NPX - 1) * 2] = 500;
+
+    struct vfx_matrix_cfg cfg = matrix_cfg_base();
+    cfg.drop_rate_ms = 260;
+    cfg.jitter = 90;
+    cfg.columns = 12;
+    struct vfx_matrix_state st = {0};
+    SCENE1(scene, &vfx_layer_matrix_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+    int lit = 0;
+
+    ctx.speed = 3;
+    ctx.pixel_xy = sparse_xy;
+    ctx.num_positions = NPX;
+
+    for (uint32_t t = 0; t <= 20000; t += 100) {
+        ctx.time_ms = t;
+        vfx_render_frame(&scene, &ctx, out, NULL);
+
+        for (int i = 0; i < NPX; i++) {
+            if (!rgb_is_black(out[i])) {
+                lit++;
+            }
+        }
+    }
+
+    /* Picking a column number leaves this in the low hundreds. */
+    CHECK(lit > 2000, "most of the rain fell in columns with no LEDs in them: %d lit pixels", lit);
+}
+
+static void test_matrix_falls_back_to_the_strip(void) {
+    /* With no position map there is no y axis, so strip order stands in for
+     * one. It must still animate rather than sit dark or divide the strip
+     * into columns that can never all be reached.
+     */
+    struct vfx_matrix_cfg cfg = matrix_cfg_base();
+    cfg.drop_rate_ms = 250;
+    cfg.speed = 20; /* units are now pixels, so a board speed would blur past */
+    cfg.tail = 8;
+    struct vfx_matrix_state st = {0};
+    SCENE1(scene, &vfx_layer_matrix_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx(); /* deliberately no pixel_xy */
+    int lit_frames = 0;
+
+    ctx.speed = 3;
+
+    for (uint32_t t = 500; t <= 4000; t += 100) {
+        bool lit = false;
+
+        ctx.time_ms = t;
+        vfx_render_frame(&scene, &ctx, out, &lit);
+
+        if (lit) {
+            lit_frames++;
+        }
+    }
+
+    CHECK(lit_frames > 20, "rain without a map lit only %d of 36 frames", lit_frames);
+}
+
 static void test_isqrt(void) {
     CHECK(vfx_isqrt(0) == 0, "isqrt(0)");
     CHECK(vfx_isqrt(1) == 1, "isqrt(1)");
@@ -1244,6 +1612,15 @@ int main(void) {
         {"distance is across the board with a map", test_distance_is_across_the_board_with_a_map},
         {"ripple radiates on the board", test_ripple_radiates_on_the_board_not_the_wire},
         {"trail deposits by board distance", test_trail_deposits_by_board_distance},
+        {"matrix keypress falls down the board", test_matrix_keypress_falls_down_the_board},
+        {"matrix trail never precedes the drop", test_matrix_trail_never_precedes_the_drop},
+        {"matrix head is brighter than its trail", test_matrix_head_is_brighter_than_its_trail},
+        {"matrix stays in its column", test_matrix_stays_in_its_column},
+        {"matrix idle without rain", test_matrix_idle_without_rain},
+        {"matrix rain runs without keys", test_matrix_rain_runs_without_keys},
+        {"matrix rain identical on both halves", test_matrix_rain_identical_on_both_halves},
+        {"matrix rain lands where the leds are", test_matrix_rain_lands_where_the_leds_are},
+        {"matrix falls back to the strip", test_matrix_falls_back_to_the_strip},
     };
 
     for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {
