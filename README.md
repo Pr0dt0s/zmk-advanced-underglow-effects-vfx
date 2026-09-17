@@ -7,6 +7,14 @@ combined with a **blend mode**, all described in devicetree.
 It also cuts power to the LEDs whenever a frame renders entirely black, which
 on a wireless keyboard is worth more than everything else here put together.
 
+![Aurora](https://pr0dt0s.github.io/zmk-advanced-underglow-effects-vfx/img/aurora.gif)
+
+Every clip on this page is the real compositor: the frames come from the
+WebAssembly build of the same C the firmware runs, recorded off the simulator
+rather than mocked up. They are generated and published to GitHub Pages by
+CI rather than committed, so they cannot fall out of date with the effects
+they show. See [Recording the clips](#recording-the-clips).
+
 ## Why it replaces core underglow rather than extending it
 
 ZMK's `app/src/rgb_underglow.c` dispatches four effects from a `switch` over a
@@ -100,6 +108,34 @@ animation state, which is what two MCUs actually are. You can:
 - click keys to fire reactive effects, and drive battery, profile and layer
   state from sliders so indicators can be checked without hardware in a
   particular state.
+
+### Recording the clips
+
+The GIFs in this README are recorded from the simulator, so they are frames
+the real compositor produced rather than an impression of it:
+
+```sh
+npm install playwright && npx playwright install chromium
+pip install Pillow
+apt-get install gifsicle      # optional, worth about a third of the file size
+./sim/build.sh && python3 sim/build-artifact.py
+node tools/record-gifs.mjs    # everything, or name clips: ... pinwheel fire
+```
+
+`CHROMIUM_PATH` overrides the browser if playwright cannot find one itself,
+and `VFX_KEEP_FRAMES=1` leaves the PNG frames behind, which is what you want
+when comparing encoder settings rather than re-recording each time.
+
+You only need this to preview a change locally. CI records the clips itself
+on the way to publishing Pages, so what the README shows always matches the
+effects on `main`; `docs/img/` is generated output and is not committed. Every
+push also records two clips as a build artifact, so a broken recorder fails on
+the push that broke it rather than on the next deploy.
+
+Engine time is stepped explicitly rather than sampled off the wall clock,
+which is what lets a clip cover exactly one period of an effect and loop
+seamlessly, and it means the same command produces the same frames every
+time.
 
 `tests/` holds headless assertions for the parts eyeballing will not catch. It
 builds the engine with no Zephyr in scope at all, which is what keeps the
@@ -293,6 +329,38 @@ eye sees and those are already the values the eye is going to get.
 The simulator does not show the crossfade: it holds one scene at a time, and
 two would mean a second copy of every generator's storage. Everything else on
 this page it does show.
+
+### What they look like
+
+Pointed across the board with `axis`, one generator covers the whole
+directional family:
+
+| | |
+|---|---|
+| ![Pinwheel](https://pr0dt0s.github.io/zmk-advanced-underglow-effects-vfx/img/pinwheel.gif) | ![Spiral](https://pr0dt0s.github.io/zmk-advanced-underglow-effects-vfx/img/spiral.gif) |
+| `gradient`, `axis = <VFX_AXIS_ANGLE>` | `gradient`, `axis = <VFX_AXIS_SPIRAL>` |
+| ![Out and in](https://pr0dt0s.github.io/zmk-advanced-underglow-effects-vfx/img/out-and-in.gif) | ![Beacons](https://pr0dt0s.github.io/zmk-advanced-underglow-effects-vfx/img/beacons.gif) |
+| `wave`, `axis = <VFX_AXIS_RADIAL>` | `comet`, two of them along x |
+
+Ambient effects, all of them a pure function of the clock so both halves of a
+split agree with nothing exchanged:
+
+| | |
+|---|---|
+| ![Fire](https://pr0dt0s.github.io/zmk-advanced-underglow-effects-vfx/img/fire.gif) | ![Plasma](https://pr0dt0s.github.io/zmk-advanced-underglow-effects-vfx/img/plasma.gif) |
+| `fire` | `plasma`, summed over both board axes |
+| ![Matrix](https://pr0dt0s.github.io/zmk-advanced-underglow-effects-vfx/img/matrix.gif) | ![Water](https://pr0dt0s.github.io/zmk-advanced-underglow-effects-vfx/img/water.gif) |
+| `matrix` | `water` |
+
+Reactive effects. The two on the right have no ambient source at all, so the
+board is dark between keystrokes and the power gate cuts the rail:
+
+| | |
+|---|---|
+| ![Crosshair](https://pr0dt0s.github.io/zmk-advanced-underglow-effects-vfx/img/crosshair.gif) | ![Nexus](https://pr0dt0s.github.io/zmk-advanced-underglow-effects-vfx/img/nexus.gif) |
+| `cross` over a dim bed | `cross` with a `radius` |
+| ![Matrix, typing only](https://pr0dt0s.github.io/zmk-advanced-underglow-effects-vfx/img/matrix-typing.gif) | ![Water, typing only](https://pr0dt0s.github.io/zmk-advanced-underglow-effects-vfx/img/water-typing.gif) |
+| `matrix`, `drop-rate-ms = <0>` | `water`, still water at brightness 0 |
 
 ### Pointing an effect across the board
 

@@ -920,8 +920,22 @@ async function main() {
     el.className = 'status ' + (ok ? 'ok' : 'err');
   }
 
-  function tick(now) {
-    const t = playing ? (now - clockStart) : frozenAt;
+  /* Park the clock at an exact engine time and draw there, rather than
+   * wherever the wall clock happens to be. Screenshotting a live animation
+   * samples it unevenly, which is what makes a recorded GIF stutter, and it
+   * cannot land on an effect's period. Stepping lets a capture cover exactly
+   * one period so the loop closes. Used by tools/record-gifs.mjs.
+   *
+   * It freezes rather than drawing one frame and returning: the animation
+   * loop is still running and would paint over it before a screenshot lands.
+   */
+  function renderAt(t) {
+    playing = false;
+    frozenAt = t;
+    drawFrame(t);
+  }
+
+  function drawFrame(t) {
 
     for (const h of halves) {
       h.setState(state.brightness, state.speed, state.hue);
@@ -974,7 +988,10 @@ async function main() {
     const residual = state.split === 'synced' ? state.drift + syncOffset : state.drift;
     $('out-drift').textContent =
       state.split === 'synced' ? `${state.drift} ms, ${residual} ms left` : `${state.drift} ms`;
+  }
 
+  function tick(now) {
+    drawFrame(playing ? (now - clockStart) : frozenAt);
     requestAnimationFrame(tick);
   }
 
@@ -1124,7 +1141,8 @@ async function main() {
 
   /* Small handle for poking at the engine from the console or a test. */
   window.vfxDebug = {
-    halves, state, layout: () => layout,
+    halves, state, layout: () => layout, renderAt,
+    pause: () => { playing = false; },
     press: i => { const half = layout.rects[i].half; halves[half].key(i, true); },
     pixels: h => Array.from(halves[h].pixels || []),
   };

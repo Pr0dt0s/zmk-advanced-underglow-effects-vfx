@@ -42,9 +42,21 @@ jobs:
       - name: Build the single-file version
         run: python3 sim/build-artifact.py
 
-      - uses: actions/upload-pages-artifact@v3
+      # The README's clips are recorded from this page by the Pages workflow.
+      # Recording two of them here means a broken recorder fails on the push
+      # that broke it, rather than on the next deploy to main.
+      - name: Check the clip recorder still runs
+        run: |
+          sudo apt-get install -y gifsicle
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+          pip install Pillow
+          node tools/record-gifs.mjs fire nexus
+
+      - uses: actions/upload-artifact@v4
         with:
-          path: docs/sim
+          name: sample-clips
+          path: docs/img
 
   firmware:
     name: Firmware (${{ matrix.shield }})

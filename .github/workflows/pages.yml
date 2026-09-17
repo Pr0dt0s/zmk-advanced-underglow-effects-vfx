@@ -24,10 +24,30 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install clang and wasm-ld
-        run: sudo apt-get update && sudo apt-get install -y clang lld
+        run: sudo apt-get update && sudo apt-get install -y clang lld gifsicle
 
       - name: Build the simulator
         run: ./sim/build.sh
+
+      # The recorder drives the self-contained page, so it has to exist.
+      - name: Build the single-file version
+        run: python3 sim/build-artifact.py
+
+      - name: Install the recorder's dependencies
+        run: |
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+          pip install Pillow
+
+      # The README's clips are generated here rather than committed: they are
+      # 7 MB of binaries that change whenever an effect does, and a repo does
+      # not want that in its history. Generating them on the way to Pages also
+      # means they cannot fall out of date with the effects they show.
+      - name: Record the effect clips
+        run: node tools/record-gifs.mjs
+
+      - name: Publish them beside the simulator
+        run: cp -r docs/img docs/sim/img
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
