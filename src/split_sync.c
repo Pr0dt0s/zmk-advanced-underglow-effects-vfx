@@ -13,8 +13,6 @@
 #include <zmk/event_manager.h>
 #include <zmk/events/position_state_changed.h>
 #include <zmk/split/central.h>
-#include <zmk/vfx/sync.h>
-#include <zmk/vfx/vfx.h>
 
 LOG_MODULE_DECLARE(zmk_vfx, CONFIG_ZMK_VFX_LOG_LEVEL);
 
