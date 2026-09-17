@@ -43,7 +43,10 @@ properties:
   speed:
     type: int
     default: 60
-    description: Units per second the head falls.
+    description: |
+      Units per second the head falls. This also sets how quickly a keypress
+      reads: a drop has to cross the board to reach a key near the bottom, so
+      a slow speed makes typing feel laggy.
 
   tail:
     type: int

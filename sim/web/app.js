@@ -538,7 +538,7 @@ const PRESETS = {
     zones: { all: { range: [0, 255] } },
     layers: [
       { type: 'water', zone: 'all',
-        color: [205, 95, 14], crest_color: [185, 25, 100],
+        color: [205, 95, 0], crest_color: [185, 25, 100],
         wavelength: 18, speed: 55, lifetime_ms: 2400, drop_rate_ms: 0,
         amplitude: 255, damping: 7 },
     ],
@@ -558,7 +558,7 @@ const PRESETS = {
     layers: [
       { type: 'matrix', zone: 'all',
         color: [125, 100, 60], head_color: [110, 20, 100],
-        speed: 70, tail: 26, drop_rate_ms: 0, columns: 12, jitter: 0, head_size: 8 },
+        speed: 150, tail: 24, drop_rate_ms: 0, columns: 12, jitter: 0, head_size: 8 },
     ],
   },
   'Status bar': {

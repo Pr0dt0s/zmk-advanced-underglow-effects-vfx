@@ -153,10 +153,11 @@
             };
         };
 
-        /* No rain, so the surface is still until you type. The still water is
-         * dim rather than black, so the board is not dark at rest; drop the
-         * colour's brightness to 0 to let the power gate cut the rail between
-         * keypresses instead.
+        /* No rain, so the surface is still until you type, and the still
+         * water is black rather than dim: the board draws nothing at rest, so
+         * the power gate cuts the rail between keypresses. Raise the colour's
+         * brightness if you would rather see the water sitting there, at the
+         * cost of keeping the strip powered.
          */
         vfx_water_keys: vfx_water_keys {
             compatible = "zmk,vfx-scene";
@@ -165,7 +166,7 @@
             surface {
                 compatible = "zmk,vfx-layer-water";
                 zone = <&vfx_all>;
-                color = <VFX_HSB(205, 95, 14)>;
+                color = <VFX_HSB(205, 95, 0)>;
                 crest-color = <VFX_HSB(185, 25, 100)>;
                 wavelength = <18>;
                 speed = <55>;
@@ -197,8 +198,14 @@
             };
         };
 
-        /* The same rain, but only where you type: the board is dark between
-         * keypresses, so the power gate can cut the rail.
+        /* The same rain, but only where you type: a column drops in from the
+         * top and lands on the key, and the board is dark between presses so
+         * the power gate can cut the rail.
+         *
+         * It falls far quicker than the ambient rain on purpose. A drop has
+         * to cross the whole board to reach a key on the bottom row, and at
+         * a rain-like speed that is half a second of waiting before the key
+         * you pressed lights up.
          */
         vfx_matrix_keys: vfx_matrix_keys {
             compatible = "zmk,vfx-scene";
@@ -209,8 +216,8 @@
                 zone = <&vfx_all>;
                 color = <VFX_HSB(125, 100, 60)>;
                 head-color = <VFX_HSB(110, 20, 100)>;
-                speed = <70>;
-                tail = <26>;
+                speed = <150>;
+                tail = <24>;
                 columns = <12>;
                 jitter = <0>;
                 head-size = <8>;

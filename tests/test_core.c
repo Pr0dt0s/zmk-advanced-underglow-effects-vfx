@@ -1204,9 +1204,10 @@ static struct vfx_matrix_cfg matrix_cfg_base(void) {
 #define MX_MID 14 /* (20, 16) */
 #define MX_LOW 21 /* (20, 24) */
 
-static void test_matrix_keypress_falls_down_the_board(void) {
-    /* The reaction: a drop starts at the key you pressed and travels down the
-     * board, not along the strip.
+static void test_matrix_keypress_falls_from_the_top_to_the_key(void) {
+    /* The reaction points at the key: the column starts at the top of the
+     * board and travels down it, reaching the rows above the key before the
+     * key itself.
      */
     struct vfx_matrix_cfg cfg = matrix_cfg_base();
     struct vfx_matrix_state st = {0};
@@ -1218,33 +1219,29 @@ static void test_matrix_keypress_falls_down_the_board(void) {
 
     vfx_render_frame(&scene, &ctx, out, NULL); /* frame() sizes the columns */
     vfx_scene_key_event(&scene, &ctx, MX_MID, true, 0);
-    vfx_render_frame(&scene, &ctx, out, NULL);
 
-    CHECK(!rgb_is_black(out[MX_MID]), "the pressed key's own pixel must light up");
-    CHECK(rgb_is_black(out[MX_TOP]), "the row above the key should still be dark at t=0");
-    CHECK(rgb_is_black(out[MX_LOW]), "the drop should not have fallen anywhere yet");
-
-    /* 150 ms at 60 units/s is 9 units: past the row below (8 away), and the
-     * row above is now trailing behind the head.
+    /* 60 units/s puts the head on MX_TOP (y=8) at 133 ms and on the key
+     * (y=16) at 267 ms, so 200 ms falls between the two.
      */
-    ctx.time_ms = 150;
+    ctx.time_ms = 200;
     vfx_render_frame(&scene, &ctx, out, NULL);
-    CHECK(!rgb_is_black(out[MX_LOW]), "the drop should have reached the row below");
+    CHECK(!rgb_is_black(out[MX_TOP]), "the row above the key should light first");
+    CHECK(rgb_is_black(out[MX_MID]), "the drop should not have reached the key yet");
 
-    /* And it keeps going: eventually it is past the bottom and the column is
-     * dark again.
-     */
-    ctx.time_ms = 5000;
+    ctx.time_ms = 300;
     vfx_render_frame(&scene, &ctx, out, NULL);
-    CHECK(rgb_is_black(out[MX_MID]) && rgb_is_black(out[MX_LOW]),
-          "the drop should have fallen off the bottom by now");
+    CHECK(!rgb_is_black(out[MX_MID]), "the drop should have arrived at the key");
+
+    /* And it drains away rather than sitting there. */
+    ctx.time_ms = 2000;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    CHECK(rgb_is_black(out[MX_TOP]) && rgb_is_black(out[MX_MID]),
+          "the drop should have drained into the key and gone by now");
 }
 
-static void test_matrix_trail_never_precedes_the_drop(void) {
-    /* A drop cannot have trailed over ground it has not covered. Without the
-     * clamp a keypress lights its whole column the instant you press it,
-     * because the trail is drawn relative to the head rather than to how far
-     * the drop has actually fallen.
+static void test_matrix_keypress_stops_at_the_key(void) {
+    /* Nothing below the key, ever. That is what makes the column land on
+     * what you pressed instead of running through it.
      */
     struct vfx_matrix_cfg cfg = matrix_cfg_base();
     struct vfx_matrix_state st = {0};
@@ -1257,33 +1254,28 @@ static void test_matrix_trail_never_precedes_the_drop(void) {
     vfx_render_frame(&scene, &ctx, out, NULL);
     vfx_scene_key_event(&scene, &ctx, MX_MID, true, 0);
 
-    /* The tail is 40 units, five rows: long enough to cover MX_TOP at any
-     * point in the fall, if it were allowed to reach back that far.
-     */
-    for (uint32_t t = 0; t <= 800; t += 50) {
+    for (uint32_t t = 0; t <= 2000; t += 25) {
         ctx.time_ms = t;
         vfx_render_frame(&scene, &ctx, out, NULL);
 
-        CHECK(rgb_is_black(out[MX_TOP]), "the trail reached above where the drop started, at t=%u",
-              t);
-        if (!rgb_is_black(out[MX_TOP])) {
-            return;
+        for (int i = 0; i < NPX; i++) {
+            /* Everything in the key's column that sits below it. */
+            if (grid_xy[i * 2] != 20 || grid_xy[i * 2 + 1] <= 16) {
+                continue;
+            }
+
+            CHECK(rgb_is_black(out[i]), "pixel %d below the key lit up at t=%u", i, t);
+            if (!rgb_is_black(out[i])) {
+                return;
+            }
         }
     }
-
-    /* Meanwhile the ground it has covered does trail: by 250 ms the head is
-     * below MX_LOW and both rows behind it are lit.
-     */
-    ctx.time_ms = 250;
-    vfx_render_frame(&scene, &ctx, out, NULL);
-    CHECK(!rgb_is_black(out[MX_MID]) && !rgb_is_black(out[MX_LOW]),
-          "the drop should be trailing over the rows it has passed");
 }
 
 static void test_matrix_head_is_brighter_than_its_trail(void) {
     /* What makes rain read as falling rather than as a moving stripe. */
     struct vfx_matrix_cfg cfg = matrix_cfg_base();
-    cfg.head_size = 4; /* under one row, so MX_MID is trail and not head */
+    cfg.head_size = 4; /* under one row, so MX_TOP is trail and not head */
     struct vfx_matrix_state st = {0};
     SCENE1(scene, &vfx_layer_matrix_api, &cfg, &st);
 
@@ -1294,11 +1286,11 @@ static void test_matrix_head_is_brighter_than_its_trail(void) {
     vfx_render_frame(&scene, &ctx, out, NULL);
     vfx_scene_key_event(&scene, &ctx, MX_MID, true, 0);
 
-    ctx.time_ms = 150; /* head at y=25, just past MX_LOW at y=24 */
+    ctx.time_ms = 267; /* head on the key, MX_TOP a row behind it */
     vfx_render_frame(&scene, &ctx, out, NULL);
 
-    const int head = out[MX_LOW].r + out[MX_LOW].g + out[MX_LOW].b;
-    const int tail = out[MX_MID].r + out[MX_MID].g + out[MX_MID].b;
+    const int head = out[MX_MID].r + out[MX_MID].g + out[MX_MID].b;
+    const int tail = out[MX_TOP].r + out[MX_TOP].g + out[MX_TOP].b;
 
     CHECK(head > tail, "the head (%d) should outshine the trail behind it (%d)", head, tail);
 }
@@ -1318,7 +1310,7 @@ static void test_matrix_stays_in_its_column(void) {
     vfx_render_frame(&scene, &ctx, out, NULL);
     vfx_scene_key_event(&scene, &ctx, MX_MID, true, 0);
 
-    for (uint32_t t = 0; t <= 800; t += 100) {
+    for (uint32_t t = 0; t <= 1200; t += 50) {
         ctx.time_ms = t;
         vfx_render_frame(&scene, &ctx, out, NULL);
 
@@ -1548,6 +1540,39 @@ static void test_matrix_falls_back_to_the_strip(void) {
     CHECK(lit_frames > 20, "rain without a map lit only %d of 36 frames", lit_frames);
 }
 
+static void test_water_typing_preset_gates_the_rail(void) {
+    /* The shipped "Water (typing)" preset exists to be dark between
+     * keypresses. Still water of any brightness lights every pixel in the
+     * zone forever, which holds the rail up and costs tens of milliamps, so
+     * the preset's own numbers have to render nothing at rest.
+     */
+    struct vfx_water_cfg cfg = {
+        .color = VFX_HSB(205, 95, 0),
+        .crest_color = VFX_HSB(185, 25, 100),
+        .wavelength = 18,
+        .speed = 55,
+        .lifetime_ms = 2400,
+        .drop_rate_ms = 0,
+        .amplitude = 255,
+        .damping = 7,
+    };
+    struct vfx_water_state st = {0};
+    SCENE1(scene, &vfx_layer_water_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = grid_ctx();
+    bool lit = true;
+
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(!lit, "the typing preset lights the board at rest, so the rail can never gate");
+
+    /* And it still shows something when you do type. */
+    vfx_scene_key_event(&scene, &ctx, 14, true, 0);
+    ctx.time_ms = 200;
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(lit, "a keypress must still disturb the surface visibly");
+}
+
 static void test_isqrt(void) {
     CHECK(vfx_isqrt(0) == 0, "isqrt(0)");
     CHECK(vfx_isqrt(1) == 1, "isqrt(1)");
@@ -1607,13 +1632,15 @@ int main(void) {
         {"water drops interfere", test_water_drops_interfere},
         {"water rain identical on both halves", test_water_rain_identical_on_both_halves},
         {"water still surface can be transparent", test_water_still_surface_can_be_transparent},
+        {"water typing preset gates the rail", test_water_typing_preset_gates_the_rail},
         {"isqrt", test_isqrt},
         {"distance falls back to the strip", test_distance_falls_back_to_the_strip},
         {"distance is across the board with a map", test_distance_is_across_the_board_with_a_map},
         {"ripple radiates on the board", test_ripple_radiates_on_the_board_not_the_wire},
         {"trail deposits by board distance", test_trail_deposits_by_board_distance},
-        {"matrix keypress falls down the board", test_matrix_keypress_falls_down_the_board},
-        {"matrix trail never precedes the drop", test_matrix_trail_never_precedes_the_drop},
+        {"matrix keypress falls from the top to the key",
+         test_matrix_keypress_falls_from_the_top_to_the_key},
+        {"matrix keypress stops at the key", test_matrix_keypress_stops_at_the_key},
         {"matrix head is brighter than its trail", test_matrix_head_is_brighter_than_its_trail},
         {"matrix stays in its column", test_matrix_stays_in_its_column},
         {"matrix idle without rain", test_matrix_idle_without_rain},

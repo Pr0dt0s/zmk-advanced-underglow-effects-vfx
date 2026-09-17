@@ -127,7 +127,8 @@ struct vfx_matrix_cfg {
 
 struct vfx_matrix_drop {
     uint32_t start_ms;
-    int32_t y0;       /* where the head began */
+    int32_t y0;       /* where the head began, above the board */
+    int32_t y_end;    /* where it stops: the pressed key, or past the bottom */
     uint8_t column;
     uint8_t speed_pct; /* 100 is the configured speed */
     bool active;

@@ -14,9 +14,11 @@
  * Drops come from two places, as with water. Ambient ones are a function of
  * the clock: a drop's column and speed are hashed from its epoch number, so
  * nothing is stored between frames and the two halves of a split agree on the
- * rain without exchanging anything. Keypress drops take a slot and start at
- * the key that was pressed, so the reaction appears under your finger and
- * then falls away.
+ * rain without exchanging anything. Keypress drops take a slot, and differ
+ * from the rain in one way: they stop at the key. The drop falls in from the
+ * top of the key's column and comes to rest on the key you pressed rather
+ * than carrying on past it, so the motion points at the key instead of away
+ * from it.
  */
 
 #include <stddef.h>
@@ -84,23 +86,25 @@ static uint16_t drop_level(const struct vfx_matrix_cfg *cfg, const struct vfx_ma
         return 0;
     }
 
+    /* Nothing below where this drop stops. For rain that is past the bottom
+     * of the board and never bites; for a keypress it is the key, which is
+     * what makes the column land on it instead of running through it.
+     */
+    if (y > drop->y_end) {
+        return 0;
+    }
+
     const int32_t speed = (int32_t)base_speed * drop->speed_pct / 100;
     const int32_t head_y = drop->y0 + speed * (int32_t)age_ms / 1000;
 
     /* Behind the head means further up the board: the trail is what the drop
-     * has already passed over.
+     * has already passed over. The head keeps travelling after it reaches the
+     * stop point, which is what drains the trail into the key rather than
+     * leaving it lit there.
      */
     const int32_t behind = head_y - y;
 
     if (behind < 0 || behind > cfg->tail) {
-        return 0;
-    }
-
-    /* A drop cannot trail further than it has fallen. Without this a keypress
-     * drop would light its whole column the instant you pressed the key,
-     * instead of growing a trail as it falls away from your finger.
-     */
-    if (behind > head_y - drop->y0) {
         return 0;
     }
 
@@ -141,13 +145,25 @@ static void matrix_frame(const struct vfx_layer *layer, const struct vfx_frame_c
         st->col_w = 1;
     }
 
-    /* A drop is done once its trail has cleared the bottom. */
+    /* A drop is done once its trail has drained past where it stopped. */
     const uint32_t speed = fall_speed(cfg, ctx);
-    const uint32_t life_ms = speed ? ((uint32_t)st->fall_len + cfg->tail) * 1000U / speed : 0;
 
     for (uint8_t i = 0; i < VFX_MAX_RIPPLES; i++) {
-        if (st->drops[i].active && age_of(ctx->time_ms, st->drops[i].start_ms) > life_ms) {
-            st->drops[i].active = false;
+        struct vfx_matrix_drop *drop = &st->drops[i];
+
+        if (!drop->active) {
+            continue;
+        }
+
+        if (speed == 0) {
+            continue;
+        }
+
+        const int32_t span = drop->y_end - drop->y0 + cfg->tail;
+        const uint32_t life_ms = (uint32_t)(span > 0 ? span : 0) * 100000U / (speed * drop->speed_pct);
+
+        if (age_of(ctx->time_ms, drop->start_ms) > life_ms) {
+            drop->active = false;
         }
     }
 }
@@ -182,10 +198,13 @@ static void matrix_key_event(const struct vfx_layer *layer, const struct vfx_fra
     slot->active = true;
     slot->start_ms = time_ms;
     slot->column = pixel_column(ctx, st, cfg, vidx);
-    /* Starts at the key rather than at the top, so the reaction shows under
-     * the finger and then falls away from it.
+    /* Starts at the top of the board rather than a tail above it, so the
+     * column is lit the moment you press rather than after the trail has
+     * fallen into view, and stops on the key so the whole thing points at
+     * what you pressed.
      */
-    slot->y0 = pixel_y(ctx, vidx);
+    slot->y0 = st->min_y;
+    slot->y_end = pixel_y(ctx, vidx);
     slot->speed_pct = 100;
 }
 
@@ -223,6 +242,8 @@ static bool matrix_pixel(const struct vfx_layer *layer, const struct vfx_frame_c
                  * than appearing already lit.
                  */
                 .y0 = (int32_t)st->min_y - cfg->tail,
+                /* Rain runs off the bottom; only a keypress stops early. */
+                .y_end = (int32_t)st->min_y + st->fall_len + cfg->tail,
                 .column = ambient_column(ctx, st, cfg, hash),
                 /* Spread the speeds a little so columns do not march in step. */
                 .speed_pct = (uint8_t)(100 - cfg->jitter / 2 + ((hash >> 8) % (cfg->jitter + 1))),

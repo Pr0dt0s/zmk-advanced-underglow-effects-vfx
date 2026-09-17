@@ -197,19 +197,21 @@ decaying wavetrain, and overlapping drops sum as signed surface height before
 being coloured, so they interfere rather than drawing as separate rings.
 Ambient drops are derived from the clock, so both halves of a split agree on
 where the rain falls without exchanging anything. Set `drop-rate-ms = <0>` for
-a surface that only moves when you type, and give the still water zero
-brightness if you want the power gate to cut the rail between keypresses.
+a surface that only moves when you type. Still water at zero brightness draws
+nothing at all, which is what lets the power gate cut the rail between
+keypresses; any brightness above zero lights every pixel in the zone forever,
+and the rail stays up.
 
 `matrix` works the same way, and is the other generator that is ambient and
 reactive at once: drops fall down the board leaving a fading trail, started
-either by `drop-rate-ms` or by a keypress. A keypress drop starts at the key
-you pressed, so the reaction appears under your finger and then falls away
-from it, and its trail only covers ground the drop has actually fallen over.
-`drop-rate-ms = <0>` leaves keypress-only rain, which is dark and idle between
-presses and so lets the power gate cut the rail. It is the one generator that
-needs to know which way is *down*, so give it `pixel-positions` below; without
-a map it treats strip order as the direction of travel and falls in a single
-column.
+either by `drop-rate-ms` or by a keypress. The two differ in where they stop.
+Rain runs off the bottom; a keypress drop falls in from the top of the key's
+column and stops on the key you pressed, then drains into it, so the whole
+column points at what you typed. `drop-rate-ms = <0>` leaves keypress-only
+rain, which is dark and idle between presses and so lets the power gate cut
+the rail. It is the one generator that needs to know which way is *down*, so
+give it `pixel-positions` below; without a map it treats strip order as the
+direction of travel and falls in a single column.
 
 ### Effects that radiate need to know where the LEDs are
 
