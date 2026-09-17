@@ -127,8 +127,8 @@
                 zone = <&vfx_all>;
                 color = <VFX_HSB(190, 40, 100)>;
                 decay-ms = <700>;
-                speed = <45>;
-                width = <3>;
+                speed = <60>;
+                width = <10>;
             };
         };
 
@@ -144,12 +144,12 @@
                 zone = <&vfx_all>;
                 color = <VFX_HSB(205, 95, 30)>;
                 crest-color = <VFX_HSB(190, 30, 100)>;
-                wavelength = <10>;
-                speed = <26>;
+                wavelength = <20>;
+                speed = <45>;
                 lifetime-ms = <3200>;
                 drop-rate-ms = <700>;
                 amplitude = <255>;
-                damping = <5>;
+                damping = <6>;
             };
         };
 
@@ -167,11 +167,11 @@
                 zone = <&vfx_all>;
                 color = <VFX_HSB(205, 95, 14)>;
                 crest-color = <VFX_HSB(185, 25, 100)>;
-                wavelength = <9>;
-                speed = <34>;
+                wavelength = <18>;
+                speed = <55>;
                 lifetime-ms = <2400>;
                 amplitude = <255>;
-                damping = <6>;
+                damping = <7>;
             };
         };
 

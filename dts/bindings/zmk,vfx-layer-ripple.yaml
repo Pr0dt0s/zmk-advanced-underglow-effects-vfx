@@ -12,6 +12,10 @@ compatible: "zmk,vfx-layer-ripple"
 
 include: vfx-layer-common.yaml
 
+# Distance properties below are in the units pixel-positions uses. The shipped
+# maps put about 10 units between adjacent LEDs and these defaults assume that;
+# without a position map distances are strip indices, so scale them down.
+
 properties:
   color:
     type: int
@@ -25,11 +29,11 @@ properties:
       How long one ripple takes to fade out.
   speed:
     type: int
-    default: 40
+    default: 50
     description: |
       Virtual pixels per second the ripple front travels.
   width:
     type: int
-    default: 3
+    default: 10
     description: |
       Virtual pixels of the bright band at the front.

@@ -34,6 +34,25 @@ static inline uint32_t vfx_hash32(uint32_t x) {
     return x;
 }
 
+/* Integer square root by Newton's method. Used for distances between pixel
+ * positions; the engine has no floating point and should not grow one.
+ */
+static inline uint32_t vfx_isqrt(uint32_t n) {
+    if (n == 0) {
+        return 0;
+    }
+
+    uint32_t x = n;
+    uint32_t y = (x + 1) / 2;
+
+    while (y < x) {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+
+    return x;
+}
+
 static inline uint8_t vfx_scale8(uint8_t value, uint8_t scale) {
     return (uint8_t)(((uint16_t)value * scale) / 255U);
 }

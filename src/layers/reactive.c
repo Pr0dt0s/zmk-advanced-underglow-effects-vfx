@@ -52,8 +52,6 @@ static struct vfx_ripple_slot *claim_slot(struct vfx_ripple_slot *slots, uint8_t
  */
 static uint32_t age_of(uint32_t now, uint32_t start) { return now > start ? now - start : 0; }
 
-static uint16_t distance(uint16_t a, uint16_t b) { return (uint16_t)(a > b ? a - b : b - a); }
-
 /* ------------------------------------------------------------------- ripple */
 
 static void ripple_key_event(const struct vfx_layer *layer, const struct vfx_frame_ctx *ctx,
@@ -83,14 +81,14 @@ static void ripple_frame(const struct vfx_layer *layer, const struct vfx_frame_c
             continue;
         }
 
-        /* Retire a ripple whose front has already run off both ends of the
-         * strip. Holding it for the rest of its decay would draw nothing
-         * while still reporting the layer as animating, which keeps the
-         * engine ticking and the power rail up for an invisible effect.
+        /* Retire a ripple whose front has already run past every pixel.
+         * Holding it for the rest of its decay would draw nothing while still
+         * reporting the layer as animating, which keeps the engine ticking
+         * and the power rail up for an invisible effect.
          */
         const uint32_t radius = (uint32_t)cfg->speed * age / 1000U;
 
-        if (radius > (uint32_t)ctx->virtual_length + cfg->width) {
+        if (radius > (uint32_t)vfx_board_extent(ctx) + cfg->width) {
             st->slots[i].active = false;
         }
     }
@@ -122,7 +120,7 @@ static bool ripple_pixel(const struct vfx_layer *layer, const struct vfx_frame_c
 
         /* Front position, and how far this pixel is from it. */
         const uint32_t radius = (uint32_t)cfg->speed * age / 1000U;
-        const uint16_t d = distance(vidx, st->slots[i].origin);
+        const uint16_t d = vfx_pixel_distance(ctx, vidx, st->slots[i].origin);
         const uint16_t off = (uint16_t)(d > radius ? d - radius : radius - d);
 
         if (cfg->width == 0 || off > cfg->width) {
@@ -224,7 +222,7 @@ static bool keyflash_pixel(const struct vfx_layer *layer, const struct vfx_frame
             continue;
         }
 
-        const uint16_t d = distance(vidx, st->slots[i].origin);
+        const uint16_t d = vfx_pixel_distance(ctx, vidx, st->slots[i].origin);
         if (d > cfg->spread) {
             continue;
         }
@@ -300,16 +298,22 @@ static void trail_key_event(const struct vfx_layer *layer, const struct vfx_fram
     /* Deposit heat around the key. Unlike the slot based effects this keeps a
      * per-pixel value, so overlapping presses build up into a heat map rather
      * than competing for a fixed number of slots.
+     *
+     * Every pixel is measured rather than walking a window of indices either
+     * side of the origin: with a position map, the pixels near a key are not
+     * the ones next to it on the wire.
      */
-    for (int16_t d = -(int16_t)spread; d <= (int16_t)spread; d++) {
-        const int32_t p = (int32_t)origin + d;
+    const uint16_t limit = ctx->virtual_length < VFX_TRAIL_MAX_PIXELS ? ctx->virtual_length
+                                                                     : VFX_TRAIL_MAX_PIXELS;
 
-        if (p < 0 || p >= VFX_TRAIL_MAX_PIXELS || p >= ctx->virtual_length) {
+    for (uint16_t p = 0; p < limit; p++) {
+        const uint16_t d = vfx_pixel_distance(ctx, p, origin);
+
+        if (d > spread) {
             continue;
         }
 
-        const uint16_t falloff =
-            spread ? (uint16_t)(255U - ((uint16_t)(d < 0 ? -d : d) * 255U) / spread) : 255U;
+        const uint16_t falloff = spread ? (uint16_t)(255U - ((uint32_t)d * 255U) / spread) : 255U;
 
         if (falloff > st->heat[p]) {
             st->heat[p] = (uint8_t)falloff;

@@ -74,6 +74,25 @@ BUILD_ASSERT(!IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW),
 #define VFX_VIRTUAL_LENGTH DT_PROP_OR(VFX_ENGINE_NODE, virtual_length, STRIP_NUM_PIXELS)
 #define VFX_STRIP_OFFSET DT_PROP(VFX_ENGINE_NODE, strip_offset)
 
+#if DT_NODE_HAS_PROP(VFX_ENGINE_NODE, pixel_positions)
+static const int16_t pixel_positions[] = DT_PROP(VFX_ENGINE_NODE, pixel_positions);
+
+BUILD_ASSERT(ARRAY_SIZE(pixel_positions) % 2 == 0,
+             "pixel-positions must be x,y pairs, so its length must be even.");
+BUILD_ASSERT(ARRAY_SIZE(pixel_positions) / 2 >= VFX_VIRTUAL_LENGTH,
+             "pixel-positions has fewer entries than virtual-length; the pixels past "
+             "the end would fall back to distance along the strip.");
+
+#define VFX_PIXEL_XY pixel_positions
+#define VFX_NUM_POSITIONS ((uint16_t)(ARRAY_SIZE(pixel_positions) / 2))
+#else
+/* No map: vfx_pixel_distance() falls back to distance along the strip, which
+ * is all the engine can know without one.
+ */
+#define VFX_PIXEL_XY NULL
+#define VFX_NUM_POSITIONS 0
+#endif
+
 #if DT_NODE_HAS_PROP(VFX_ENGINE_NODE, key_pixels)
 static const uint8_t key_pixels[] = DT_PROP(VFX_ENGINE_NODE, key_pixels);
 #define VFX_KEY_PIXELS key_pixels
@@ -133,6 +152,8 @@ static struct vfx_frame_ctx build_ctx(void) {
         .hue_shift = state.hue_shift,
         .key_pixels = VFX_KEY_PIXELS,
         .num_keys = VFX_NUM_KEYS,
+        .pixel_xy = VFX_PIXEL_XY,
+        .num_positions = VFX_NUM_POSITIONS,
     };
 }
 

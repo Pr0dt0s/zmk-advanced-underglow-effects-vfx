@@ -1060,6 +1060,140 @@ static void test_water_still_surface_can_be_transparent(void) {
     CHECK(!lit, "an unlit still surface must draw nothing at all");
 }
 
+
+/* ---- pixel positions ---------------------------------------------------- */
+
+/* The same 6x6 serpentine grid sim/derive-positions.py generates, one half. */
+static int16_t grid_xy[NPX * 2];
+
+static void build_grid(void) {
+    for (int i = 0; i < NPX; i++) {
+        int row = i / 6;
+        int col = i % 6;
+        if (row % 2 == 1) col = 5 - col;          /* serpentine */
+        grid_xy[i * 2] = (int16_t)(col * 10);
+        grid_xy[i * 2 + 1] = (int16_t)(row * 8);
+    }
+}
+
+static struct vfx_frame_ctx grid_ctx(void) {
+    struct vfx_frame_ctx ctx = test_ctx();
+    build_grid();
+    ctx.pixel_xy = grid_xy;
+    ctx.num_positions = NPX;
+    ctx.num_keys = NPX;
+    return ctx;
+}
+
+static void test_distance_falls_back_to_the_strip(void) {
+    /* Without a map the engine can only know position along the wire, and
+     * must say so rather than inventing coordinates.
+     */
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    CHECK(vfx_pixel_distance(&ctx, 14, 17) == 3, "no map: distance is along the strip");
+    CHECK(vfx_pixel_distance(&ctx, 17, 14) == 3, "distance must be symmetric");
+    CHECK(vfx_board_extent(&ctx) == ctx.virtual_length, "no map: extent is the strip length");
+}
+
+static void test_distance_is_across_the_board_with_a_map(void) {
+    struct vfx_frame_ctx ctx = grid_ctx();
+
+    /* LED 14 sits at (20,16); 15 is one step right at (30,16). */
+    CHECK(vfx_pixel_distance(&ctx, 14, 15) == 10, "adjacent in a row should be one pitch apart");
+
+    /* 9 is at (20,8): directly above 14, and physically closer than 15, even
+     * though it is five further away along the wire.
+     */
+    CHECK(vfx_pixel_distance(&ctx, 14, 9) == 8, "the row above should be a row pitch away");
+    CHECK(vfx_pixel_distance(&ctx, 14, 9) < vfx_pixel_distance(&ctx, 14, 15),
+          "a pixel five further along the wire is nearer on the board");
+
+    /* Board diagonal: 50 wide, 40 tall. */
+    CHECK(vfx_board_extent(&ctx) == 64, "extent should be the diagonal, got %u",
+          vfx_board_extent(&ctx));
+}
+
+static void test_ripple_radiates_on_the_board_not_the_wire(void) {
+    /* This is the bug the map exists to fix. A drop in the middle of the
+     * board must reach the pixels physically around it, including ones that
+     * are far away along the strip, and must not jump to a pixel that merely
+     * happens to be adjacent on the wire.
+     */
+    struct vfx_water_cfg cfg = water_cfg_base();
+    cfg.wavelength = 40;
+    cfg.speed = 60;
+    cfg.damping = 0;
+    cfg.lifetime_ms = 4000;
+
+    struct vfx_water_state st = {0};
+    SCENE1(scene, &vfx_layer_water_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = grid_ctx();
+    ctx.speed = 3;
+
+    /* Key 14 maps to pixel 14, in the middle of the grid. */
+    vfx_scene_key_event(&scene, &ctx, 14, true, 0);
+
+    /* Water draws its still surface everywhere, so "reached" means "differs
+     * from the resting colour", not "is lit at all".
+     */
+    struct vfx_water_state rest_st = {0};
+    SCENE1(rest_scene, &vfx_layer_water_api, &cfg, &rest_st);
+    struct vfx_rgb rest[NPX];
+    vfx_render_frame(&rest_scene, &ctx, rest, NULL);
+
+    /* 150 ms at 60 units/s puts the front 9 units out: past 9 and 21, which
+     * are one row (8) away, and not yet past 15, which is a full pitch (10).
+     */
+    ctx.time_ms = 150;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    const bool moved_above = memcmp(&out[9], &rest[9], sizeof(rest[9])) != 0;
+    const bool moved_below = memcmp(&out[21], &rest[21], sizeof(rest[21])) != 0;
+    const bool moved_far_on_wire = memcmp(&out[15], &rest[15], sizeof(rest[15])) != 0;
+
+    CHECK(moved_above && moved_below,
+          "the rows above and below the drop should be reached first (9=%d, 21=%d)",
+          moved_above, moved_below);
+    CHECK(!moved_far_on_wire,
+          "pixel 15 is a full pitch away and should not be reached yet, but it moved");
+}
+
+static void test_trail_deposits_by_board_distance(void) {
+    /* Trail walks every pixel rather than a window of indices, so heat lands
+     * on what is near the key, not what is near it on the wire.
+     */
+    struct vfx_trail_cfg cfg = {.color = VFX_HSB(0, 0, 100), .decay_ms = 5000, .spread = 9};
+    struct vfx_trail_state st = {0};
+    SCENE1(scene, &vfx_layer_trail_api, &cfg, &st);
+
+    struct vfx_frame_ctx ctx = grid_ctx();
+
+    vfx_scene_key_event(&scene, &ctx, 14, true, 0);
+
+    CHECK(st.heat[14] > 0, "the key's own pixel must get heat");
+    CHECK(st.heat[9] > 0, "the pixel directly above must get heat, 5 away on the wire");
+    CHECK(st.heat[21] > 0, "the pixel directly below must get heat, 7 away on the wire");
+    CHECK(st.heat[13] == 0 && st.heat[15] == 0,
+          "pixels a full pitch away are outside a spread of 9");
+}
+
+static void test_isqrt(void) {
+    CHECK(vfx_isqrt(0) == 0, "isqrt(0)");
+    CHECK(vfx_isqrt(1) == 1, "isqrt(1)");
+    CHECK(vfx_isqrt(100) == 10, "isqrt(100)");
+    CHECK(vfx_isqrt(101) == 10, "isqrt truncates");
+    CHECK(vfx_isqrt(65535u * 65535u) == 65535, "isqrt at the top of the range");
+
+    for (uint32_t n = 0; n < 5000; n++) {
+        const uint32_t r = vfx_isqrt(n);
+        CHECK(r * r <= n && (r + 1) * (r + 1) > n, "isqrt(%u) = %u is not the floor", n, r);
+        if (!(r * r <= n && (r + 1) * (r + 1) > n)) break;
+    }
+}
+
 int main(void) {
     struct {
         const char *name;
@@ -1105,6 +1239,11 @@ int main(void) {
         {"water drops interfere", test_water_drops_interfere},
         {"water rain identical on both halves", test_water_rain_identical_on_both_halves},
         {"water still surface can be transparent", test_water_still_surface_can_be_transparent},
+        {"isqrt", test_isqrt},
+        {"distance falls back to the strip", test_distance_falls_back_to_the_strip},
+        {"distance is across the board with a map", test_distance_is_across_the_board_with_a_map},
+        {"ripple radiates on the board", test_ripple_radiates_on_the_board_not_the_wire},
+        {"trail deposits by board distance", test_trail_deposits_by_board_distance},
     };
 
     for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {

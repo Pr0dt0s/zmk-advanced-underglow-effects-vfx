@@ -24,6 +24,10 @@ compatible: "zmk,vfx-layer-water"
 
 include: vfx-layer-common.yaml
 
+# Distance properties below are in the units pixel-positions uses. The shipped
+# maps put about 10 units between adjacent LEDs and these defaults assume that;
+# without a position map distances are strip indices, so scale them down.
+
 properties:
   color:
     type: int
@@ -43,12 +47,12 @@ properties:
 
   wavelength:
     type: int
-    default: 8
+    default: 20
     description: Virtual pixels per wave cycle. Larger is a longer, lazier swell.
 
   speed:
     type: int
-    default: 30
+    default: 45
     description: |
       Virtual pixels per second the wavefront travels, scaled by the engine's
       global speed setting.
@@ -73,7 +77,7 @@ properties:
 
   damping:
     type: int
-    default: 8
+    default: 7
     description: |
       How quickly a wave loses height with distance from its drop. A wave
       falls to half height after roughly 256/damping pixels, so 8 carries

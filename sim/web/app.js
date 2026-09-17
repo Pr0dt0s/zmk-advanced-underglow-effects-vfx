@@ -25,11 +25,11 @@ const LAYER_SPECS = {
   wave:       { id: 3,  args: [['wavelength', 0], ['period_ms', 2000], ['depth', 255]] },
   twinkle:    { id: 4,  args: [['period_ms', 1200], ['density', 40]] },
   plasma:     { id: 5,  args: [['scale', 0], ['period_ms', 6000], ['hue_spread', 40]] },
-  ripple:     { id: 6,  args: [['decay_ms', 600], ['speed', 40], ['width', 3]] },
-  keyflash:   { id: 7,  args: [['decay_ms', 400], ['spread', 2]] },
-  trail:      { id: 8,  args: [['decay_ms', 1500], ['spread', 2]] },
-  water:      { id: 13, args: [['wavelength', 8], ['speed', 30], ['lifetime_ms', 2500],
-                              ['drop_rate_ms', 0], ['amplitude', 200], ['damping', 8]] },
+  ripple:     { id: 6,  args: [['decay_ms', 600], ['speed', 50], ['width', 10]] },
+  keyflash:   { id: 7,  args: [['decay_ms', 400], ['spread', 12]] },
+  trail:      { id: 8,  args: [['decay_ms', 1500], ['spread', 12]] },
+  water:      { id: 13, args: [['wavelength', 20], ['speed', 45], ['lifetime_ms', 2500],
+                              ['drop_rate_ms', 0], ['amplitude', 200], ['damping', 7]] },
   'layer-state': { id: 9,  args: [] },
   battery:       { id: 10, args: [['warn_below', 20]] },
   'ble-profile': { id: 11, args: [] },
@@ -117,9 +117,9 @@ class Half {
           rc = this.e.vfx_sim_add_water(zid, blend, opacity,
                                         packHsb(...l.color),
                                         l.crest_color ? packHsb(...l.crest_color) : 0,
-                                        l.wavelength ?? 8, l.speed ?? 30,
+                                        l.wavelength ?? 20, l.speed ?? 45,
                                         l.lifetime_ms ?? 2500, l.drop_rate_ms ?? 0,
-                                        l.amplitude ?? 200, l.damping ?? 8);
+                                        l.amplitude ?? 200, l.damping ?? 7);
           break;
 
         case 'battery':
@@ -153,6 +153,20 @@ class Half {
   /* Key position -> virtual pixel. Without it reactive effects still animate
    * but land in the wrong places, exactly as on a board with no key-pixels.
    */
+  /* Real board coordinates for every pixel, scaled so adjacent LEDs sit about
+   * 10 apart -- the convention the effect distance properties are tuned for,
+   * and what <vfx/lily58-positions.dtsi> uses.
+   */
+  setPositions(points) {
+    const scratch = this.e.vfx_sim_scratch();
+    const view = this.view;
+    points.forEach((p, i) => {
+      view.setInt16(scratch + i * 4, Math.round(p.x), true);
+      view.setInt16(scratch + i * 4 + 2, Math.round(p.y), true);
+    });
+    this.e.vfx_sim_set_positions(points.length);
+  }
+
   setKeyMap(pixels) {
     const scratch = this.e.vfx_sim_scratch();
     const mem = this.mem;
@@ -265,8 +279,21 @@ function buildLayout(canvas, ledsPerHalf, stripPath) {
     return best;
   });
 
+  /* Canvas coordinates are in pixels of a 1400px-wide drawing; the engine
+   * wants units where adjacent LEDs are ~10 apart. Scale by the actual
+   * spacing between the first two LEDs so any wiring or count lands on that
+   * convention.
+   */
+  const step = leds.length > 1
+    ? Math.hypot(leds[1].x - leds[0].x, leds[1].y - leds[0].y) || 1
+    : 1;
+  const k = 10 / step;
+  const originX = Math.min(...leds.map(l => l.x));
+  const originY = Math.min(...leds.map(l => l.y));
+  const positions = leds.map(l => ({ x: (l.x - originX) * k, y: (l.y - originY) * k }));
+
   const spacing = (Math.max(...rects.map(r => r.w)) || 40);
-  layout = { rects, leds, scale, spacing, keyPixels };
+  layout = { rects, leds, scale, spacing, keyPixels, positions };
   return layout;
 }
 
@@ -457,7 +484,7 @@ const PRESETS = {
     layers: [
       { type: 'solid', zone: 'all', color: [230, 70, 8] },
       { type: 'ripple', zone: 'all', blend: 'add', color: [190, 40, 100],
-        decay_ms: 700, speed: 45, width: 3 },
+        decay_ms: 700, speed: 60, width: 10 },
     ],
   },
   'Twinkle night': {
@@ -490,8 +517,8 @@ const PRESETS = {
     layers: [
       { type: 'water', zone: 'all',
         color: [205, 95, 30], crest_color: [190, 30, 100],
-        wavelength: 10, speed: 26, lifetime_ms: 3200, drop_rate_ms: 700,
-        amplitude: 255, damping: 5 },
+        wavelength: 20, speed: 45, lifetime_ms: 3200, drop_rate_ms: 700,
+        amplitude: 255, damping: 6 },
     ],
   },
   'Water (typing only)': {
@@ -500,8 +527,8 @@ const PRESETS = {
     layers: [
       { type: 'water', zone: 'all',
         color: [205, 95, 14], crest_color: [185, 25, 100],
-        wavelength: 9, speed: 34, lifetime_ms: 2400, drop_rate_ms: 0,
-        amplitude: 255, damping: 6 },
+        wavelength: 18, speed: 55, lifetime_ms: 2400, drop_rate_ms: 0,
+        amplitude: 255, damping: 7 },
     ],
   },
   'Status bar': {
@@ -587,7 +614,10 @@ async function main() {
     halves[0].init(ledsPerHalf, ledsPerHalf * 2, 0);
     halves[1].init(ledsPerHalf, ledsPerHalf * 2, ledsPerHalf);
     buildLayout(canvas, ledsPerHalf, stripPath);
-    for (const h of halves) h.setKeyMap(layout.keyPixels);
+    for (const h of halves) {
+      h.setKeyMap(layout.keyPixels);
+      h.setPositions(layout.positions);
+    }
     applyScene();
     applyPowerPolicy();
   }
@@ -727,7 +757,10 @@ async function main() {
   $('path').addEventListener('change', e => {
     stripPath = e.target.value;
     buildLayout(canvas, ledsPerHalf, stripPath);
-    for (const h of halves) h.setKeyMap(layout.keyPixels);
+    for (const h of halves) {
+      h.setKeyMap(layout.keyPixels);
+      h.setPositions(layout.positions);
+    }
   });
 
   $('playpause').addEventListener('click', e => {

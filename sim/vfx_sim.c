@@ -85,6 +85,11 @@ static uint8_t scratch[SCRATCH_BYTES];
  */
 static uint8_t key_map[MAX_PIXELS];
 
+/* Whole-board pixel positions, x,y pairs. Copied out of the staging buffer
+ * for the same reason the key map is: loading a scene writes through scratch.
+ */
+static int16_t pixel_xy[MAX_PIXELS * 2];
+
 static struct vfx_scene scene = {.name = "sim", .layers = layers, .num_layers = 0};
 
 static struct vfx_frame_ctx ctx = {
@@ -501,6 +506,31 @@ EXPORT void vfx_sim_set_power_policy(int blackout_delay_ms, int settle_ms) {
     power_policy.blackout_delay_ms = (uint16_t)blackout_delay_ms;
     power_policy.settle_ms = (uint16_t)settle_ms;
     vfx_power_reset(&power_ctl);
+}
+
+/* The page knows where it draws every LED, so it can hand the engine real
+ * positions for whichever wiring is selected. Staged in scratch as int16
+ * pairs.
+ */
+EXPORT void vfx_sim_set_positions(int count) {
+    if (count <= 0) {
+        ctx.pixel_xy = NULL;
+        ctx.num_positions = 0;
+        return;
+    }
+
+    if (count > MAX_PIXELS) {
+        count = MAX_PIXELS;
+    }
+
+    const int16_t *staged = (const int16_t *)(void *)scratch;
+
+    for (int i = 0; i < count * 2; i++) {
+        pixel_xy[i] = staged[i];
+    }
+
+    ctx.pixel_xy = pixel_xy;
+    ctx.num_positions = (uint16_t)count;
 }
 
 EXPORT const uint8_t *vfx_sim_render(uint32_t time_ms) {

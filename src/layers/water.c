@@ -33,8 +33,6 @@
  */
 static uint32_t age_of(uint32_t now, uint32_t start) { return now > start ? now - start : 0; }
 
-static uint16_t distance(uint16_t a, uint16_t b) { return (uint16_t)(a > b ? a - b : b - a); }
-
 static int32_t clamp32(int32_t v, int32_t lo, int32_t hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
@@ -51,13 +49,13 @@ static uint32_t front_speed(const struct vfx_water_cfg *cfg, const struct vfx_fr
 }
 
 /* Signed surface height at one pixel from one drop, roughly -128..127. */
-static int32_t drop_height(const struct vfx_water_cfg *cfg, uint32_t speed, uint16_t vidx,
-                           uint16_t origin, uint32_t age_ms) {
+static int32_t drop_height(const struct vfx_water_cfg *cfg, const struct vfx_frame_ctx *ctx,
+                           uint32_t speed, uint16_t vidx, uint16_t origin, uint32_t age_ms) {
     if (cfg->lifetime_ms == 0 || age_ms >= cfg->lifetime_ms) {
         return 0;
     }
 
-    const uint16_t r = distance(vidx, origin);
+    const uint16_t r = vfx_pixel_distance(ctx, vidx, origin);
     const uint32_t front = speed * age_ms / 1000U;
 
     /* The surface ahead of the wavefront has not been reached yet, which is
@@ -120,7 +118,7 @@ static int32_t ambient_height(const struct vfx_water_cfg *cfg, const struct vfx_
 
         const uint16_t origin = (uint16_t)(vfx_hash32(e * 0x9E3779B9U) % span);
 
-        height += drop_height(cfg, speed, vidx, origin, age);
+        height += drop_height(cfg, ctx, speed, vidx, origin, age);
     }
 
     return height;
@@ -183,7 +181,7 @@ static bool water_pixel(const struct vfx_layer *layer, const struct vfx_frame_ct
             continue;
         }
 
-        height += drop_height(cfg, speed, vidx, st->drops[i].origin,
+        height += drop_height(cfg, ctx, speed, vidx, st->drops[i].origin,
                               age_of(ctx->time_ms, st->drops[i].start_ms));
     }
 

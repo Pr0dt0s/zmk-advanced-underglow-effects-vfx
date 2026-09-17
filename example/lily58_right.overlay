@@ -7,6 +7,7 @@
  */
 
 #include <dt-bindings/zmk/vfx.h>
+#include <vfx/lily58-positions.dtsi>
 #include <vfx/presets.dtsi>
 
 /* The lily58 shield ships an arbitrary chain-length of 10; set yours.
@@ -24,6 +25,12 @@
 
         virtual-length = <72>;
         strip-offset = <36>;
+
+        /* Where each LED physically sits, so effects that radiate spread
+         * across the board rather than along the wire. Derived, not
+         * measured: correct it if ripples come out the wrong shape.
+         */
+        pixel-positions = <VFX_LILY58_POSITIONS>;
 
         default-scene = <&vfx_aurora>;
     };

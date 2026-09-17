@@ -33,6 +33,27 @@ properties:
     type: phandle
     description: Scene selected on first boot, before any saved setting.
 
+  pixel-positions:
+    type: array
+    description: |
+      Where each pixel physically sits, as x,y pairs across the whole board:
+      <x0 y0 x1 y1 ...>, virtual-length pairs in total. Both halves of a split
+      give the same full-board list; strip-offset selects this half's slice.
+
+      Without it the engine knows only a pixel's position along the wire, so
+      anything that radiates (water, ripple, keyflash, trail) spreads to
+      whichever LEDs are adjacent on the strip. On a serpentine strip those
+      are scattered across the board, which is why a ripple looks like it
+      jumps around instead of expanding.
+
+      Units are yours to choose; distances in effect properties are in the
+      same ones. Roughly 10 per LED spacing works well: it leaves sub-LED
+      resolution so wavefronts move smoothly, while keeping the numbers small.
+      <vfx/lily58-positions.dtsi> follows that convention.
+
+      Gradients, waves and the indicators are unaffected: those are meant to
+      follow the strip.
+
   key-pixels:
     type: array
     description: |
