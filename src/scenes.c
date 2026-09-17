@@ -27,6 +27,8 @@
 #define VFX_API_SYM(node) _CONCAT(vfx_api_, node)
 #define VFX_ZONE_SYM(node) _CONCAT(vfx_zone_, node)
 #define VFX_ZONE_PX_SYM(node) _CONCAT(vfx_zone_px_, node)
+#define VFX_ZONE_KEYS_SYM(node) _CONCAT(vfx_zone_keys_, node)
+#define VFX_KEY_ZONE_SYM(node) _CONCAT(vfx_key_zone_, node)
 #define VFX_LAYERS_SYM(node) _CONCAT(vfx_layers_, node)
 #define VFX_SCENE_SYM(node) _CONCAT(vfx_scene_, node)
 
@@ -36,7 +38,22 @@
     COND_CODE_1(DT_NODE_HAS_PROP(node, pixels),                                                    \
                 (static const uint8_t VFX_ZONE_PX_SYM(node)[] = DT_PROP(node, pixels);), ())
 
-#define VFX_ZONE_DEFINE(node)                                                                      \
+/* A zone given as key positions cannot be resolved until the engine knows the
+ * key map and this half's offset, so it is left empty here and filled in at
+ * startup. It is the one zone that lives in RAM rather than flash.
+ */
+#define VFX_ZONE_BY_KEYS(node)                                                                     \
+    static const uint8_t VFX_ZONE_KEYS_SYM(node)[] = DT_PROP(node, keys);                          \
+    static uint8_t VFX_ZONE_PX_SYM(node)[DT_PROP_LEN(node, keys)];                                 \
+    static struct vfx_zone VFX_ZONE_SYM(node);                                                     \
+    static const struct vfx_key_zone VFX_KEY_ZONE_SYM(node) = {                                    \
+        .keys = VFX_ZONE_KEYS_SYM(node),                                                           \
+        .num_keys = DT_PROP_LEN(node, keys),                                                       \
+        .pixels = VFX_ZONE_PX_SYM(node),                                                           \
+        .zone = &VFX_ZONE_SYM(node),                                                               \
+    };
+
+#define VFX_ZONE_BY_PIXELS(node)                                                                   \
     VFX_ZONE_PIXELS(node)                                                                          \
     static const struct vfx_zone VFX_ZONE_SYM(node) = {                                            \
         .pixels = COND_CODE_1(DT_NODE_HAS_PROP(node, pixels), (VFX_ZONE_PX_SYM(node)), (NULL)),    \
@@ -46,7 +63,25 @@
                            (DT_PROP_BY_IDX(node, range, 1))),                                      \
     };
 
+#define VFX_ZONE_DEFINE(node)                                                                      \
+    COND_CODE_1(DT_NODE_HAS_PROP(node, keys), (VFX_ZONE_BY_KEYS(node)), (VFX_ZONE_BY_PIXELS(node)))
+
 DT_FOREACH_STATUS_OKAY(zmk_vfx_zone, VFX_ZONE_DEFINE)
+
+/* Every key zone in one table, so the engine can resolve them all at startup
+ * without knowing what any of them are for.
+ */
+#define VFX_KEY_ZONE_ENTRY(node)                                                                   \
+    COND_CODE_1(DT_NODE_HAS_PROP(node, keys), (&VFX_KEY_ZONE_SYM(node),), ())
+
+static const struct vfx_key_zone *const vfx_key_zone_list[] = {
+    DT_FOREACH_STATUS_OKAY(zmk_vfx_zone, VFX_KEY_ZONE_ENTRY) NULL};
+
+void vfx_resolve_key_zones(const struct vfx_frame_ctx *ctx) {
+    for (size_t i = 0; vfx_key_zone_list[i] != NULL; i++) {
+        vfx_key_zone_resolve(vfx_key_zone_list[i], ctx);
+    }
+}
 
 /* ------------------------------------------------------------- generators */
 

@@ -188,6 +188,27 @@ EXPORT int vfx_sim_add_zone_range(int start, int len) {
     return num_zones++;
 }
 
+/* Keys staged in the scratch buffer, resolved through the key map exactly as
+ * the firmware resolves a zone written with the `keys` property.
+ */
+EXPORT int vfx_sim_add_zone_keys(int len) {
+    if (num_zones >= MAX_ZONES || len < 0 || len > MAX_PIXELS) {
+        return -1;
+    }
+
+    struct vfx_zone *zone = &zones[num_zones];
+    const struct vfx_key_zone kz = {
+        .keys = scratch,
+        .num_keys = (uint16_t)len,
+        .pixels = zone_pixels[num_zones],
+        .zone = zone,
+    };
+
+    vfx_key_zone_resolve(&kz, &ctx);
+
+    return num_zones++;
+}
+
 EXPORT int vfx_sim_add_zone_pixels(int len) {
     if (num_zones >= MAX_ZONES || len < 0 || len > MAX_PIXELS) {
         return -1;

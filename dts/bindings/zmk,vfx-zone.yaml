@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT
 
 description: |
-  A named group of pixels that a layer can be scoped to. Give either a
-  contiguous range or an explicit pixel list, not both.
+  A named group of pixels that a layer can be scoped to. Give exactly one of
+  range, pixels or keys.
 
 compatible: "zmk,vfx-zone"
 
@@ -19,3 +19,15 @@ properties:
   pixels:
     type: array
     description: Explicit pixel indices, for zones that are not contiguous.
+
+  keys:
+    type: array
+    description: |
+      Key positions, as the keymap numbers them. The engine turns them into
+      pixel indices at startup using key-pixels, so "the modifiers" or "the
+      home row" can be written as what it is rather than as LED indices read
+      off a wiring diagram -- and it stays correct if the strip is rerouted.
+
+      On a split, both halves are given the same list and each keeps only the
+      keys whose pixel lands on its own strip, so one zone definition covers
+      the whole board.

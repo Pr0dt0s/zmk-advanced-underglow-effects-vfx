@@ -161,6 +161,20 @@ Layers composite bottom to top in devicetree order.
 A zone length is clamped to the real `chain-length`, so `range = <0 255>` means
 "the whole strip" and the same preset fits a 10 pixel board and a 72 pixel one.
 
+A zone can also be written as the keys it is about rather than as LED indices:
+
+```dts
+mods: mods {
+    compatible = "zmk,vfx-zone";
+    keys = <0 1 11 12 13 22 23 24 25 34 35 42 43 50 51 52 53 54 55 56 57>;
+};
+```
+
+The engine resolves those through `key-pixels` at startup, so a two-tone
+alphas-and-mods scene is written as what it is, and stays correct if the strip
+is rerouted. On a split both halves take the same list and each keeps the keys
+that landed on its own strip, so one definition covers the whole board.
+
 ### Generators
 
 | Compatible | What it does |

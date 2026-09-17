@@ -2137,6 +2137,116 @@ static void test_comet_count_spreads_them_out(void) {
     CHECK(lit_two > lit_one, "two comets should light more than one (%d vs %d)", lit_two, lit_one);
 }
 
+/* ---- zones written as keys ----------------------------------------------- */
+
+static void test_key_zone_resolves_through_the_key_map(void) {
+    /* "The modifiers" is a statement about keys. The engine knows which pixel
+     * each key sits nearest, so the zone should not need LED indices.
+     */
+    static const uint8_t keys[] = {0, 5, 14, 30};
+    static uint8_t pixels[4];
+    static struct vfx_zone zone;
+    const struct vfx_key_zone kz = {
+        .keys = keys, .num_keys = 4, .pixels = pixels, .zone = &zone};
+
+    struct vfx_frame_ctx ctx = grid_ctx(); /* identity key map over 36 pixels */
+
+    vfx_key_zone_resolve(&kz, &ctx);
+
+    CHECK(zone.len == 4, "all four keys are on this half, got %u", zone.len);
+    CHECK(zone.pixels == pixels, "the zone should point at its own scratch");
+
+    for (int i = 0; i < 4; i++) {
+        CHECK(vfx_zone_pixel(&zone, (uint16_t)i) == keys[i], "key %d resolved to pixel %u", i,
+              vfx_zone_pixel(&zone, (uint16_t)i));
+    }
+}
+
+static void test_key_zone_keeps_only_this_halfs_keys(void) {
+    /* Both halves of a split are given the same list, and each keeps the keys
+     * whose pixel lands on its own strip. That is what lets one zone
+     * definition cover the whole board.
+     */
+    static uint8_t key_map[NPX * 2];
+
+    for (int i = 0; i < NPX * 2; i++) {
+        key_map[i] = (uint8_t)i; /* key n sits on virtual pixel n */
+    }
+
+    static const uint8_t keys[] = {2, 10, 40, 50, 71};
+    static uint8_t left_px[5], right_px[5];
+    static struct vfx_zone left_zone, right_zone;
+
+    const struct vfx_key_zone left = {
+        .keys = keys, .num_keys = 5, .pixels = left_px, .zone = &left_zone};
+    const struct vfx_key_zone right = {
+        .keys = keys, .num_keys = 5, .pixels = right_px, .zone = &right_zone};
+
+    struct vfx_frame_ctx lctx = test_ctx(), rctx = test_ctx();
+
+    lctx.virtual_length = rctx.virtual_length = NPX * 2;
+    lctx.key_pixels = rctx.key_pixels = key_map;
+    lctx.num_keys = rctx.num_keys = NPX * 2;
+    rctx.strip_offset = NPX;
+
+    vfx_key_zone_resolve(&left, &lctx);
+    vfx_key_zone_resolve(&right, &rctx);
+
+    CHECK(left_zone.len == 2, "keys 2 and 10 are on the left half, got %u", left_zone.len);
+    CHECK(right_zone.len == 3, "keys 40, 50 and 71 are on the right half, got %u",
+          right_zone.len);
+
+    /* And the right half's indices are local to its own strip. */
+    CHECK(vfx_zone_pixel(&right_zone, 0) == 40 - NPX, "key 40 should be local pixel %d on the "
+          "right half, got %u", 40 - NPX, vfx_zone_pixel(&right_zone, 0));
+    CHECK(vfx_zone_pixel(&right_zone, 2) == 71 - NPX, "key 71 should be the last pixel");
+
+    /* Together they cover every key exactly once, which is the property that
+     * makes a whole-board zone work on a split at all.
+     */
+    CHECK(left_zone.len + right_zone.len == 5, "a key went missing or was counted twice");
+}
+
+static void test_key_zone_scopes_a_layer(void) {
+    /* And the resolved zone behaves like any other: the layer lights those
+     * pixels and no others.
+     */
+    static const uint8_t keys[] = {3, 9, 27};
+    static uint8_t pixels[3];
+    static struct vfx_zone zone;
+    const struct vfx_key_zone kz = {
+        .keys = keys, .num_keys = 3, .pixels = pixels, .zone = &zone};
+
+    struct vfx_frame_ctx ctx = grid_ctx();
+
+    vfx_key_zone_resolve(&kz, &ctx);
+
+    struct vfx_solid_cfg cfg = {.color = VFX_HSB(0, 0, 100)};
+    uint8_t st = 0;
+    static struct vfx_layer layers[1];
+
+    layers[0] = (struct vfx_layer){.api = &vfx_layer_solid_api,
+                                   .zone = &zone,
+                                   .config = &cfg,
+                                   .state = &st,
+                                   .blend = VFX_BLEND_NORMAL,
+                                   .opacity = 255};
+    struct vfx_scene scene = {.name = "k", .layers = layers, .num_layers = 1};
+
+    struct vfx_rgb out[NPX];
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    for (int i = 0; i < NPX; i++) {
+        const bool want = i == 3 || i == 9 || i == 27;
+
+        CHECK(!rgb_is_black(out[i]) == want, "pixel %d lit=%d, expected %d", i,
+              !rgb_is_black(out[i]), want);
+        if (!rgb_is_black(out[i]) != want) {
+            return;
+        }
+    }
+}
+
 static void test_isqrt(void) {
     CHECK(vfx_isqrt(0) == 0, "isqrt(0)");
     CHECK(vfx_isqrt(1) == 1, "isqrt(1)");
@@ -2213,6 +2323,9 @@ int main(void) {
         {"fire is identical on both halves", test_fire_is_identical_on_both_halves},
         {"comet travels and wraps", test_comet_travels_and_wraps},
         {"comet count spreads them out", test_comet_count_spreads_them_out},
+        {"key zone resolves through the key map", test_key_zone_resolves_through_the_key_map},
+        {"key zone keeps only this half's keys", test_key_zone_keeps_only_this_halfs_keys},
+        {"key zone scopes a layer", test_key_zone_scopes_a_layer},
         {"isqrt", test_isqrt},
         {"distance falls back to the strip", test_distance_falls_back_to_the_strip},
         {"distance is across the board with a map", test_distance_is_across_the_board_with_a_map},

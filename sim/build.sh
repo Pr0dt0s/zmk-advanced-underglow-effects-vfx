@@ -16,7 +16,7 @@ mkdir -p "$out"
 
 exports=(
   vfx_sim_init vfx_sim_set_state vfx_sim_scratch vfx_sim_scratch_size
-  vfx_sim_reset_scene vfx_sim_add_zone_range vfx_sim_add_zone_pixels
+  vfx_sim_reset_scene vfx_sim_add_zone_range vfx_sim_add_zone_pixels vfx_sim_add_zone_keys
   vfx_sim_add_solid vfx_sim_add_gradient
   vfx_sim_render vfx_sim_num_pixels vfx_sim_any_lit vfx_sim_is_animating
   vfx_sim_key_event

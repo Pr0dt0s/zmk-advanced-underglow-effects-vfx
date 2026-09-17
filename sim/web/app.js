@@ -79,7 +79,12 @@ class Half {
 
     const zoneIds = {};
     for (const [name, z] of Object.entries(scene.zones || {})) {
-      if (Array.isArray(z.pixels)) {
+      if (Array.isArray(z.keys)) {
+        const scratch = this.e.vfx_sim_scratch();
+        const mem = this.mem;
+        z.keys.forEach((p, i) => { mem[scratch + i] = p & 0xff; });
+        zoneIds[name] = this.e.vfx_sim_add_zone_keys(z.keys.length);
+      } else if (Array.isArray(z.pixels)) {
         const scratch = this.e.vfx_sim_scratch();
         const mem = this.mem;
         z.pixels.forEach((p, i) => { mem[scratch + i] = p & 0xff; });
@@ -87,7 +92,7 @@ class Half {
       } else if (Array.isArray(z.range)) {
         zoneIds[name] = this.e.vfx_sim_add_zone_range(z.range[0], z.range[1]);
       } else {
-        throw new Error(`zone "${name}" needs a range or a pixels list`);
+        throw new Error(`zone "${name}" needs a range, a pixels list or a keys list`);
       }
       if (zoneIds[name] < 0) throw new Error(`zone "${name}" was rejected (too many zones?)`);
     }
@@ -438,7 +443,9 @@ function toDevicetree(scene, ledsPerHalf) {
   for (const [name, z] of Object.entries(scene.zones || {})) {
     const body = Array.isArray(z.pixels)
       ? `pixels = <${z.pixels.join(' ')}>;`
-      : `range = <${z.range[0]} ${z.range[1]}>;`;
+      : Array.isArray(z.keys)
+        ? `keys = <${z.keys.join(' ')}>;`
+        : `range = <${z.range[0]} ${z.range[1]}>;`;
     out.push(`            ${name}: ${name} { compatible = "zmk,vfx-zone"; ${body} };`);
   }
   out.push('        };');
@@ -691,6 +698,21 @@ const PRESETS = {
       { type: 'comet', zone: 'all', axis: 'x',
         color: [265, 95, 75], head_color: [280, 25, 100],
         period_ms: 2600, tail: 45, count: 2 },
+    ],
+  },
+  /* The two-tone look other keyboards call alphas/mods. Written as the keys
+   * it is about, not as LED indices read off a wiring diagram.
+   */
+  'Alphas and mods': {
+    name: 'Alphas and mods',
+    zones: {
+      all: { range: [0, 255] },
+      mods: { keys: [0, 1, 11, 12, 13, 22, 23, 24, 25, 34, 35,
+                     42, 43, 50, 51, 52, 53, 54, 55, 56, 57] },
+    },
+    layers: [
+      { type: 'solid', zone: 'all', color: [205, 20, 45] },
+      { type: 'solid', zone: 'mods', color: [25, 95, 70] },
     ],
   },
   'Status bar': {

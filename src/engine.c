@@ -659,6 +659,15 @@ static int zmk_vfx_init(void) {
     state.time_offset = 0;
     state.on = IS_ENABLED(CONFIG_ZMK_VFX_ON_START);
 
+    /* Zones written as key positions need the key map and this half's offset,
+     * so they can only be turned into pixel indices now.
+     */
+    {
+        const struct vfx_frame_ctx ctx = build_ctx();
+
+        vfx_resolve_key_zones(&ctx);
+    }
+
 #if IS_ENABLED(CONFIG_SETTINGS)
     k_work_init_delayable(&save_work, vfx_save_work_handler);
 
