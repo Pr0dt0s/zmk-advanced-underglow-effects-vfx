@@ -98,10 +98,6 @@ jobs:
             -DZMK_CONFIG="${GITHUB_WORKSPACE}/ws/config" \
             -DZMK_EXTRA_MODULES="${GITHUB_WORKSPACE}/module"
 
-      - name: Report size
-        working-directory: ws
-        run: arm-zephyr-eabi-size build/zephyr/zmk.elf
-
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.shield }}
