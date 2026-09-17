@@ -32,13 +32,23 @@
 #include <zmk/events/activity_state_changed.h>
 #endif
 
+/* ZMK compiles keymap.c and ble.c only for a non-split build or the central
+ * half, so a split peripheral has neither a keymap layer nor a BLE profile to
+ * report, and subscribing to those events there would not even link. Battery
+ * and activity exist on every role; a peripheral's battery is its own cell.
+ */
+#define VFX_HAS_CENTRAL_STATE                                                                      \
+    (!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
+
 #if IS_ENABLED(CONFIG_ZMK_VFX_INDICATORS)
 #include <zmk/events/battery_state_changed.h>
+#if VFX_HAS_CENTRAL_STATE
 #include <zmk/events/layer_state_changed.h>
 #include <zmk/keymap.h>
 #if IS_ENABLED(CONFIG_ZMK_BLE)
 #include <zmk/ble.h>
 #include <zmk/events/ble_active_profile_changed.h>
+#endif
 #endif
 #endif
 
@@ -539,10 +549,12 @@ static int vfx_event_listener(const zmk_event_t *eh) {
         struct vfx_status *status = vfx_status_mutable();
         bool changed = false;
 
+#if VFX_HAS_CENTRAL_STATE
         if (as_zmk_layer_state_changed(eh) != NULL) {
             status->active_layer = (uint8_t)zmk_keymap_highest_layer_active();
             changed = true;
         }
+#endif
 
         const struct zmk_battery_state_changed *bat = as_zmk_battery_state_changed(eh);
         if (bat != NULL) {
@@ -550,7 +562,7 @@ static int vfx_event_listener(const zmk_event_t *eh) {
             changed = true;
         }
 
-#if IS_ENABLED(CONFIG_ZMK_BLE)
+#if VFX_HAS_CENTRAL_STATE && IS_ENABLED(CONFIG_ZMK_BLE)
         if (as_zmk_ble_active_profile_changed(eh) != NULL) {
             status->ble_profile = (uint8_t)zmk_ble_active_profile_index();
             status->ble_connected = zmk_ble_active_profile_is_connected();
@@ -578,10 +590,12 @@ ZMK_SUBSCRIPTION(zmk_vfx, zmk_activity_state_changed);
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_INDICATORS)
-ZMK_SUBSCRIPTION(zmk_vfx, zmk_layer_state_changed);
 ZMK_SUBSCRIPTION(zmk_vfx, zmk_battery_state_changed);
+#if VFX_HAS_CENTRAL_STATE
+ZMK_SUBSCRIPTION(zmk_vfx, zmk_layer_state_changed);
 #if IS_ENABLED(CONFIG_ZMK_BLE)
 ZMK_SUBSCRIPTION(zmk_vfx, zmk_ble_active_profile_changed);
+#endif
 #endif
 #endif
 

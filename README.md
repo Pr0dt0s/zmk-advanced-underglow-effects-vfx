@@ -175,6 +175,11 @@ A zone length is clamped to the real `chain-length`, so `range = <0 255>` means
 There is no caps word indicator: ZMK exposes neither a state accessor nor an
 event for it, so one could not be driven on hardware.
 
+On a split, the layer and BLE profile indicators only work on the **central**
+half. ZMK compiles its keymap and BLE profile code for the central only, so a
+peripheral has no layer or profile to report and those layers stay dark there.
+Battery works on both, and shows each half's own cell.
+
 Every generator takes `zone`, `blend` (`VFX_BLEND_NORMAL`, `_ADD`,
 `_MULTIPLY`, `_SCREEN`, `_MAX`) and `opacity`. See `dts/bindings/` for each
 one's own properties; `dts/vfx/presets.dtsi` has nine ready-made scenes.
