@@ -224,6 +224,82 @@
             };
         };
 
+        /* Hue running around the board rather than along the wire. Needs
+         * pixel-positions; without one it falls back to the strip.
+         */
+        vfx_pinwheel: vfx_pinwheel {
+            compatible = "zmk,vfx-scene";
+            display-name = "Pinwheel";
+
+            wheel {
+                compatible = "zmk,vfx-layer-gradient";
+                zone = <&vfx_all>;
+                axis = <VFX_AXIS_ANGLE>;
+                stops = <VFX_HSB(0, 100, 70) VFX_HSB(60, 100, 70) VFX_HSB(120, 100, 70)
+                         VFX_HSB(200, 100, 70) VFX_HSB(280, 100, 70) VFX_HSB(330, 100, 70)>;
+                scroll-speed = <40>;
+            };
+        };
+
+        vfx_fire: vfx_fire {
+            compatible = "zmk,vfx-scene";
+            display-name = "Fire";
+
+            flames {
+                compatible = "zmk,vfx-layer-fire";
+                zone = <&vfx_all>;
+                base-color = <VFX_HSB(0, 100, 55)>;
+                tip-color = <VFX_HSB(45, 75, 100)>;
+                period-ms = <420>;
+                cell = <12>;
+                height = <235>;
+                flicker = <200>;
+                axis = <VFX_AXIS_Y>;
+            };
+        };
+
+        /* Two comets chasing each other across the board. Along x rather than
+         * around: a split's halves occupy two narrow slices of the turn, so
+         * an angular pair would spend most of a lap in the gap between them.
+         */
+        vfx_beacons: vfx_beacons {
+            compatible = "zmk,vfx-scene";
+            display-name = "Beacons";
+
+            comets {
+                compatible = "zmk,vfx-layer-comet";
+                zone = <&vfx_all>;
+                axis = <VFX_AXIS_X>;
+                color = <VFX_HSB(265, 95, 75)>;
+                head-color = <VFX_HSB(280, 25, 100)>;
+                period-ms = <2600>;
+                tail = <45>;
+                count = <2>;
+            };
+        };
+
+        /* Typing lights the row and column of the key, over a dim bed. */
+        vfx_crosshair: vfx_crosshair {
+            compatible = "zmk,vfx-scene";
+            display-name = "Crosshair";
+
+            bed {
+                compatible = "zmk,vfx-layer-solid";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(230, 80, 6)>;
+            };
+
+            arms {
+                compatible = "zmk,vfx-layer-cross";
+                zone = <&vfx_all>;
+                blend = <VFX_BLEND_ADD>;
+                color = <VFX_HSB(190, 90, 60)>;
+                centre-color = <VFX_HSB(40, 20, 100)>;
+                decay-ms = <600>;
+                thickness = <4>;
+            };
+        };
+
         vfx_ember: vfx_ember {
             compatible = "zmk,vfx-scene";
             display-name = "Ember";

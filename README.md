@@ -224,7 +224,7 @@ Battery works on both, and shows each half's own cell.
 
 Every generator takes `zone`, `blend` (`VFX_BLEND_NORMAL`, `_ADD`,
 `_MULTIPLY`, `_SCREEN`, `_MAX`) and `opacity`. See `dts/bindings/` for each
-one's own properties; `dts/vfx/presets.dtsi` has thirteen ready-made scenes.
+one's own properties; `dts/vfx/presets.dtsi` has seventeen ready-made scenes.
 
 `water` is both an ambient and a reactive effect. Each drop sends out a
 decaying wavetrain, and overlapping drops sum as signed surface height before
