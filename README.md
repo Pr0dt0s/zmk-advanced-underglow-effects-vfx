@@ -213,8 +213,14 @@ Kconfig symbol each — set them in your `.conf`:
 | Layer | Needs |
 |---|---|
 | `flag` with `source = <VFX_FLAG_LOCKS>` | `CONFIG_ZMK_HID_INDICATORS=y` |
-| `wpm` | `CONFIG_ZMK_WPM=y` |
+| `wpm` | `CONFIG_ZMK_WPM=y`, **central half only** |
 | `peripheral-battery` | `CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING=y` |
+
+`CONFIG_ZMK_WPM=y` has to go in the central half's conf, not the shared one.
+ZMK compiles `wpm.c` for every role but only produces the keycode events it
+listens for on the central, so a peripheral built with it set fails to link.
+ZMK applies every matching conf file, so a `<shield>_left.conf` beside your
+`<shield>.conf` is merged on top of it for that half alone.
 
 Caps lock is worth a note. A keyboard cannot know it by itself: pressing the
 key is a *request* to the host, not a toggle, and the keyboard only learns the
