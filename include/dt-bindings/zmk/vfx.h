@@ -41,6 +41,26 @@
 #define VFX_CROSS_HORIZONTAL 1 /* the row only: a band across the board */
 #define VFX_CROSS_VERTICAL 2   /* the column only */
 
+/* Host lock LEDs, in the bit order the USB HID LED page uses. These are the
+ * host's state, not the keyboard's: it only knows them because the host sends
+ * an LED report, so they need CONFIG_ZMK_HID_INDICATORS.
+ */
+#define VFX_LOCK_NUM 0x01
+#define VFX_LOCK_CAPS 0x02
+#define VFX_LOCK_SCROLL 0x04
+#define VFX_LOCK_COMPOSE 0x08
+#define VFX_LOCK_KANA 0x10
+
+/* Modifiers, either side counting as held. */
+#define VFX_MOD_CTRL 0x11
+#define VFX_MOD_SHIFT 0x22
+#define VFX_MOD_ALT 0x44
+#define VFX_MOD_GUI 0x88
+
+/* Which of those a flag layer reads. */
+#define VFX_FLAG_LOCKS 0
+#define VFX_FLAG_MODIFIERS 1
+
 /* &vfx behavior commands. */
 #define VFX_TOG_CMD 0
 #define VFX_ON_CMD 1

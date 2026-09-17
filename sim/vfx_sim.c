@@ -72,6 +72,9 @@ static struct vfx_cross_cfg cross_cfg[MAX_LAYERS];
 static struct vfx_cross_state cross_state[MAX_LAYERS];
 static struct vfx_fire_cfg fire_cfg[MAX_LAYERS];
 static struct vfx_comet_cfg comet_cfg[MAX_LAYERS];
+static struct vfx_flag_cfg flag_cfg[MAX_LAYERS];
+static struct vfx_wpm_cfg wpm_cfg[MAX_LAYERS];
+static struct vfx_peripheral_battery_cfg pbat_cfg[MAX_LAYERS];
 static struct vfx_trail_cfg trail_cfg[MAX_LAYERS];
 static struct vfx_trail_state trail_state[MAX_LAYERS];
 static struct vfx_layer_state_cfg layer_state_cfg[MAX_LAYERS];
@@ -634,6 +637,93 @@ EXPORT void vfx_sim_set_status(int active_layer, int battery, int profile, int c
     st->ble_profile = (uint8_t)profile;
     st->ble_connected = connected != 0;
     st->usb_output = usb != 0;
+}
+
+/* The state a keyboard learns from somewhere else: the host's lock LEDs, the
+ * modifiers being held, the typing estimate, the other half's cell. Driving
+ * them from the page is how an indicator gets checked without a second half
+ * and a flat battery.
+ */
+EXPORT void vfx_sim_set_extra_status(int locks, int modifiers, int wpm, int peripheral_battery) {
+    struct vfx_status *st = vfx_status_mutable();
+
+    st->locks = (uint8_t)locks;
+    st->modifiers = (uint8_t)modifiers;
+    st->wpm = (uint8_t)(wpm < 0 ? 0 : (wpm > 255 ? 255 : wpm));
+    st->peripheral_battery[0] = (uint8_t)peripheral_battery;
+}
+
+EXPORT int vfx_sim_add_flag(int zone, int blend, int opacity, uint32_t color, int source,
+                            int mask) {
+    struct vfx_layer *l = next_layer(zone, blend, opacity);
+
+    if (!l) {
+        return -1;
+    }
+
+    const int i = num_layers;
+
+    flag_cfg[i] = (struct vfx_flag_cfg){
+        .color = color, .source = (uint8_t)source, .mask = (uint8_t)mask};
+
+    l->api = &vfx_layer_flag_api;
+    l->config = &flag_cfg[i];
+    l->state = &stateless[i];
+
+    scene.num_layers = (uint8_t)(++num_layers);
+
+    return i;
+}
+
+EXPORT int vfx_sim_add_wpm(int zone, int blend, int opacity, uint32_t idle, uint32_t fast,
+                           int full, int bar) {
+    struct vfx_layer *l = next_layer(zone, blend, opacity);
+
+    if (!l) {
+        return -1;
+    }
+
+    const int i = num_layers;
+
+    wpm_cfg[i] = (struct vfx_wpm_cfg){
+        .idle_color = idle, .fast_color = fast, .full = (uint16_t)full, .bar = (uint8_t)bar};
+
+    l->api = &vfx_layer_wpm_api;
+    l->config = &wpm_cfg[i];
+    l->state = &stateless[i];
+
+    scene.num_layers = (uint8_t)(++num_layers);
+
+    return i;
+}
+
+EXPORT int vfx_sim_add_peripheral_battery(int zone, int blend, int opacity, uint32_t low,
+                                          uint32_t high, uint32_t empty, uint32_t unknown,
+                                          int source, int warn_below) {
+    struct vfx_layer *l = next_layer(zone, blend, opacity);
+
+    if (!l) {
+        return -1;
+    }
+
+    const int i = num_layers;
+
+    pbat_cfg[i] = (struct vfx_peripheral_battery_cfg){
+        .low_color = low,
+        .high_color = high,
+        .empty_color = empty,
+        .unknown_color = unknown,
+        .source = (uint8_t)source,
+        .warn_below = (uint8_t)warn_below,
+    };
+
+    l->api = &vfx_layer_peripheral_battery_api;
+    l->config = &pbat_cfg[i];
+    l->state = &stateless[i];
+
+    scene.num_layers = (uint8_t)(++num_layers);
+
+    return i;
 }
 
 EXPORT void vfx_sim_set_key_map(int num_keys) {

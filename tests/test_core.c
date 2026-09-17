@@ -2247,6 +2247,164 @@ static void test_key_zone_scopes_a_layer(void) {
     }
 }
 
+/* ---- the new indicators -------------------------------------------------- */
+
+static void test_flag_follows_locks_and_modifiers(void) {
+    /* Caps lock is the host's state, not the keyboard's, so all this layer
+     * does is render a bit someone else set. What matters is that it draws
+     * nothing when clear, so it can sit over another effect.
+     */
+    struct vfx_flag_cfg cfg = {
+        .color = VFX_HSB(0, 90, 100), .source = VFX_FLAG_LOCKS, .mask = VFX_LOCK_CAPS};
+    uint8_t st = 0;
+    SCENE1(scene, &vfx_layer_flag_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+    struct vfx_status *status = vfx_status_mutable();
+    bool lit = true;
+
+    status->locks = 0;
+    status->modifiers = 0;
+
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(!lit, "caps off must draw nothing at all");
+
+    status->locks = VFX_LOCK_CAPS;
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(lit, "caps on must light the zone");
+
+    /* Another lock must not trigger a caps indicator. */
+    status->locks = VFX_LOCK_NUM;
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(!lit, "num lock must not light a caps indicator");
+
+    /* The mask takes any of its bits. */
+    cfg.mask = VFX_LOCK_CAPS | VFX_LOCK_NUM;
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(lit, "a mask of caps-or-num should take num lock");
+
+    /* Same generator, modifiers instead. */
+    cfg.source = VFX_FLAG_MODIFIERS;
+    cfg.mask = VFX_MOD_SHIFT;
+    status->locks = 0;
+    status->modifiers = 0;
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(!lit, "no modifiers held means nothing lit");
+
+    status->modifiers = 0x02; /* left shift */
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(lit, "left shift should light a VFX_MOD_SHIFT layer");
+
+    status->modifiers = 0x20; /* right shift */
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(lit, "and so should right shift");
+
+    status->modifiers = 0x01; /* left control */
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(!lit, "control must not light a shift layer");
+
+    status->modifiers = 0;
+}
+
+static void test_wpm_colours_and_fills(void) {
+    struct vfx_wpm_cfg cfg = {.idle_color = VFX_HSB(210, 90, 40),
+                              .fast_color = VFX_HSB(0, 90, 100),
+                              .full = 80,
+                              .bar = 0};
+    uint8_t st = 0;
+    SCENE1(scene, &vfx_layer_wpm_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+    struct vfx_status *status = vfx_status_mutable();
+
+    status->wpm = 0;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    const struct vfx_rgb idle = out[0];
+
+    status->wpm = 80;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    const struct vfx_rgb fast = out[0];
+
+    CHECK(memcmp(&idle, &fast, sizeof(idle)) != 0, "typing speed should change the colour");
+    CHECK(fast.r > idle.r, "flat out should be redder than at rest");
+
+    /* Past `full` it saturates rather than wrapping the hue round. */
+    status->wpm = 200;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    CHECK(memcmp(&fast, &out[0], sizeof(fast)) == 0, "above `full` should clamp, not wrap");
+
+    /* As a bar it fills instead. */
+    cfg.bar = 1;
+    status->wpm = 40; /* half of full */
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    int lit = 0;
+    for (int i = 0; i < NPX; i++) {
+        if (!rgb_is_black(out[i])) {
+            lit++;
+        }
+    }
+
+    CHECK(lit > NPX / 3 && lit < NPX * 2 / 3, "half speed should fill about half the bar, got %d",
+          lit);
+
+    status->wpm = 0;
+}
+
+static void test_peripheral_battery_distinguishes_unknown_from_flat(void) {
+    /* A half that has not reported yet is not a half that is about to die,
+     * and drawing it as an empty bar would say the wrong thing.
+     */
+    struct vfx_peripheral_battery_cfg cfg = {
+        .low_color = VFX_HSB(0, 100, 100),
+        .high_color = VFX_HSB(120, 100, 100),
+        .empty_color = 0,
+        .unknown_color = VFX_HSB(240, 60, 30),
+        .source = 0,
+        .warn_below = 20,
+    };
+    uint8_t st = 0;
+    SCENE1(scene, &vfx_layer_peripheral_battery_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+    struct vfx_status *status = vfx_status_mutable();
+
+    status->peripheral_battery[0] = 0; /* never reported */
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    int lit = 0;
+    for (int i = 0; i < NPX; i++) {
+        if (!rgb_is_black(out[i])) {
+            lit++;
+        }
+    }
+    CHECK(lit == NPX, "an unreported half should show its own colour across the zone, got %d",
+          lit);
+    CHECK(out[0].b > out[0].r, "and that colour should be the configured blue");
+
+    /* Once it reports, it is an ordinary bar. */
+    status->peripheral_battery[0] = 50;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    lit = 0;
+    for (int i = 0; i < NPX; i++) {
+        if (!rgb_is_black(out[i])) {
+            lit++;
+        }
+    }
+    CHECK(lit == NPX / 2, "half a cell should fill half the bar, got %d of %d", lit, NPX);
+
+    /* And a flat one warns. */
+    status->peripheral_battery[0] = 10;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    CHECK(out[0].r > out[0].g, "below warn-below the bar should be the low colour");
+
+    status->peripheral_battery[0] = 0;
+}
+
 static void test_isqrt(void) {
     CHECK(vfx_isqrt(0) == 0, "isqrt(0)");
     CHECK(vfx_isqrt(1) == 1, "isqrt(1)");
@@ -2326,6 +2484,10 @@ int main(void) {
         {"key zone resolves through the key map", test_key_zone_resolves_through_the_key_map},
         {"key zone keeps only this half's keys", test_key_zone_keeps_only_this_halfs_keys},
         {"key zone scopes a layer", test_key_zone_scopes_a_layer},
+        {"flag follows locks and modifiers", test_flag_follows_locks_and_modifiers},
+        {"wpm colours and fills", test_wpm_colours_and_fills},
+        {"peripheral battery distinguishes unknown from flat",
+         test_peripheral_battery_distinguishes_unknown_from_flat},
         {"isqrt", test_isqrt},
         {"distance falls back to the strip", test_distance_falls_back_to_the_strip},
         {"distance is across the board with a map", test_distance_is_across_the_board_with_a_map},

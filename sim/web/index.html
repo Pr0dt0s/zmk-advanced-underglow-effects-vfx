@@ -103,6 +103,21 @@
         <input type="range" id="profile" min="0" max="4" value="0"></label>
       <label class="radio"><input type="checkbox" id="connected" checked> Profile connected</label>
       <label class="radio"><input type="checkbox" id="usb"> Output is USB</label>
+      <label>Other half's battery <output id="out-periph"></output>
+        <input type="range" id="periph" min="0" max="100" value="0"></label>
+      <label>Typing speed <output id="out-wpm"></output>
+        <input type="range" id="wpm" min="0" max="120" value="0"></label>
+      <div class="row">
+        <label class="radio"><input type="checkbox" id="caps"> Caps lock</label>
+        <label class="radio"><input type="checkbox" id="shift"> Shift held</label>
+      </div>
+      <p class="note">
+        Caps lock is the host's state, not the keyboard's: on hardware it
+        arrives as an LED report from the computer, which is why an indicator
+        for it needs CONFIG_ZMK_HID_INDICATORS. The other half's battery
+        starts at 0, meaning it has not reported yet &mdash; not that it is
+        flat, which an indicator can show differently.
+      </p>
     </div>
 
     <div class="panel wide">

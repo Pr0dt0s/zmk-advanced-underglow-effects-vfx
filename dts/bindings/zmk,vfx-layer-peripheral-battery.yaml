@@ -1,0 +1,51 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  The other half's battery, drawn the way zmk,vfx-layer-battery draws your own.
+
+  This is the cell you cannot check by looking at the half in front of you,
+  which is what makes it worth a separate indicator. Only the central hears
+  about it, so it needs CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING=y
+  and stays at unknown-color on a peripheral.
+
+compatible: "zmk,vfx-layer-peripheral-battery"
+
+include: vfx-layer-common.yaml
+
+properties:
+  high-color:
+    type: int
+    required: true
+    description: A full cell. The bar is coloured between this and low-color.
+
+  low-color:
+    type: int
+    required: true
+    description: |
+      An empty one, and the colour of the whole bar below warn-below.
+
+  empty-color:
+    type: int
+    default: 0
+    description: |
+      The unfilled part of the zone. 0 draws nothing there, so whatever is
+      underneath shows through.
+
+  unknown-color:
+    type: int
+    default: 0
+    description: |
+      Before the peripheral has ever reported. Not the same as a flat cell,
+      and worth its own colour rather than an alarming empty bar. 0 draws
+      nothing until the first report arrives.
+
+  source:
+    type: int
+    default: 0
+    description: Which peripheral, 0 based. A two-piece split has only 0.
+
+  warn-below:
+    type: int
+    default: 20
+    description: Percent under which the whole bar turns low-color.

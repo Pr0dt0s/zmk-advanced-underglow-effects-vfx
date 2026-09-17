@@ -207,6 +207,44 @@ DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_water, VFX_WATER_DEFINE)
 
 DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_matrix, VFX_MATRIX_DEFINE)
 
+#define VFX_FLAG_DEFINE(node)                                                                      \
+    static const struct vfx_flag_cfg VFX_CFG_SYM(node) = {                                         \
+        .color = DT_PROP(node, color),                                                             \
+        .source = DT_PROP(node, source),                                                           \
+        .mask = DT_PROP(node, mask),                                                               \
+    };                                                                                             \
+    static uint8_t VFX_STATE_SYM(node);                                                            \
+    static const struct vfx_layer_api *const VFX_API_SYM(node) = &vfx_layer_flag_api;
+
+DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_flag, VFX_FLAG_DEFINE)
+
+#define VFX_WPM_DEFINE(node)                                                                       \
+    static const struct vfx_wpm_cfg VFX_CFG_SYM(node) = {                                          \
+        .idle_color = DT_PROP(node, idle_color),                                                   \
+        .fast_color = DT_PROP(node, fast_color),                                                   \
+        .full = DT_PROP(node, full),                                                               \
+        .bar = DT_PROP(node, bar),                                                                 \
+    };                                                                                             \
+    static uint8_t VFX_STATE_SYM(node);                                                            \
+    static const struct vfx_layer_api *const VFX_API_SYM(node) = &vfx_layer_wpm_api;
+
+DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_wpm, VFX_WPM_DEFINE)
+
+#define VFX_PERIPHERAL_BATTERY_DEFINE(node)                                                        \
+    static const struct vfx_peripheral_battery_cfg VFX_CFG_SYM(node) = {                           \
+        .low_color = DT_PROP(node, low_color),                                                     \
+        .high_color = DT_PROP(node, high_color),                                                   \
+        .empty_color = DT_PROP(node, empty_color),                                                 \
+        .unknown_color = DT_PROP(node, unknown_color),                                             \
+        .source = DT_PROP(node, source),                                                           \
+        .warn_below = DT_PROP(node, warn_below),                                                   \
+    };                                                                                             \
+    static uint8_t VFX_STATE_SYM(node);                                                            \
+    static const struct vfx_layer_api *const VFX_API_SYM(node) =                                   \
+        &vfx_layer_peripheral_battery_api;
+
+DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_peripheral_battery, VFX_PERIPHERAL_BATTERY_DEFINE)
+
 #define VFX_FIRE_DEFINE(node)                                                                      \
     static const struct vfx_fire_cfg VFX_CFG_SYM(node) = {                                         \
         .base_color = DT_PROP(node, base_color),                                                   \

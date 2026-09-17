@@ -13,6 +13,16 @@ const BLEND = { normal: 0, add: 1, multiply: 2, screen: 3, max: 4 };
  */
 const AXIS = { strip: 0, x: 1, y: 2, radial: 3, angle: 4, spiral: 5 };
 const CROSS = { both: 0, horizontal: 1, vertical: 2 };
+
+/* Host lock LEDs and modifier bits, as <dt-bindings/zmk/vfx.h> names them. */
+const LOCKS = { num: 0x01, caps: 0x02, scroll: 0x04, compose: 0x08, kana: 0x10 };
+const MODS = { ctrl: 0x11, shift: 0x22, alt: 0x44, gui: 0x88 };
+const LOCK_NAME = { 0x01: 'VFX_LOCK_NUM', 0x02: 'VFX_LOCK_CAPS', 0x04: 'VFX_LOCK_SCROLL',
+                    0x08: 'VFX_LOCK_COMPOSE', 0x10: 'VFX_LOCK_KANA' };
+const MOD_NAME = { 0x11: 'VFX_MOD_CTRL', 0x22: 'VFX_MOD_SHIFT',
+                   0x44: 'VFX_MOD_ALT', 0x88: 'VFX_MOD_GUI' };
+const LOCK_CAPS = LOCKS.caps;
+const MOD_SHIFT_BITS = MODS.shift;
 const CROSS_NAME = ['VFX_CROSS_BOTH', 'VFX_CROSS_HORIZONTAL', 'VFX_CROSS_VERTICAL'];
 const AXIS_NAME = ['VFX_AXIS_STRIP', 'VFX_AXIS_X', 'VFX_AXIS_Y',
                    'VFX_AXIS_RADIAL', 'VFX_AXIS_ANGLE', 'VFX_AXIS_SPIRAL'];
@@ -44,6 +54,9 @@ const LAYER_SPECS = {
                               ['drop_rate_ms', 0], ['amplitude', 200], ['damping', 7]] },
   fire:       { id: 16, args: [['period_ms', 500], ['cell', 12], ['height', 200]] },
   comet:      { id: 17, args: [['period_ms', 3000], ['tail', 60], ['count', 1]] },
+  flag:       { id: 18, args: [] },
+  wpm:        { id: 19, args: [['full', 80]] },
+  'peripheral-battery': { id: 20, args: [['warn_below', 20]] },
   cross:      { id: 15, args: [['decay_ms', 500], ['radius', 0], ['thickness', 4]] },
   matrix:     { id: 14, args: [['speed', 60], ['tail', 40], ['drop_rate_ms', 0],
                               ['columns', 6], ['jitter', 60], ['head_size', 8]] },
@@ -152,6 +165,28 @@ class Half {
                                         l.amplitude ?? 200, l.damping ?? 7);
           break;
 
+        case 'flag':
+          rc = this.e.vfx_sim_add_flag(zid, blend, opacity, packHsb(...l.color),
+                                       l.source === 'modifiers' ? 1 : 0,
+                                       (l.source === 'modifiers' ? MODS : LOCKS)[l.bit] ?? 0x02);
+          break;
+
+        case 'wpm':
+          rc = this.e.vfx_sim_add_wpm(zid, blend, opacity,
+                                      packHsb(...l.idle_color), packHsb(...l.fast_color),
+                                      l.full ?? 80, l.bar ? 1 : 0);
+          break;
+
+        case 'peripheral-battery':
+          rc = this.e.vfx_sim_add_peripheral_battery(zid, blend, opacity,
+                                                     packHsb(...l.low_color),
+                                                     packHsb(...l.high_color),
+                                                     l.empty_color ? packHsb(...l.empty_color) : 0,
+                                                     l.unknown_color
+                                                       ? packHsb(...l.unknown_color) : 0,
+                                                     l.source ?? 0, l.warn_below ?? 20);
+          break;
+
         case 'fire':
           rc = this.e.vfx_sim_add_fire(zid, blend, opacity,
                                        packHsb(...l.base_color), packHsb(...l.tip_color),
@@ -209,6 +244,13 @@ class Half {
 
   setStatus(activeLayer, battery, profile, connected, usb) {
     this.e.vfx_sim_set_status(activeLayer, battery, profile, connected ? 1 : 0, usb ? 1 : 0);
+  }
+
+  /* State the keyboard learns from somewhere else: the host's lock LEDs, the
+   * modifiers held, the typing estimate, the other half's cell.
+   */
+  setExtraStatus(locks, modifiers, wpm, peripheral) {
+    this.e.vfx_sim_set_extra_status(locks, modifiers, wpm, peripheral);
   }
 
   /* Key position -> virtual pixel. Without it reactive effects still animate
@@ -480,6 +522,21 @@ function toDevicetree(scene, ledsPerHalf) {
       if (l.crest_color) out.push(`${ind}    crest-color = <${hsb(l.crest_color)}>;`);
     } else if (l.type === 'matrix') {
       if (l.head_color) out.push(`${ind}    head-color = <${hsb(l.head_color)}>;`);
+    } else if (l.type === 'flag') {
+      if (l.source === 'modifiers') out.push(`${ind}    source = <VFX_FLAG_MODIFIERS>;`);
+      const bits = l.source === 'modifiers' ? MODS : LOCKS;
+      const names = l.source === 'modifiers' ? MOD_NAME : LOCK_NAME;
+      out.push(`${ind}    mask = <${names[bits[l.bit] ?? 0x02]}>;`);
+    } else if (l.type === 'wpm') {
+      out.push(`${ind}    idle-color = <${hsb(l.idle_color)}>;`);
+      out.push(`${ind}    fast-color = <${hsb(l.fast_color)}>;`);
+      if (l.bar) out.push(`${ind}    bar = <1>;`);
+    } else if (l.type === 'peripheral-battery') {
+      out.push(`${ind}    high-color = <${hsb(l.high_color)}>;`);
+      out.push(`${ind}    low-color = <${hsb(l.low_color)}>;`);
+      if (l.empty_color) out.push(`${ind}    empty-color = <${hsb(l.empty_color)}>;`);
+      if (l.unknown_color) out.push(`${ind}    unknown-color = <${hsb(l.unknown_color)}>;`);
+      if (l.source) out.push(`${ind}    source = <${l.source}>;`);
     } else if (l.type === 'fire') {
       out.push(`${ind}    base-color = <${hsb(l.base_color)}>;`);
       out.push(`${ind}    tip-color = <${hsb(l.tip_color)}>;`);
@@ -734,6 +791,39 @@ const PRESETS = {
         colors: [null, [50, 100, 70], [280, 100, 70], [0, 100, 70]] },
     ],
   },
+  /* Everything a keyboard can tell you about itself, or be told. Drive the
+   * sliders and checkboxes in Keyboard state to see each one move.
+   */
+  'Full status': {
+    name: 'Full status',
+    zones: {
+      all: { range: [0, 255] },
+      battery: { range: [0, 6] },
+      other_half: { range: [6, 6] },
+      profiles: { range: [14, 5] },
+      speed: { range: [20, 8] },
+      layers: { range: [30, 6] },
+    },
+    layers: [
+      { type: 'solid', zone: 'all', color: [220, 40, 5] },
+      { type: 'battery', zone: 'battery',
+        high_color: [120, 100, 70], low_color: [0, 100, 80], warn_below: 25 },
+      { type: 'peripheral-battery', zone: 'other_half',
+        high_color: [170, 100, 70], low_color: [0, 100, 80],
+        unknown_color: [230, 60, 18], warn_below: 25 },
+      { type: 'ble-profile', zone: 'profiles',
+        connected_color: [210, 100, 80], disconnected_color: [20, 100, 50],
+        usb_color: [120, 100, 70] },
+      { type: 'wpm', zone: 'speed', bar: true,
+        idle_color: [200, 90, 30], fast_color: [0, 95, 100], full: 80 },
+      { type: 'layer-state', zone: 'layers',
+        colors: [null, [50, 100, 70], [280, 100, 70], [0, 100, 70]] },
+      /* Caps lock over the top of everything, since it is the one that
+       * matters more than whatever it covers. */
+      { type: 'flag', zone: 'all', blend: 'add',
+        color: [0, 90, 35], source: 'locks', bit: 'caps' },
+    ],
+  },
   'Zones demo': {
     name: 'Zones demo',
     zones: {
@@ -790,6 +880,7 @@ async function main() {
   const state = {
     brightness: 255, speed: 3, hue: 0, split: 'free', drift: 0,
     activeLayer: 0, battery: 78, profile: 0, connected: true, usb: false,
+    periph: 0, wpm: 0, caps: false, shift: false,
   };
 
   let applyPowerPolicy = () => {};
@@ -829,6 +920,8 @@ async function main() {
     for (const h of halves) {
       h.setState(state.brightness, state.speed, state.hue);
       h.setStatus(state.activeLayer, state.battery, state.profile, state.connected, state.usb);
+      h.setExtraStatus(state.caps ? LOCK_CAPS : 0, state.shift ? MOD_SHIFT_BITS : 0,
+                       state.wpm, state.periph);
     }
 
     halves[0].render(t);
@@ -925,8 +1018,11 @@ async function main() {
   bindRange('activeLayer', 'activeLayer');
   bindRange('battery', 'battery', v => `${v}%`);
   bindRange('profile', 'profile');
+  bindRange('periph', 'periph', v => (v === 0 ? 'not reported' : `${v}%`));
+  bindRange('wpm', 'wpm', v => `${v} wpm`);
 
-  for (const [id, key] of [['connected', 'connected'], ['usb', 'usb']]) {
+  for (const [id, key] of [['connected', 'connected'], ['usb', 'usb'],
+                           ['caps', 'caps'], ['shift', 'shift']]) {
     const el = $(id);
     el.addEventListener('change', () => { state[key] = el.checked; });
   }

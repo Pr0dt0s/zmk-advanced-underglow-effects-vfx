@@ -196,9 +196,26 @@ that landed on its own strip, so one definition covers the whole board.
 | `zmk,vfx-layer-layer-state` | Colour per active keymap layer |
 | `zmk,vfx-layer-battery` | Fills a zone in proportion to charge |
 | `zmk,vfx-layer-ble-profile` | One pixel per profile, lighting the selected one |
+| `zmk,vfx-layer-peripheral-battery` | The *other* half's cell, on a split central |
+| `zmk,vfx-layer-flag` | Lights while a lock LED is on or a modifier is held |
+| `zmk,vfx-layer-wpm` | Colours or fills by how fast you are typing |
 
-There is no caps word indicator: ZMK exposes neither a state accessor nor an
-event for it, so one could not be driven on hardware.
+Three of those read state ZMK only computes when you ask it to, so they need a
+Kconfig symbol each — set them in your `.conf`:
+
+| Layer | Needs |
+|---|---|
+| `flag` with `source = <VFX_FLAG_LOCKS>` | `CONFIG_ZMK_HID_INDICATORS=y` |
+| `wpm` | `CONFIG_ZMK_WPM=y` |
+| `peripheral-battery` | `CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING=y` |
+
+Caps lock is worth a note. A keyboard cannot know it by itself: pressing the
+key is a *request* to the host, not a toggle, and the keyboard only learns the
+answer when the host sends an LED report back. That report is what
+`CONFIG_ZMK_HID_INDICATORS` turns on.
+
+There is still no caps *word* indicator: ZMK exposes neither a state accessor
+nor an event for that one, so it could not be driven on hardware.
 
 On a split, the layer and BLE profile indicators only work on the **central**
 half. ZMK compiles its keymap and BLE profile code for the central only, so a

@@ -44,11 +44,23 @@
 #include <zmk/events/battery_state_changed.h>
 #if VFX_HAS_CENTRAL_STATE
 #include <zmk/events/layer_state_changed.h>
+#include <zmk/events/modifiers_state_changed.h>
 #include <zmk/keymap.h>
 #if IS_ENABLED(CONFIG_ZMK_BLE)
 #include <zmk/ble.h>
 #include <zmk/events/ble_active_profile_changed.h>
 #endif
+/* The host's lock LEDs. A keyboard cannot know caps lock by itself: pressing
+ * the key is a request, and it only learns the answer when the host sends an
+ * LED report back. ZMK compiles that for the central only, as with the keymap.
+ */
+#if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
+#include <zmk/events/hid_indicators_changed.h>
+#include <zmk/hid_indicators.h>
+#endif
+#endif
+#if IS_ENABLED(CONFIG_ZMK_WPM)
+#include <zmk/events/wpm_state_changed.h>
 #endif
 #endif
 
@@ -609,6 +621,44 @@ static int vfx_event_listener(const zmk_event_t *eh) {
             changed = true;
         }
 
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
+        /* The other half's cell, which is the one you cannot check by looking
+         * at the half in front of you. Only the central hears about it.
+         */
+        const struct zmk_peripheral_battery_state_changed *pbat =
+            as_zmk_peripheral_battery_state_changed(eh);
+        if (pbat != NULL && pbat->source < VFX_MAX_PERIPHERALS) {
+            status->peripheral_battery[pbat->source] = pbat->state_of_charge;
+            changed = true;
+        }
+#endif
+
+#if VFX_HAS_CENTRAL_STATE
+        const struct zmk_modifiers_state_changed *mods = as_zmk_modifiers_state_changed(eh);
+        if (mods != NULL) {
+            status->modifiers = mods->state ? (uint8_t)(status->modifiers | mods->modifiers)
+                                            : (uint8_t)(status->modifiers & ~mods->modifiers);
+            changed = true;
+        }
+#endif
+
+#if VFX_HAS_CENTRAL_STATE && IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
+        if (as_zmk_hid_indicators_changed(eh) != NULL) {
+            status->locks = (uint8_t)zmk_hid_indicators_get_current_profile();
+            changed = true;
+        }
+#endif
+
+#if IS_ENABLED(CONFIG_ZMK_WPM)
+        const struct zmk_wpm_state_changed *wpm = as_zmk_wpm_state_changed(eh);
+        if (wpm != NULL) {
+            const int v = wpm->state;
+
+            status->wpm = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
+            changed = true;
+        }
+#endif
+
 #if VFX_HAS_CENTRAL_STATE && IS_ENABLED(CONFIG_ZMK_BLE)
         if (as_zmk_ble_active_profile_changed(eh) != NULL) {
             status->ble_profile = (uint8_t)zmk_ble_active_profile_index();
@@ -638,8 +688,18 @@ ZMK_SUBSCRIPTION(zmk_vfx, zmk_activity_state_changed);
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_INDICATORS)
 ZMK_SUBSCRIPTION(zmk_vfx, zmk_battery_state_changed);
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
+ZMK_SUBSCRIPTION(zmk_vfx, zmk_peripheral_battery_state_changed);
+#endif
+#if IS_ENABLED(CONFIG_ZMK_WPM)
+ZMK_SUBSCRIPTION(zmk_vfx, zmk_wpm_state_changed);
+#endif
 #if VFX_HAS_CENTRAL_STATE
 ZMK_SUBSCRIPTION(zmk_vfx, zmk_layer_state_changed);
+ZMK_SUBSCRIPTION(zmk_vfx, zmk_modifiers_state_changed);
+#if IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
+ZMK_SUBSCRIPTION(zmk_vfx, zmk_hid_indicators_changed);
+#endif
 #if IS_ENABLED(CONFIG_ZMK_BLE)
 ZMK_SUBSCRIPTION(zmk_vfx, zmk_ble_active_profile_changed);
 #endif

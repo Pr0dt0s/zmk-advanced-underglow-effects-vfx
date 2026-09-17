@@ -231,3 +231,31 @@ struct vfx_ble_profile_cfg {
     uint32_t usb_color;
 };
 
+/* Lights up while the host has a lock LED on, or while a modifier is held.
+ * One generator for both: they are the same shape, a bit set somewhere and a
+ * colour for it, and which one is read is a property.
+ */
+struct vfx_flag_cfg {
+    uint32_t color;
+    uint8_t source; /* VFX_FLAG_LOCKS or VFX_FLAG_MODIFIERS */
+    uint8_t mask;   /* VFX_LOCK_* / VFX_MOD_*; any bit set lights the zone */
+};
+
+/* Typing speed, as a bar or as a colour. */
+struct vfx_wpm_cfg {
+    uint32_t idle_color; /* at rest */
+    uint32_t fast_color; /* at `full` words per minute and above */
+    uint16_t full;       /* wpm that counts as flat out */
+    uint8_t bar;         /* non-zero fills the zone in proportion instead */
+};
+
+/* The other half's battery, drawn the same way as your own. */
+struct vfx_peripheral_battery_cfg {
+    uint32_t low_color;
+    uint32_t high_color;
+    uint32_t empty_color;   /* the unfilled part of the bar */
+    uint32_t unknown_color; /* before the peripheral has ever reported */
+    uint8_t source;         /* which peripheral, 0 based */
+    uint8_t warn_below;     /* percent under which the whole bar uses low */
+};
+
