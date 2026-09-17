@@ -192,15 +192,6 @@ DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_battery, VFX_BATTERY_DEFINE)
 
 DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_ble_profile, VFX_BLE_PROFILE_DEFINE)
 
-#define VFX_CAPS_WORD_DEFINE(node)                                                                 \
-    static const struct vfx_caps_word_cfg VFX_CFG_SYM(node) = {                                    \
-        .color = DT_PROP(node, color),                                                             \
-        .period_ms = DT_PROP(node, period_ms),                                                     \
-    };                                                                                             \
-    static uint8_t VFX_STATE_SYM(node);                                                             \
-    static const struct vfx_layer_api *const VFX_API_SYM(node) = &vfx_layer_caps_word_api;
-
-DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_caps_word, VFX_CAPS_WORD_DEFINE)
 
 /* ----------------------------------------------------------------- scenes */
 

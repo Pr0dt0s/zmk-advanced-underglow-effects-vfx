@@ -70,7 +70,6 @@ static struct vfx_layer_state_cfg layer_state_cfg[MAX_LAYERS];
 static uint32_t layer_state_colors[MAX_LAYERS][MAX_STOPS];
 static struct vfx_battery_cfg battery_cfg[MAX_LAYERS];
 static struct vfx_ble_profile_cfg ble_cfg[MAX_LAYERS];
-static struct vfx_caps_word_cfg caps_cfg[MAX_LAYERS];
 
 /* Stateless generators still need a state pointer. */
 static uint8_t stateless[MAX_LAYERS];
@@ -269,7 +268,6 @@ enum sim_layer_type {
     SIM_LAYER_STATE,
     SIM_BATTERY,
     SIM_BLE_PROFILE,
-    SIM_CAPS_WORD,
 };
 
 /* One entry point for every generator whose config is a colour plus up to
@@ -348,11 +346,6 @@ EXPORT int vfx_sim_add_layer(int type, int zone, int blend, int opacity, uint32_
         trail_state[i] = (struct vfx_trail_state){0};
         break;
 
-    case SIM_CAPS_WORD:
-        caps_cfg[i] = (struct vfx_caps_word_cfg){.color = color, .period_ms = (uint16_t)a};
-        l->api = &vfx_layer_caps_word_api;
-        l->config = &caps_cfg[i];
-        break;
 
     default:
         return -1;
@@ -436,8 +429,8 @@ EXPORT int vfx_sim_add_ble_profile(int zone, int blend, int opacity, uint32_t co
     return i;
 }
 
-EXPORT void vfx_sim_set_status(int active_layer, int battery, int profile, int connected, int usb,
-                               int caps) {
+EXPORT void vfx_sim_set_status(int active_layer, int battery, int profile, int connected,
+                               int usb) {
     struct vfx_status *st = vfx_status_mutable();
 
     st->active_layer = (uint8_t)active_layer;
@@ -445,7 +438,6 @@ EXPORT void vfx_sim_set_status(int active_layer, int battery, int profile, int c
     st->ble_profile = (uint8_t)profile;
     st->ble_connected = connected != 0;
     st->usb_output = usb != 0;
-    st->caps_word = caps != 0;
 }
 
 EXPORT void vfx_sim_set_key_map(int num_keys) {

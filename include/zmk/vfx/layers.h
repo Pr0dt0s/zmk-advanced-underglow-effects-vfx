@@ -127,7 +127,3 @@ struct vfx_ble_profile_cfg {
     uint32_t usb_color;
 };
 
-struct vfx_caps_word_cfg {
-    uint32_t color;
-    uint16_t period_ms; /* 0 for steady, otherwise a pulse */
-};

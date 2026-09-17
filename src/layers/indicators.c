@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: MIT
  *
- * Indicator generators: active layer, battery, BLE profile, caps word.
+ * Indicator generators: active layer, battery, BLE profile.
  *
  * These read keyboard state through vfx_status_get() rather than calling ZMK
  * directly, which keeps them buildable for the simulator and means the page
@@ -17,7 +17,6 @@
 
 #include <zmk/vfx/engine.h>
 #include <zmk/vfx/layers.h>
-#include <zmk/vfx/math.h>
 #include <zmk/vfx/status.h>
 
 /* ------------------------------------------------------------- layer state */
@@ -133,48 +132,4 @@ static bool ble_profile_pixel(const struct vfx_layer *layer, const struct vfx_fr
 
 const struct vfx_layer_api vfx_layer_ble_profile_api = {
     .pixel = ble_profile_pixel,
-};
-
-/* --------------------------------------------------------------- caps word */
-
-static bool caps_word_pixel(const struct vfx_layer *layer, const struct vfx_frame_ctx *ctx,
-                            uint16_t zone_i, uint16_t strip_i, struct vfx_rgb *out) {
-    VFX_UNUSED(zone_i);
-    VFX_UNUSED(strip_i);
-
-    const struct vfx_caps_word_cfg *cfg = layer->config;
-
-    if (!vfx_status_get()->caps_word) {
-        return false;
-    }
-
-    struct vfx_hsb hsb = vfx_hsb_unpack(cfg->color);
-    hsb.h = vfx_hue_add(hsb.h, ctx->hue_shift);
-
-    if (cfg->period_ms) {
-        const uint8_t turn = (uint8_t)(((uint32_t)ctx->time_ms * 256U) / cfg->period_ms);
-
-        hsb.b = (uint8_t)((uint16_t)hsb.b * vfx_sin8(turn) / 255U);
-    }
-
-    *out = vfx_hsb_to_rgb(hsb);
-
-    return true;
-}
-
-static bool caps_word_is_animating(const struct vfx_layer *layer,
-                                   const struct vfx_frame_ctx *ctx) {
-    VFX_UNUSED(ctx);
-
-    const struct vfx_caps_word_cfg *cfg = layer->config;
-
-    /* Only moving while caps word is actually held and a pulse is configured,
-     * so this layer does not keep an otherwise static scene awake.
-     */
-    return cfg->period_ms != 0 && vfx_status_get()->caps_word;
-}
-
-const struct vfx_layer_api vfx_layer_caps_word_api = {
-    .pixel = caps_word_pixel,
-    .is_animating = caps_word_is_animating,
 };

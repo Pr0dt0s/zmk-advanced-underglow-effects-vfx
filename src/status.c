@@ -18,7 +18,6 @@ static struct vfx_status status = {
     .ble_profile = 0,
     .ble_connected = false,
     .usb_output = false,
-    .caps_word = false,
 };
 
 const struct vfx_status *vfx_status_get(void) { return &status; }

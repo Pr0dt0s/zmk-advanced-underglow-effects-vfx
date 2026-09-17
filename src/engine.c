@@ -40,9 +40,6 @@
 #include <zmk/ble.h>
 #include <zmk/events/ble_active_profile_changed.h>
 #endif
-#if IS_ENABLED(CONFIG_ZMK_CAPS_WORD) || IS_ENABLED(CONFIG_ZMK_BEHAVIOR_CAPS_WORD)
-#include <zmk/events/caps_word_state_changed.h>
-#endif
 #endif
 
 LOG_MODULE_REGISTER(zmk_vfx, CONFIG_ZMK_VFX_LOG_LEVEL);
@@ -561,14 +558,6 @@ static int vfx_event_listener(const zmk_event_t *eh) {
         }
 #endif
 
-#if IS_ENABLED(CONFIG_ZMK_CAPS_WORD) || IS_ENABLED(CONFIG_ZMK_BEHAVIOR_CAPS_WORD)
-        const struct zmk_caps_word_state_changed *caps = as_zmk_caps_word_state_changed(eh);
-        if (caps != NULL) {
-            status->caps_word = caps->active;
-            changed = true;
-        }
-#endif
-
         if (changed) {
             /* Indicator layers are static between events, so the engine parks
              * its timer; without this the new state would not be drawn.
@@ -593,9 +582,6 @@ ZMK_SUBSCRIPTION(zmk_vfx, zmk_layer_state_changed);
 ZMK_SUBSCRIPTION(zmk_vfx, zmk_battery_state_changed);
 #if IS_ENABLED(CONFIG_ZMK_BLE)
 ZMK_SUBSCRIPTION(zmk_vfx, zmk_ble_active_profile_changed);
-#endif
-#if IS_ENABLED(CONFIG_ZMK_CAPS_WORD) || IS_ENABLED(CONFIG_ZMK_BEHAVIOR_CAPS_WORD)
-ZMK_SUBSCRIPTION(zmk_vfx, zmk_caps_word_state_changed);
 #endif
 #endif
 

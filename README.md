@@ -171,7 +171,9 @@ A zone length is clamped to the real `chain-length`, so `range = <0 255>` means
 | `zmk,vfx-layer-layer-state` | Colour per active keymap layer |
 | `zmk,vfx-layer-battery` | Fills a zone in proportion to charge |
 | `zmk,vfx-layer-ble-profile` | One pixel per profile, lighting the selected one |
-| `zmk,vfx-layer-caps-word` | Lights while caps word is held |
+
+There is no caps word indicator: ZMK exposes neither a state accessor nor an
+event for it, so one could not be driven on hardware.
 
 Every generator takes `zone`, `blend` (`VFX_BLEND_NORMAL`, `_ADD`,
 `_MULTIPLY`, `_SCREEN`, `_MAX`) and `opacity`. See `dts/bindings/` for each

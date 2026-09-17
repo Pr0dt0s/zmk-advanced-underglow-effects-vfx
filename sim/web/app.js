@@ -31,7 +31,6 @@ const LAYER_SPECS = {
   'layer-state': { id: 9,  args: [] },
   battery:       { id: 10, args: [['warn_below', 20]] },
   'ble-profile': { id: 11, args: [] },
-  'caps-word':   { id: 12, args: [['period_ms', 0]] },
 };
 
 const packHsb = (h, s, b) => (((h & 0x1ff) << 16) | ((s & 0xff) << 8) | (b & 0xff)) >>> 0;
@@ -136,9 +135,8 @@ class Half {
     }
   }
 
-  setStatus(activeLayer, battery, profile, connected, usb, caps) {
-    this.e.vfx_sim_set_status(activeLayer, battery, profile, connected ? 1 : 0,
-                              usb ? 1 : 0, caps ? 1 : 0);
+  setStatus(activeLayer, battery, profile, connected, usb) {
+    this.e.vfx_sim_set_status(activeLayer, battery, profile, connected ? 1 : 0, usb ? 1 : 0);
   }
 
   /* Key position -> virtual pixel. Without it reactive effects still animate
@@ -547,7 +545,7 @@ async function main() {
   const SYNC_INTERVAL_MS = 2000;
   const state = {
     brightness: 255, speed: 3, hue: 0, split: 'free', drift: 0,
-    activeLayer: 0, battery: 78, profile: 0, connected: true, usb: false, caps: false,
+    activeLayer: 0, battery: 78, profile: 0, connected: true, usb: false,
   };
 
   let applyPowerPolicy = () => {};
@@ -583,8 +581,7 @@ async function main() {
 
     for (const h of halves) {
       h.setState(state.brightness, state.speed, state.hue);
-      h.setStatus(state.activeLayer, state.battery, state.profile,
-                  state.connected, state.usb, state.caps);
+      h.setStatus(state.activeLayer, state.battery, state.profile, state.connected, state.usb);
     }
 
     halves[0].render(t);
@@ -682,7 +679,7 @@ async function main() {
   bindRange('battery', 'battery', v => `${v}%`);
   bindRange('profile', 'profile');
 
-  for (const [id, key] of [['connected', 'connected'], ['usb', 'usb'], ['caps', 'caps']]) {
+  for (const [id, key] of [['connected', 'connected'], ['usb', 'usb']]) {
     const el = $(id);
     el.addEventListener('change', () => { state[key] = el.checked; });
   }

@@ -45,4 +45,3 @@ extern const struct vfx_layer_api vfx_layer_trail_api;
 extern const struct vfx_layer_api vfx_layer_layer_state_api;
 extern const struct vfx_layer_api vfx_layer_battery_api;
 extern const struct vfx_layer_api vfx_layer_ble_profile_api;
-extern const struct vfx_layer_api vfx_layer_caps_word_api;

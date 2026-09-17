@@ -22,7 +22,6 @@ struct vfx_status {
     uint8_t ble_profile;   /* 0 based index of the selected profile */
     bool ble_connected;
     bool usb_output;
-    bool caps_word;
 };
 
 const struct vfx_status *vfx_status_get(void);
