@@ -238,6 +238,14 @@ static void vfx_tick(struct k_work *work) {
 
 K_WORK_DEFINE(vfx_tick_work, vfx_tick);
 
+/* The timer and its handler refer to each other: K_TIMER_DEFINE names the
+ * handler, and the handler parks the timer when a scene stops animating. A
+ * prototype lets the timer be defined first so both resolve.
+ */
+static void vfx_timer_handler(struct k_timer *timer);
+
+K_TIMER_DEFINE(vfx_timer, vfx_timer_handler, NULL);
+
 static void vfx_timer_handler(struct k_timer *timer) {
     ARG_UNUSED(timer);
 
@@ -272,8 +280,6 @@ static void vfx_timer_handler(struct k_timer *timer) {
 
     k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &vfx_tick_work);
 }
-
-K_TIMER_DEFINE(vfx_timer, vfx_timer_handler, NULL);
 
 #if IS_ENABLED(CONFIG_SETTINGS)
 static struct k_work_delayable save_work;
