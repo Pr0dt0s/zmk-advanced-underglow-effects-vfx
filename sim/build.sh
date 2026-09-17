@@ -24,7 +24,7 @@ exports=(
   vfx_sim_estimated_ua vfx_sim_power_reset
   vfx_sim_add_layer vfx_sim_add_layer_state vfx_sim_add_battery
   vfx_sim_add_ble_profile vfx_sim_set_status vfx_sim_set_key_map
-  vfx_sim_sync_step vfx_sim_sync_max_slew vfx_sim_add_water vfx_sim_add_matrix vfx_sim_add_cross vfx_sim_set_positions
+  vfx_sim_sync_step vfx_sim_sync_max_slew vfx_sim_add_water vfx_sim_add_matrix vfx_sim_add_cross vfx_sim_add_fire vfx_sim_add_comet vfx_sim_set_positions
 )
 
 args=(--target=wasm32 -nostdlib -O2 -flto -DVFX_SIM -I"$root/include"
@@ -44,6 +44,7 @@ clang "${args[@]}" \
   "$root/src/layers/ambient.c" "$root/src/layers/reactive.c" \
   "$root/src/layers/indicators.c" "$root/src/layers/water.c" \
   "$root/src/layers/matrix.c" "$root/src/layers/cross.c" \
+  "$root/src/layers/fire.c" "$root/src/layers/comet.c" \
   -o "$out/vfx.wasm"
 
 cp -r "$here/web/." "$out/"

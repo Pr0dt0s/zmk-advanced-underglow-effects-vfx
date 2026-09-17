@@ -32,6 +32,8 @@ if(CONFIG_ZMK_VFX)
     src/layers/water.c
     src/layers/matrix.c
     src/layers/cross.c
+    src/layers/fire.c
+    src/layers/comet.c
     src/layers/indicators.c
   )
 

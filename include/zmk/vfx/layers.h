@@ -89,6 +89,29 @@ struct vfx_ripple_state {
     uint8_t next;
 };
 
+/* Fire: a bed of embers with flames licking up it. Stateless, like the rest
+ * of the ambient family, so both halves of a split agree on the flicker.
+ */
+struct vfx_fire_cfg {
+    uint32_t base_color; /* the coolest part, at the bottom */
+    uint32_t tip_color;  /* the hottest, at the top of a flame */
+    uint16_t period_ms;  /* how quickly the flicker evolves */
+    uint16_t cell;       /* units per flame; smaller is a busier fire */
+    uint8_t height;      /* 0-255, how far up the board the flames reach */
+    uint8_t flicker;     /* 0-255, how much a flame varies over time */
+    uint8_t axis;        /* which way is up; usually VFX_AXIS_Y */
+};
+
+/* Comet: a bright head running around the board with a fading tail. */
+struct vfx_comet_cfg {
+    uint32_t color;
+    uint32_t head_color; /* 0 just uses `color` at full brightness */
+    uint16_t period_ms;  /* time for one lap of the axis */
+    uint16_t tail;       /* axis units of trail behind the head */
+    uint8_t count;       /* how many comets, spread evenly round the lap */
+    uint8_t axis;        /* which way it runs */
+};
+
 /* Cross: the pressed key's row and column light up, rather than a ring
  * expanding from it. Reusing the ripple's slots, since a press is a press.
  */

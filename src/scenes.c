@@ -172,6 +172,35 @@ DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_water, VFX_WATER_DEFINE)
 
 DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_matrix, VFX_MATRIX_DEFINE)
 
+#define VFX_FIRE_DEFINE(node)                                                                      \
+    static const struct vfx_fire_cfg VFX_CFG_SYM(node) = {                                         \
+        .base_color = DT_PROP(node, base_color),                                                   \
+        .tip_color = DT_PROP(node, tip_color),                                                     \
+        .period_ms = DT_PROP(node, period_ms),                                                     \
+        .cell = DT_PROP(node, cell),                                                               \
+        .height = DT_PROP(node, height),                                                           \
+        .flicker = DT_PROP(node, flicker),                                                         \
+        .axis = DT_PROP(node, axis),                                                               \
+    };                                                                                             \
+    static uint8_t VFX_STATE_SYM(node);                                                            \
+    static const struct vfx_layer_api *const VFX_API_SYM(node) = &vfx_layer_fire_api;
+
+DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_fire, VFX_FIRE_DEFINE)
+
+#define VFX_COMET_DEFINE(node)                                                                     \
+    static const struct vfx_comet_cfg VFX_CFG_SYM(node) = {                                        \
+        .color = DT_PROP(node, color),                                                             \
+        .head_color = DT_PROP(node, head_color),                                                   \
+        .period_ms = DT_PROP(node, period_ms),                                                     \
+        .tail = DT_PROP(node, tail),                                                               \
+        .count = DT_PROP(node, count),                                                             \
+        .axis = DT_PROP(node, axis),                                                               \
+    };                                                                                             \
+    static uint8_t VFX_STATE_SYM(node);                                                            \
+    static const struct vfx_layer_api *const VFX_API_SYM(node) = &vfx_layer_comet_api;
+
+DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_comet, VFX_COMET_DEFINE)
+
 #define VFX_CROSS_DEFINE(node)                                                                     \
     static const struct vfx_cross_cfg VFX_CFG_SYM(node) = {                                        \
         .color = DT_PROP(node, color),                                                             \

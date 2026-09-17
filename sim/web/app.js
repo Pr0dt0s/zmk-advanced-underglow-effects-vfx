@@ -42,6 +42,8 @@ const LAYER_SPECS = {
   trail:      { id: 8,  args: [['decay_ms', 1500], ['spread', 12]] },
   water:      { id: 13, args: [['wavelength', 20], ['speed', 45], ['lifetime_ms', 2500],
                               ['drop_rate_ms', 0], ['amplitude', 200], ['damping', 7]] },
+  fire:       { id: 16, args: [['period_ms', 500], ['cell', 12], ['height', 200]] },
+  comet:      { id: 17, args: [['period_ms', 3000], ['tail', 60], ['count', 1]] },
   cross:      { id: 15, args: [['decay_ms', 500], ['radius', 0], ['thickness', 4]] },
   matrix:     { id: 14, args: [['speed', 60], ['tail', 40], ['drop_rate_ms', 0],
                               ['columns', 6], ['jitter', 60], ['head_size', 8]] },
@@ -143,6 +145,21 @@ class Half {
                                         l.wavelength ?? 20, l.speed ?? 45,
                                         l.lifetime_ms ?? 2500, l.drop_rate_ms ?? 0,
                                         l.amplitude ?? 200, l.damping ?? 7);
+          break;
+
+        case 'fire':
+          rc = this.e.vfx_sim_add_fire(zid, blend, opacity,
+                                       packHsb(...l.base_color), packHsb(...l.tip_color),
+                                       l.period_ms ?? 500, l.cell ?? 12, l.height ?? 200,
+                                       l.flicker ?? 180, AXIS[l.axis ?? 'y'] ?? 2);
+          break;
+
+        case 'comet':
+          rc = this.e.vfx_sim_add_comet(zid, blend, opacity,
+                                        packHsb(...l.color),
+                                        l.head_color ? packHsb(...l.head_color) : 0,
+                                        l.period_ms ?? 3000, l.tail ?? 60, l.count ?? 1,
+                                        AXIS[l.axis ?? 'strip'] ?? 0);
           break;
 
         case 'cross':
@@ -456,6 +473,12 @@ function toDevicetree(scene, ledsPerHalf) {
       if (l.crest_color) out.push(`${ind}    crest-color = <${hsb(l.crest_color)}>;`);
     } else if (l.type === 'matrix') {
       if (l.head_color) out.push(`${ind}    head-color = <${hsb(l.head_color)}>;`);
+    } else if (l.type === 'fire') {
+      out.push(`${ind}    base-color = <${hsb(l.base_color)}>;`);
+      out.push(`${ind}    tip-color = <${hsb(l.tip_color)}>;`);
+      if (l.flicker !== undefined) out.push(`${ind}    flicker = <${l.flicker}>;`);
+    } else if (l.type === 'comet') {
+      if (l.head_color) out.push(`${ind}    head-color = <${hsb(l.head_color)}>;`);
     } else if (l.type === 'cross') {
       if (l.centre_color) out.push(`${ind}    centre-color = <${hsb(l.centre_color)}>;`);
       if (l.axes && l.axes !== 'both') {
@@ -645,6 +668,29 @@ const PRESETS = {
       { type: 'cross', zone: 'all',
         color: [300, 95, 80], centre_color: [0, 0, 100],
         decay_ms: 450, radius: 22, thickness: 4 },
+    ],
+  },
+  Fire: {
+    name: 'Fire',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'fire', zone: 'all', axis: 'y',
+        base_color: [0, 100, 55], tip_color: [45, 75, 100],
+        period_ms: 420, cell: 12, height: 235, flicker: 200 },
+    ],
+  },
+  /* Two comets chasing each other across the board. An angular pair is the
+   * classic dual beacon, but a split's halves only occupy two narrow slices
+   * of the turn, so most of a lap would pass through the empty gap above and
+   * below the board. Sweeping along x uses the whole width instead.
+   */
+  Beacons: {
+    name: 'Beacons',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'comet', zone: 'all', axis: 'x',
+        color: [265, 95, 75], head_color: [280, 25, 100],
+        period_ms: 2600, tail: 45, count: 2 },
     ],
   },
   'Status bar': {

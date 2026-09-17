@@ -1942,6 +1942,201 @@ static void test_cross_falls_back_to_the_strip(void) {
     CHECK(rgb_is_black(out[26]), "but not pixels beyond the radius");
 }
 
+/* ---- fire and comet ------------------------------------------------------ */
+
+static void test_fire_burns_upward(void) {
+    /* The bottom of the board is always alight and the top only sometimes:
+     * that asymmetry is the difference between fire and a flicker.
+     */
+    struct vfx_fire_cfg cfg = {
+        .base_color = VFX_HSB(0, 100, 60),
+        .tip_color = VFX_HSB(45, 80, 100),
+        .period_ms = 500,
+        .cell = 12,
+        .height = 255, /* tall enough to reach the top, when a flame stretches */
+        .flicker = 180,
+        .axis = VFX_AXIS_Y,
+    };
+    uint8_t st = 0; /* stateless generator */
+    SCENE1(scene, &vfx_layer_fire_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = grid_ctx();
+    ctx.speed = 3;
+
+    int bottom_lit = 0, top_lit = 0, frames = 0;
+
+    for (uint32_t t = 0; t <= 8000; t += 100) {
+        ctx.time_ms = t;
+        vfx_render_frame(&scene, &ctx, out, NULL);
+        frames++;
+
+        for (int i = 0; i < NPX; i++) {
+            if (rgb_is_black(out[i])) {
+                continue;
+            }
+
+            if (grid_xy[i * 2 + 1] == 40) {
+                bottom_lit++;
+            } else if (grid_xy[i * 2 + 1] == 0) {
+                top_lit++;
+            }
+        }
+    }
+
+    /* Six pixels in each row, so a row lit in every frame scores 6x frames. */
+    CHECK(bottom_lit > frames * 5, "the bottom row should be alight throughout, got %d of %d",
+          bottom_lit, frames * 6);
+    CHECK(top_lit < bottom_lit, "the top row (%d) should be lit less than the bottom (%d)", top_lit,
+          bottom_lit);
+    CHECK(top_lit > 0, "the flames should sometimes reach the top");
+
+    /* And height really is a ceiling: shorten it and the top stays dark. */
+    cfg.height = 100;
+    top_lit = 0;
+
+    for (uint32_t t = 0; t <= 8000; t += 100) {
+        ctx.time_ms = t;
+        vfx_render_frame(&scene, &ctx, out, NULL);
+
+        for (int i = 0; i < NPX; i++) {
+            if (!rgb_is_black(out[i]) && grid_xy[i * 2 + 1] == 0) {
+                top_lit++;
+            }
+        }
+    }
+
+    CHECK(top_lit == 0, "a height of 100 should leave the top row dark, but lit it %d times",
+          top_lit);
+}
+
+static void test_fire_is_identical_on_both_halves(void) {
+    /* No heat buffer means no drift: the same instant renders the same fire
+     * wherever it is computed.
+     */
+    struct vfx_fire_cfg cfg = {
+        .base_color = VFX_HSB(0, 100, 60),
+        .tip_color = VFX_HSB(45, 80, 100),
+        .period_ms = 400,
+        .cell = 12,
+        .height = 220,
+        .flicker = 200,
+        .axis = VFX_AXIS_Y,
+    };
+    uint8_t st_a = 0, st_b = 0;
+    SCENE1(a, &vfx_layer_fire_api, &cfg, &st_a);
+    SCENE1(b, &vfx_layer_fire_api, &cfg, &st_b);
+
+    struct vfx_rgb out_a[NPX], out_b[NPX];
+    struct vfx_frame_ctx ctx_a = grid_ctx(), ctx_b = grid_ctx();
+
+    ctx_a.speed = ctx_b.speed = 3;
+
+    /* One renders every frame, the other only the frames we compare: a fire
+     * that carried state would diverge between the two.
+     */
+    for (uint32_t t = 0; t <= 5000; t += 50) {
+        ctx_a.time_ms = t;
+        vfx_render_frame(&a, &ctx_a, out_a, NULL);
+
+        if (t % 1000 != 0) {
+            continue;
+        }
+
+        ctx_b.time_ms = t;
+        vfx_render_frame(&b, &ctx_b, out_b, NULL);
+
+        CHECK(memcmp(out_a, out_b, sizeof(out_a)) == 0, "the fire drifted by t=%u", t);
+    }
+}
+
+static void test_comet_travels_and_wraps(void) {
+    struct vfx_comet_cfg cfg = {
+        .color = VFX_HSB(190, 90, 70),
+        .head_color = VFX_HSB(190, 10, 100),
+        .period_ms = 2000,
+        .tail = 8,
+        .count = 1,
+        .axis = VFX_AXIS_STRIP,
+    };
+    uint8_t st = 0;
+    SCENE1(scene, &vfx_layer_comet_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+    ctx.speed = 3;
+
+    int seen_start = 0, seen_end = 0;
+
+    for (uint32_t t = 0; t < 2000; t += 50) {
+        ctx.time_ms = t;
+        vfx_render_frame(&scene, &ctx, out, NULL);
+
+        int lit = 0;
+        for (int i = 0; i < NPX; i++) {
+            if (!rgb_is_black(out[i])) {
+                lit++;
+            }
+        }
+
+        CHECK(lit > 0 && lit <= cfg.tail + 1, "a comet should light its tail and no more, got %d",
+              lit);
+        if (lit == 0 || lit > cfg.tail + 1) {
+            return;
+        }
+
+        if (!rgb_is_black(out[0])) {
+            seen_start++;
+        }
+        if (!rgb_is_black(out[NPX - 1])) {
+            seen_end++;
+        }
+    }
+
+    CHECK(seen_start > 0 && seen_end > 0, "one lap should pass both ends (%d, %d)", seen_start,
+          seen_end);
+}
+
+static void test_comet_count_spreads_them_out(void) {
+    /* Two comets on an angular axis, half a turn apart, is the dual beacon
+     * other keyboards ship as its own effect.
+     */
+    struct vfx_comet_cfg cfg = {
+        .color = VFX_HSB(300, 90, 70),
+        .head_color = 0,
+        .period_ms = 2000,
+        .tail = 20,
+        .count = 2,
+        .axis = VFX_AXIS_ANGLE,
+    };
+    uint8_t one_st = 0, two_st = 0;
+    struct vfx_comet_cfg one_cfg = cfg;
+    one_cfg.count = 1;
+
+    SCENE1(one, &vfx_layer_comet_api, &one_cfg, &one_st);
+    SCENE1(two, &vfx_layer_comet_api, &cfg, &two_st);
+
+    struct vfx_rgb out_one[NPX], out_two[NPX];
+    struct vfx_frame_ctx ctx = grid_ctx();
+    ctx.speed = 3;
+    ctx.time_ms = 700;
+
+    vfx_render_frame(&one, &ctx, out_one, NULL);
+    vfx_render_frame(&two, &ctx, out_two, NULL);
+
+    int lit_one = 0, lit_two = 0;
+    for (int i = 0; i < NPX; i++) {
+        if (!rgb_is_black(out_one[i])) {
+            lit_one++;
+        }
+        if (!rgb_is_black(out_two[i])) {
+            lit_two++;
+        }
+    }
+
+    CHECK(lit_two > lit_one, "two comets should light more than one (%d vs %d)", lit_two, lit_one);
+}
+
 static void test_isqrt(void) {
     CHECK(vfx_isqrt(0) == 0, "isqrt(0)");
     CHECK(vfx_isqrt(1) == 1, "isqrt(1)");
@@ -2014,6 +2209,10 @@ int main(void) {
         {"cross radius makes a nexus", test_cross_radius_makes_a_nexus},
         {"cross decays and goes idle", test_cross_decays_and_goes_idle},
         {"cross falls back to the strip", test_cross_falls_back_to_the_strip},
+        {"fire burns upward", test_fire_burns_upward},
+        {"fire is identical on both halves", test_fire_is_identical_on_both_halves},
+        {"comet travels and wraps", test_comet_travels_and_wraps},
+        {"comet count spreads them out", test_comet_count_spreads_them_out},
         {"isqrt", test_isqrt},
         {"distance falls back to the strip", test_distance_falls_back_to_the_strip},
         {"distance is across the board with a map", test_distance_is_across_the_board_with_a_map},

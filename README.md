@@ -170,7 +170,9 @@ A zone length is clamped to the real `chain-length`, so `range = <0 255>` means
 | `zmk,vfx-layer-breathe` | Pulses between a floor and the full colour |
 | `zmk,vfx-layer-wave` | Travelling sine along the strip |
 | `zmk,vfx-layer-twinkle` | Scattered pixels fading up and out |
-| `zmk,vfx-layer-plasma` | Two summed sines swinging the hue |
+| `zmk,vfx-layer-plasma` | Summed sines over both board axes, swinging the hue |
+| `zmk,vfx-layer-fire` | A hot bed with flames licking up the board |
+| `zmk,vfx-layer-comet` | A bright head running round the board with a tail |
 | `zmk,vfx-layer-water` | A rippling surface, disturbed by rain and by typing |
 | `zmk,vfx-layer-matrix` | Falling columns of light, started by rain and by typing |
 | `zmk,vfx-layer-ripple` | Rings expanding from each pressed key |

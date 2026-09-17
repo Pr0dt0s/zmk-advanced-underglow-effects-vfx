@@ -70,6 +70,8 @@ static struct vfx_matrix_cfg matrix_cfg[MAX_LAYERS];
 static struct vfx_matrix_state matrix_state[MAX_LAYERS];
 static struct vfx_cross_cfg cross_cfg[MAX_LAYERS];
 static struct vfx_cross_state cross_state[MAX_LAYERS];
+static struct vfx_fire_cfg fire_cfg[MAX_LAYERS];
+static struct vfx_comet_cfg comet_cfg[MAX_LAYERS];
 static struct vfx_trail_cfg trail_cfg[MAX_LAYERS];
 static struct vfx_trail_state trail_state[MAX_LAYERS];
 static struct vfx_layer_state_cfg layer_state_cfg[MAX_LAYERS];
@@ -283,6 +285,8 @@ enum sim_layer_type {
     SIM_WATER,
     SIM_MATRIX,
     SIM_CROSS,
+    SIM_FIRE,
+    SIM_COMET,
 };
 
 /* One entry point for every generator whose config is a colour plus up to
@@ -435,6 +439,63 @@ EXPORT int vfx_sim_add_matrix(int zone, int blend, int opacity, uint32_t color, 
     l->api = &vfx_layer_matrix_api;
     l->config = &matrix_cfg[i];
     l->state = &matrix_state[i];
+
+    scene.num_layers = (uint8_t)(++num_layers);
+
+    return i;
+}
+
+EXPORT int vfx_sim_add_fire(int zone, int blend, int opacity, uint32_t base, uint32_t tip,
+                            int period_ms, int cell, int height, int flicker, int axis) {
+    struct vfx_layer *l = next_layer(zone, blend, opacity);
+
+    if (!l) {
+        return -1;
+    }
+
+    const int i = num_layers;
+
+    fire_cfg[i] = (struct vfx_fire_cfg){
+        .base_color = base,
+        .tip_color = tip,
+        .period_ms = (uint16_t)period_ms,
+        .cell = (uint16_t)cell,
+        .height = (uint8_t)height,
+        .flicker = (uint8_t)flicker,
+        .axis = (uint8_t)axis,
+    };
+
+    l->api = &vfx_layer_fire_api;
+    l->config = &fire_cfg[i];
+    l->state = &stateless[i];
+
+    scene.num_layers = (uint8_t)(++num_layers);
+
+    return i;
+}
+
+EXPORT int vfx_sim_add_comet(int zone, int blend, int opacity, uint32_t color, uint32_t head,
+                             int period_ms, int tail, int count, int axis) {
+    struct vfx_layer *l = next_layer(zone, blend, opacity);
+
+    if (!l) {
+        return -1;
+    }
+
+    const int i = num_layers;
+
+    comet_cfg[i] = (struct vfx_comet_cfg){
+        .color = color,
+        .head_color = head,
+        .period_ms = (uint16_t)period_ms,
+        .tail = (uint16_t)tail,
+        .count = (uint8_t)count,
+        .axis = (uint8_t)axis,
+    };
+
+    l->api = &vfx_layer_comet_api;
+    l->config = &comet_cfg[i];
+    l->state = &stateless[i];
 
     scene.num_layers = (uint8_t)(++num_layers);
 
