@@ -253,6 +253,34 @@ the rail. It is the one generator that needs to know which way is *down*, so
 give it `pixel-positions` below; without a map it treats strip order as the
 direction of travel and falls in a single column.
 
+### A scene per layer, and fading between them
+
+On most keyboards changing layer changes one indicator strip. `layer-scenes`
+changes the whole lighting:
+
+```dts
+&vfx_engine {
+    layer-scenes = <&vfx_warm &vfx_matrix &vfx_status>;
+    transition-ms = <400>;
+};
+```
+
+Indexed by layer number; layers past the end of the list leave whatever is
+showing alone, so you can map only the ones you care about. It follows the
+active layer and is deliberately **not** persisted — saving it would overwrite
+the scene you picked with `&vfx`. On a split it works on the central, which is
+the half with a keymap.
+
+`transition-ms` crossfades on any scene change, including one you make
+yourself. Both scenes render for the duration, so it costs one extra frame's
+work and one extra frame buffer while a fade runs, and nothing when one isn't.
+The mix happens after gamma, since a crossfade is a statement about what the
+eye sees and those are already the values the eye is going to get.
+
+The simulator does not show the crossfade: it holds one scene at a time, and
+two would mean a second copy of every generator's storage. Everything else on
+this page it does show.
+
 ### Pointing an effect across the board
 
 `gradient` and `wave` take an `axis`, which is what turns one generator into

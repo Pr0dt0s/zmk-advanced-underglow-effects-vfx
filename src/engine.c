@@ -84,6 +84,7 @@ BUILD_ASSERT(!IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW),
 #define VFX_FPS DT_PROP_OR(VFX_ENGINE_NODE, fps, CONFIG_ZMK_VFX_FPS)
 #define VFX_FRAME_MS (1000 / VFX_FPS)
 #define VFX_VIRTUAL_LENGTH DT_PROP_OR(VFX_ENGINE_NODE, virtual_length, STRIP_NUM_PIXELS)
+#define VFX_TRANSITION_MS DT_PROP_OR(VFX_ENGINE_NODE, transition_ms, 0)
 #define VFX_STRIP_OFFSET DT_PROP(VFX_ENGINE_NODE, strip_offset)
 
 #if DT_NODE_HAS_PROP(VFX_ENGINE_NODE, pixel_positions)
@@ -129,7 +130,19 @@ static struct {
     int16_t hue_shift;
     int32_t time_offset;
     bool on;
+
+    /* A scene switch crossfades rather than cutting when transition-ms is
+     * set. Both scenes keep rendering for the duration, which is why the
+     * outgoing one is remembered rather than just its last frame.
+     */
+    uint8_t prev_scene;
+    uint32_t fade_start_ms;
+    bool fading;
 } state;
+
+#if VFX_TRANSITION_MS > 0
+static struct vfx_rgb fade_scratch[STRIP_NUM_PIXELS];
+#endif
 
 static bool frame_dirty = true;
 
@@ -245,7 +258,27 @@ static void vfx_tick(struct k_work *work) {
     const struct vfx_scene *scene = vfx_scene_get(state.scene);
     bool any_lit = false;
 
+#if VFX_TRANSITION_MS > 0
+    if (state.fading) {
+        const uint32_t elapsed =
+            ctx.time_ms > state.fade_start_ms ? ctx.time_ms - state.fade_start_ms : 0;
+
+        if (elapsed >= VFX_TRANSITION_MS) {
+            state.fading = false;
+        } else {
+            vfx_render_transition(vfx_scene_get(state.prev_scene), scene, &ctx,
+                                  (uint8_t)(elapsed * 255U / VFX_TRANSITION_MS), frame,
+                                  fade_scratch, &any_lit);
+        }
+    }
+
+    if (!state.fading) {
+        vfx_render_frame(scene, &ctx, frame, &any_lit);
+    }
+#else
     vfx_render_frame(scene, &ctx, frame, &any_lit);
+#endif
+
     frame_dirty = false;
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_POWER_GATE)
@@ -313,6 +346,13 @@ static void vfx_timer_handler(struct k_timer *timer) {
         const struct vfx_frame_ctx ctx = build_ctx();
 
         bool idle = !vfx_scene_is_animating(vfx_scene_get(state.scene), &ctx);
+
+#if VFX_TRANSITION_MS > 0
+        /* A fade is motion even between two still scenes, so parking the
+         * timer mid-fade would freeze it half way.
+         */
+        idle = idle && !state.fading;
+#endif
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_POWER_GATE)
         /* A scene can be static and black, in which case the gate still has a
@@ -449,12 +489,24 @@ int zmk_vfx_toggle(void) { return state.on ? zmk_vfx_off() : zmk_vfx_on(); }
 
 bool zmk_vfx_is_on(void) { return state.on; }
 
+static void start_scene(uint8_t index) {
+#if VFX_TRANSITION_MS > 0
+    if (index != state.scene) {
+        state.prev_scene = state.scene;
+        state.fade_start_ms = (uint32_t)((int64_t)k_uptime_get() + state.time_offset);
+        state.fading = true;
+    }
+#endif
+
+    state.scene = index;
+}
+
 int zmk_vfx_select_scene(uint8_t index) {
     if (index >= vfx_scene_count()) {
         return -EINVAL;
     }
 
-    state.scene = index;
+    start_scene(index);
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_POWER_GATE)
     /* A new scene must not inherit the previous one's blackout countdown. */
@@ -612,6 +664,19 @@ static int vfx_event_listener(const zmk_event_t *eh) {
         if (as_zmk_layer_state_changed(eh) != NULL) {
             status->active_layer = (uint8_t)zmk_keymap_highest_layer_active();
             changed = true;
+
+            /* A whole scene per layer, not just an indicator strip. The
+             * choice is not persisted: it follows the layer, and saving it
+             * would overwrite whatever scene the user actually picked.
+             */
+            const int16_t want = vfx_layer_scene_index(status->active_layer);
+
+            if (want >= 0 && (uint8_t)want != state.scene) {
+                start_scene((uint8_t)want);
+#if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_POWER_GATE)
+                vfx_power_reset(&power_ctl);
+#endif
+            }
         }
 #endif
 

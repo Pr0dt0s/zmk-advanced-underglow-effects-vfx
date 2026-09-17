@@ -73,6 +73,32 @@ void vfx_render_frame(const struct vfx_scene *scene, const struct vfx_frame_ctx 
     }
 }
 
+void vfx_render_transition(const struct vfx_scene *from, const struct vfx_scene *to,
+                           const struct vfx_frame_ctx *ctx, uint8_t t, struct vfx_rgb *out,
+                           struct vfx_rgb *scratch, bool *any_lit) {
+    bool lit_to = false, lit_from = false;
+
+    vfx_render_frame(to, ctx, out, &lit_to);
+    vfx_render_frame(from, ctx, scratch, &lit_from);
+
+    /* Mixed after gamma rather than before it. A crossfade is a statement
+     * about what the eye sees, and these are already the values the eye is
+     * going to get; correcting them a second time would bend the fade.
+     */
+    for (uint16_t i = 0; i < ctx->num_pixels; i++) {
+        out[i].r = (uint8_t)(scratch[i].r + (((int16_t)out[i].r - scratch[i].r) * t) / 255);
+        out[i].g = (uint8_t)(scratch[i].g + (((int16_t)out[i].g - scratch[i].g) * t) / 255);
+        out[i].b = (uint8_t)(scratch[i].b + (((int16_t)out[i].b - scratch[i].b) * t) / 255);
+    }
+
+    if (any_lit) {
+        /* Either end being lit is enough: a fade from a lit scene to a black
+         * one must keep the rail up until it has actually finished.
+         */
+        *any_lit = lit_to || lit_from;
+    }
+}
+
 bool vfx_scene_is_animating(const struct vfx_scene *scene, const struct vfx_frame_ctx *ctx) {
     if (!scene) {
         return false;

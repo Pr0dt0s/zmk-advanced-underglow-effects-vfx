@@ -26,6 +26,13 @@ void vfx_render_frame(const struct vfx_scene *scene, const struct vfx_frame_ctx 
                       struct vfx_rgb *out, bool *any_lit);
 
 /* True if any layer in the scene still has something to animate. */
+/* Composite two scenes and mix them, t running 0 (all `from`) to 255 (all
+ * `to`). scratch must be num_pixels long.
+ */
+void vfx_render_transition(const struct vfx_scene *from, const struct vfx_scene *to,
+                           const struct vfx_frame_ctx *ctx, uint8_t t, struct vfx_rgb *out,
+                           struct vfx_rgb *scratch, bool *any_lit);
+
 bool vfx_scene_is_animating(const struct vfx_scene *scene, const struct vfx_frame_ctx *ctx);
 
 /* Fan a key event out to every reactive layer in the scene. */

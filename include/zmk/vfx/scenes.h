@@ -21,3 +21,8 @@ uint8_t vfx_scene_default_index(void);
  * than at build time.
  */
 void vfx_resolve_key_zones(const struct vfx_frame_ctx *ctx);
+
+/* Scene to show while a given keymap layer is the highest active one, or -1
+ * when that layer has none and whatever is showing should stay.
+ */
+int16_t vfx_layer_scene_index(uint8_t layer);

@@ -2222,7 +2222,7 @@ static void test_key_zone_scopes_a_layer(void) {
     vfx_key_zone_resolve(&kz, &ctx);
 
     struct vfx_solid_cfg cfg = {.color = VFX_HSB(0, 0, 100)};
-    uint8_t st = 0;
+    struct vfx_solid_state st = {0};
     static struct vfx_layer layers[1];
 
     layers[0] = (struct vfx_layer){.api = &vfx_layer_solid_api,
@@ -2405,6 +2405,83 @@ static void test_peripheral_battery_distinguishes_unknown_from_flat(void) {
     status->peripheral_battery[0] = 0;
 }
 
+/* ---- scene transitions --------------------------------------------------- */
+
+static void test_transition_mixes_between_scenes(void) {
+    /* A scene switch that cuts is jarring, and a fade is the one thing the
+     * compositor can do that a single scene cannot express.
+     */
+    struct vfx_solid_cfg red_cfg = {.color = VFX_HSB(0, 100, 100)};
+    struct vfx_solid_cfg blue_cfg = {.color = VFX_HSB(240, 100, 100)};
+    struct vfx_solid_state red_st = {0}, blue_st = {0};
+
+    SCENE1(red, &vfx_layer_solid_api, &red_cfg, &red_st);
+    SCENE1(blue, &vfx_layer_solid_api, &blue_cfg, &blue_st);
+
+    struct vfx_rgb out[NPX], scratch[NPX], plain[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    /* At either end the mix must be exactly the scene, or a fade would blink
+     * at the moment it starts and again when it finishes.
+     */
+    vfx_render_frame(&red, &ctx, plain, NULL);
+    vfx_render_transition(&red, &blue, &ctx, 0, out, scratch, NULL);
+    CHECK(memcmp(out, plain, sizeof(out)) == 0, "t=0 must be exactly the outgoing scene");
+
+    vfx_render_frame(&blue, &ctx, plain, NULL);
+    vfx_render_transition(&red, &blue, &ctx, 255, out, scratch, NULL);
+    CHECK(memcmp(out, plain, sizeof(out)) == 0, "t=255 must be exactly the incoming scene");
+
+    /* And the middle is genuinely between the two. */
+    vfx_render_transition(&red, &blue, &ctx, 128, out, scratch, NULL);
+    CHECK(out[0].r > 0 && out[0].b > 0, "half way should show both scenes, got r=%d b=%d",
+          out[0].r, out[0].b);
+
+    /* Monotonic: red gives way to blue over the fade, never doubling back. */
+    int last_r = 256, last_b = -1;
+
+    for (int t = 0; t <= 255; t += 15) {
+        vfx_render_transition(&red, &blue, &ctx, (uint8_t)t, out, scratch, NULL);
+
+        CHECK(out[0].r <= last_r, "red went back up at t=%d", t);
+        CHECK(out[0].b >= last_b, "blue went back down at t=%d", t);
+
+        if (out[0].r > last_r || out[0].b < last_b) {
+            return;
+        }
+
+        last_r = out[0].r;
+        last_b = out[0].b;
+    }
+}
+
+static void test_transition_keeps_the_rail_up_until_it_finishes(void) {
+    /* Fading from a lit scene to a black one, the frame is lit the whole way.
+     * Reporting it as black early would gate the rail mid-fade and cut the
+     * tail off it.
+     */
+    struct vfx_solid_cfg lit_cfg = {.color = VFX_HSB(120, 100, 100)};
+    struct vfx_solid_cfg dark_cfg = {.color = VFX_HSB(0, 0, 0)};
+    struct vfx_solid_state a_st = {0}, b_st = {0};
+
+    SCENE1(lit_scene, &vfx_layer_solid_api, &lit_cfg, &a_st);
+    SCENE1(dark_scene, &vfx_layer_solid_api, &dark_cfg, &b_st);
+
+    struct vfx_rgb out[NPX], scratch[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    for (int t = 0; t < 255; t += 15) {
+        bool lit = false;
+
+        vfx_render_transition(&lit_scene, &dark_scene, &ctx, (uint8_t)t, out, scratch, &lit);
+        CHECK(lit, "the frame must count as lit at t=%d, part way out of a lit scene", t);
+
+        if (!lit) {
+            return;
+        }
+    }
+}
+
 static void test_isqrt(void) {
     CHECK(vfx_isqrt(0) == 0, "isqrt(0)");
     CHECK(vfx_isqrt(1) == 1, "isqrt(1)");
@@ -2488,6 +2565,9 @@ int main(void) {
         {"wpm colours and fills", test_wpm_colours_and_fills},
         {"peripheral battery distinguishes unknown from flat",
          test_peripheral_battery_distinguishes_unknown_from_flat},
+        {"transition mixes between scenes", test_transition_mixes_between_scenes},
+        {"transition keeps the rail up until it finishes",
+         test_transition_keeps_the_rail_up_until_it_finishes},
         {"isqrt", test_isqrt},
         {"distance falls back to the strip", test_distance_falls_back_to_the_strip},
         {"distance is across the board with a map", test_distance_is_across_the_board_with_a_map},

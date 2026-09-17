@@ -33,6 +33,32 @@ properties:
     type: phandle
     description: Scene selected on first boot, before any saved setting.
 
+  layer-scenes:
+    type: phandles
+    description: |
+      A scene per keymap layer, indexed by layer number, so changing layer
+      changes the whole lighting rather than one indicator strip:
+
+        layer-scenes = <&vfx_warm &vfx_matrix &vfx_status>;
+
+      Layers past the end of the list have no scene of their own and leave
+      whatever is showing alone, so you can map only the ones you care about.
+
+      This follows the active layer and is not saved: it would otherwise
+      overwrite the scene chosen with the &vfx behavior. On a split it works
+      on the central only, since that is the half with a keymap.
+
+  transition-ms:
+    type: int
+    default: 0
+    description: |
+      Milliseconds to crossfade over when the scene changes. 0 cuts straight
+      across, which is what it did before this existed.
+
+      Both scenes render for the duration, so the cost is one extra frame's
+      work and one extra frame buffer while a fade is running, and nothing at
+      all when one is not.
+
   pixel-positions:
     type: array
     description: |

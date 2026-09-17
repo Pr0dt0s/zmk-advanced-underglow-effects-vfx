@@ -387,6 +387,36 @@ const struct vfx_scene *vfx_scene_get(uint8_t index) {
     return vfx_scene_list[index];
 }
 
+#if DT_NODE_HAS_PROP(VFX_ENGINE_NODE, layer_scenes)
+#define VFX_LAYER_SCENE_REF(node, prop, idx) &VFX_SCENE_SYM(DT_PHANDLE_BY_IDX(node, prop, idx)),
+
+static const struct vfx_scene *const vfx_layer_scene_list[] = {
+    DT_FOREACH_PROP_ELEM(VFX_ENGINE_NODE, layer_scenes, VFX_LAYER_SCENE_REF)};
+#endif
+
+int16_t vfx_layer_scene_index(uint8_t layer) {
+#if DT_NODE_HAS_PROP(VFX_ENGINE_NODE, layer_scenes)
+    if (layer >= ARRAY_SIZE(vfx_layer_scene_list)) {
+        /* Past the end of the list means this layer has no scene of its own,
+         * which is how you map only the layers you care about.
+         */
+        return -1;
+    }
+
+    const struct vfx_scene *want = vfx_layer_scene_list[layer];
+
+    for (uint8_t i = 0; i < ARRAY_SIZE(vfx_scene_list); i++) {
+        if (vfx_scene_list[i] == want) {
+            return (int16_t)i;
+        }
+    }
+#else
+    (void)layer;
+#endif
+
+    return -1;
+}
+
 uint8_t vfx_scene_default_index(void) {
 #if DT_NODE_HAS_PROP(VFX_ENGINE_NODE, default_scene)
     const struct vfx_scene *want = &VFX_SCENE_SYM(DT_PHANDLE(VFX_ENGINE_NODE, default_scene));
