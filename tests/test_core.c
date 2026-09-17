@@ -1802,6 +1802,146 @@ static void test_twinkle_hue_spread_stays_deterministic(void) {
     CHECK(coloured > 20, "hue-spread twinkles came out all the same colour (%d)", coloured);
 }
 
+/* ---- cross --------------------------------------------------------------- */
+
+static struct vfx_cross_cfg cross_cfg_base(void) {
+    return (struct vfx_cross_cfg){
+        .color = VFX_HSB(190, 90, 80),
+        .centre_color = VFX_HSB(0, 0, 100),
+        .decay_ms = 500,
+        .radius = 0,
+        .thickness = 4,
+        .axes = VFX_CROSS_BOTH,
+    };
+}
+
+static void test_cross_lights_the_row_and_column(void) {
+    /* The whole point: the pressed key's row and column light, and nothing
+     * off them does, however near they are on the wire.
+     */
+    struct vfx_cross_cfg cfg = cross_cfg_base();
+    struct vfx_cross_state st = {0};
+    SCENE1(scene, &vfx_layer_cross_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = grid_ctx();
+
+    vfx_scene_key_event(&scene, &ctx, 14, true, 0); /* (20, 16) */
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    for (int i = 0; i < NPX; i++) {
+        const bool same_row = grid_xy[i * 2 + 1] == 16;
+        const bool same_col = grid_xy[i * 2] == 20;
+        const bool lit = !rgb_is_black(out[i]);
+
+        CHECK(lit == (same_row || same_col), "pixel %d at (%d,%d) lit=%d, expected %d", i,
+              grid_xy[i * 2], grid_xy[i * 2 + 1], lit, same_row || same_col);
+        if (lit != (same_row || same_col)) {
+            return;
+        }
+    }
+}
+
+static void test_cross_axes_select_one_arm(void) {
+    struct vfx_cross_cfg cfg = cross_cfg_base();
+    cfg.axes = VFX_CROSS_HORIZONTAL;
+    struct vfx_cross_state st = {0};
+    SCENE1(scene, &vfx_layer_cross_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = grid_ctx();
+
+    vfx_scene_key_event(&scene, &ctx, 14, true, 0);
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    for (int i = 0; i < NPX; i++) {
+        const bool lit = !rgb_is_black(out[i]);
+
+        CHECK(lit == (grid_xy[i * 2 + 1] == 16), "horizontal-only lit pixel %d off the row", i);
+        if (lit != (grid_xy[i * 2 + 1] == 16)) {
+            return;
+        }
+    }
+}
+
+static void test_cross_radius_makes_a_nexus(void) {
+    /* With a radius the arms stop short and fade over it, which is what
+     * turns a cross into a compact shape around the key.
+     */
+    struct vfx_cross_cfg cfg = cross_cfg_base();
+    cfg.radius = 15; /* a row and a half */
+    struct vfx_cross_state st = {0};
+    SCENE1(scene, &vfx_layer_cross_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = grid_ctx();
+
+    vfx_scene_key_event(&scene, &ctx, 14, true, 0);
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    /* 15 is at (30,16), one pitch along the row: inside the radius. 16 is at
+     * (40,16), two pitches out: beyond it.
+     */
+    CHECK(!rgb_is_black(out[15]), "the neighbour along the row should be inside the radius");
+    CHECK(rgb_is_black(out[16]), "two pitches out should be beyond a radius of 15");
+
+    /* And it fades: nearer is brighter. */
+    const int near = out[15].r + out[15].g + out[15].b;
+    const int mid = out[14].r + out[14].g + out[14].b;
+    CHECK(mid > near, "the key (%d) should outshine its neighbour (%d)", mid, near);
+}
+
+static void test_cross_decays_and_goes_idle(void) {
+    struct vfx_cross_cfg cfg = cross_cfg_base();
+    struct vfx_cross_state st = {0};
+    SCENE1(scene, &vfx_layer_cross_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = grid_ctx();
+    bool lit = true;
+
+    CHECK(!vfx_scene_is_animating(&scene, &ctx), "an idle cross layer must report idle");
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(!lit, "nothing pressed means nothing lit");
+
+    vfx_scene_key_event(&scene, &ctx, 14, true, 0);
+    ctx.time_ms = 100;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    const int early = out[14].r + out[14].g + out[14].b;
+
+    ctx.time_ms = 400;
+    vfx_render_frame(&scene, &ctx, out, NULL);
+    const int late = out[14].r + out[14].g + out[14].b;
+
+    CHECK(late < early, "the cross should be fading (%d then %d)", early, late);
+
+    ctx.time_ms = cfg.decay_ms + 50;
+    vfx_render_frame(&scene, &ctx, out, &lit);
+    CHECK(!vfx_scene_is_animating(&scene, &ctx), "the layer must settle once the cross is gone");
+    CHECK(!lit, "and draw nothing, so the power gate can cut the rail");
+}
+
+static void test_cross_falls_back_to_the_strip(void) {
+    /* Without a map there are no rows, so it lights a run of the strip either
+     * side of the key rather than going dark.
+     */
+    struct vfx_cross_cfg cfg = cross_cfg_base();
+    cfg.radius = 5;
+    struct vfx_cross_state st = {0};
+    SCENE1(scene, &vfx_layer_cross_api, &cfg, &st);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+    ctx.num_keys = NPX;
+
+    vfx_scene_key_event(&scene, &ctx, 18, true, 0);
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    CHECK(!rgb_is_black(out[18]), "the key itself must light");
+    CHECK(!rgb_is_black(out[20]), "and its neighbours on the strip");
+    CHECK(rgb_is_black(out[26]), "but not pixels beyond the radius");
+}
+
 static void test_isqrt(void) {
     CHECK(vfx_isqrt(0) == 0, "isqrt(0)");
     CHECK(vfx_isqrt(1) == 1, "isqrt(1)");
@@ -1869,6 +2009,11 @@ int main(void) {
         {"pinwheel sweeps around the board", test_pinwheel_sweeps_around_the_board},
         {"plasma is two dimensional with a map", test_plasma_is_two_dimensional_with_a_map},
         {"twinkle hue spread stays deterministic", test_twinkle_hue_spread_stays_deterministic},
+        {"cross lights the row and column", test_cross_lights_the_row_and_column},
+        {"cross axes select one arm", test_cross_axes_select_one_arm},
+        {"cross radius makes a nexus", test_cross_radius_makes_a_nexus},
+        {"cross decays and goes idle", test_cross_decays_and_goes_idle},
+        {"cross falls back to the strip", test_cross_falls_back_to_the_strip},
         {"isqrt", test_isqrt},
         {"distance falls back to the strip", test_distance_falls_back_to_the_strip},
         {"distance is across the board with a map", test_distance_is_across_the_board_with_a_map},

@@ -36,6 +36,11 @@
 #define VFX_AXIS_ANGLE 4  /* around the middle: a pinwheel */
 #define VFX_AXIS_SPIRAL 5 /* around and outward at once */
 
+/* Which arms a cross draws from the pressed key. */
+#define VFX_CROSS_BOTH 0       /* the row and the column */
+#define VFX_CROSS_HORIZONTAL 1 /* the row only: a band across the board */
+#define VFX_CROSS_VERTICAL 2   /* the column only */
+
 /* &vfx behavior commands. */
 #define VFX_TOG_CMD 0
 #define VFX_ON_CMD 1

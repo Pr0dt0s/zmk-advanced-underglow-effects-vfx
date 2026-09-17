@@ -174,6 +174,7 @@ A zone length is clamped to the real `chain-length`, so `range = <0 255>` means
 | `zmk,vfx-layer-water` | A rippling surface, disturbed by rain and by typing |
 | `zmk,vfx-layer-matrix` | Falling columns of light, started by rain and by typing |
 | `zmk,vfx-layer-ripple` | Rings expanding from each pressed key |
+| `zmk,vfx-layer-cross` | Lights the pressed key's row and column |
 | `zmk,vfx-layer-keyflash` | Lights the pressed key and fades in place |
 | `zmk,vfx-layer-trail` | Decaying heat map that builds up as you type |
 | `zmk,vfx-layer-layer-state` | Colour per active keymap layer |
@@ -201,6 +202,12 @@ a surface that only moves when you type. Still water at zero brightness draws
 nothing at all, which is what lets the power gate cut the rail between
 keypresses; any brightness above zero lights every pixel in the zone forever,
 and the rail stays up.
+
+`cross` is the other way to react to a key: instead of asking how far a pixel
+is from it, it asks whether the pixel is *in line* with it, so the reaction
+traces the board's grid. One generator covers three familiar shapes — the full
+cross, a band across the board (`axes = <VFX_CROSS_HORIZONTAL>`), and a short
+cross around the key that fades over a `radius`.
 
 `matrix` works the same way, and is the other generator that is ambient and
 reactive at once: drops fall down the board leaving a fading trail, started

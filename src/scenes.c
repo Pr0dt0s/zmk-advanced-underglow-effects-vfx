@@ -172,6 +172,20 @@ DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_water, VFX_WATER_DEFINE)
 
 DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_matrix, VFX_MATRIX_DEFINE)
 
+#define VFX_CROSS_DEFINE(node)                                                                     \
+    static const struct vfx_cross_cfg VFX_CFG_SYM(node) = {                                        \
+        .color = DT_PROP(node, color),                                                             \
+        .centre_color = DT_PROP(node, centre_color),                                               \
+        .decay_ms = DT_PROP(node, decay_ms),                                                       \
+        .radius = DT_PROP(node, radius),                                                           \
+        .thickness = DT_PROP(node, thickness),                                                     \
+        .axes = DT_PROP(node, axes),                                                               \
+    };                                                                                             \
+    static struct vfx_cross_state VFX_STATE_SYM(node);                                             \
+    static const struct vfx_layer_api *const VFX_API_SYM(node) = &vfx_layer_cross_api;
+
+DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_cross, VFX_CROSS_DEFINE)
+
 #define VFX_KEYFLASH_DEFINE(node)                                                                  \
     static const struct vfx_keyflash_cfg VFX_CFG_SYM(node) = {                                     \
         .color = DT_PROP(node, color),                                                             \

@@ -89,6 +89,23 @@ struct vfx_ripple_state {
     uint8_t next;
 };
 
+/* Cross: the pressed key's row and column light up, rather than a ring
+ * expanding from it. Reusing the ripple's slots, since a press is a press.
+ */
+struct vfx_cross_cfg {
+    uint32_t color;
+    uint32_t centre_color; /* the key itself; 0 uses `color` */
+    uint16_t decay_ms;     /* time for one cross to fade out */
+    uint16_t radius;       /* units the arms reach; 0 = the whole board */
+    uint8_t thickness;     /* units either side of the row or column line */
+    uint8_t axes;          /* VFX_CROSS_*: which arms are drawn */
+};
+
+struct vfx_cross_state {
+    struct vfx_ripple_slot slots[VFX_MAX_RIPPLES];
+    uint8_t next;
+};
+
 /* Overlapping ambient drops. Four is enough that rain reads as continuous
  * without the per-pixel loop growing expensive.
  */

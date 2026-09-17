@@ -1,0 +1,64 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  A keypress lights the row and column the key sits in, which then fade.
+
+  Where ripple asks how far a pixel is from the key, this asks whether it is
+  in line with it, so the reaction traces the board's grid instead of ignoring
+  it. Three familiar shapes come out of the same generator:
+
+    - the full cross: both arms, radius 0;
+    - a band across the board: axes = <VFX_CROSS_HORIZONTAL>;
+    - a short cross around the key, which other keyboards call a nexus: set a
+      radius, and the arms fade out over it.
+
+  It needs pixel-positions to know what a row and a column are. Without a map
+  it lights a run of the strip either side of the key, which is as close to
+  "in line with it" as strip order gets.
+
+compatible: "zmk,vfx-layer-cross"
+
+include: vfx-layer-common.yaml
+
+properties:
+  color:
+    type: int
+    required: true
+    description: The arms, built with VFX_HSB(h, s, b).
+
+  centre-color:
+    type: int
+    default: 0
+    description: |
+      The pressed key itself. 0 uses `color` throughout. A brighter middle is
+      what makes the shape read as coming from the key rather than as two
+      lines that happen to meet.
+
+  decay-ms:
+    type: int
+    default: 500
+    description: Milliseconds for one cross to fade out.
+
+  radius:
+    type: int
+    default: 0
+    description: |
+      How far the arms reach, in pixel-positions units. 0 runs them to the
+      edge of the board at full brightness. Any other value fades them out
+      over that distance, which is the nexus shape.
+
+  thickness:
+    type: int
+    default: 4
+    description: |
+      Units either side of the arm's line that still count as on it. It wants
+      to be under half your LED pitch, or neighbouring rows join in; the
+      shipped maps use about 10 per LED, so 4 is a row and no more.
+
+  axes:
+    type: int
+    default: 0
+    description: |
+      VFX_CROSS_BOTH (the default), VFX_CROSS_HORIZONTAL for the row only, or
+      VFX_CROSS_VERTICAL for the column only.

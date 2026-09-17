@@ -68,6 +68,8 @@ static struct vfx_water_cfg water_cfg[MAX_LAYERS];
 static struct vfx_water_state water_state[MAX_LAYERS];
 static struct vfx_matrix_cfg matrix_cfg[MAX_LAYERS];
 static struct vfx_matrix_state matrix_state[MAX_LAYERS];
+static struct vfx_cross_cfg cross_cfg[MAX_LAYERS];
+static struct vfx_cross_state cross_state[MAX_LAYERS];
 static struct vfx_trail_cfg trail_cfg[MAX_LAYERS];
 static struct vfx_trail_state trail_state[MAX_LAYERS];
 static struct vfx_layer_state_cfg layer_state_cfg[MAX_LAYERS];
@@ -280,6 +282,7 @@ enum sim_layer_type {
     SIM_BLE_PROFILE,
     SIM_WATER,
     SIM_MATRIX,
+    SIM_CROSS,
 };
 
 /* One entry point for every generator whose config is a colour plus up to
@@ -432,6 +435,35 @@ EXPORT int vfx_sim_add_matrix(int zone, int blend, int opacity, uint32_t color, 
     l->api = &vfx_layer_matrix_api;
     l->config = &matrix_cfg[i];
     l->state = &matrix_state[i];
+
+    scene.num_layers = (uint8_t)(++num_layers);
+
+    return i;
+}
+
+EXPORT int vfx_sim_add_cross(int zone, int blend, int opacity, uint32_t color, uint32_t centre,
+                             int decay_ms, int radius, int thickness, int axes) {
+    struct vfx_layer *l = next_layer(zone, blend, opacity);
+
+    if (!l) {
+        return -1;
+    }
+
+    const int i = num_layers;
+
+    cross_cfg[i] = (struct vfx_cross_cfg){
+        .color = color,
+        .centre_color = centre,
+        .decay_ms = (uint16_t)decay_ms,
+        .radius = (uint16_t)radius,
+        .thickness = (uint8_t)thickness,
+        .axes = (uint8_t)axes,
+    };
+    cross_state[i] = (struct vfx_cross_state){0};
+
+    l->api = &vfx_layer_cross_api;
+    l->config = &cross_cfg[i];
+    l->state = &cross_state[i];
 
     scene.num_layers = (uint8_t)(++num_layers);
 

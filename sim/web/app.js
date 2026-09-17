@@ -12,6 +12,8 @@ const BLEND = { normal: 0, add: 1, multiply: 2, screen: 3, max: 4 };
  * the scene JSON, and turned back into VFX_AXIS_* on the way out.
  */
 const AXIS = { strip: 0, x: 1, y: 2, radial: 3, angle: 4, spiral: 5 };
+const CROSS = { both: 0, horizontal: 1, vertical: 2 };
+const CROSS_NAME = ['VFX_CROSS_BOTH', 'VFX_CROSS_HORIZONTAL', 'VFX_CROSS_VERTICAL'];
 const AXIS_NAME = ['VFX_AXIS_STRIP', 'VFX_AXIS_X', 'VFX_AXIS_Y',
                    'VFX_AXIS_RADIAL', 'VFX_AXIS_ANGLE', 'VFX_AXIS_SPIRAL'];
 const BLEND_NAME = ['VFX_BLEND_NORMAL', 'VFX_BLEND_ADD', 'VFX_BLEND_MULTIPLY',
@@ -40,6 +42,7 @@ const LAYER_SPECS = {
   trail:      { id: 8,  args: [['decay_ms', 1500], ['spread', 12]] },
   water:      { id: 13, args: [['wavelength', 20], ['speed', 45], ['lifetime_ms', 2500],
                               ['drop_rate_ms', 0], ['amplitude', 200], ['damping', 7]] },
+  cross:      { id: 15, args: [['decay_ms', 500], ['radius', 0], ['thickness', 4]] },
   matrix:     { id: 14, args: [['speed', 60], ['tail', 40], ['drop_rate_ms', 0],
                               ['columns', 6], ['jitter', 60], ['head_size', 8]] },
   'layer-state': { id: 9,  args: [] },
@@ -140,6 +143,14 @@ class Half {
                                         l.wavelength ?? 20, l.speed ?? 45,
                                         l.lifetime_ms ?? 2500, l.drop_rate_ms ?? 0,
                                         l.amplitude ?? 200, l.damping ?? 7);
+          break;
+
+        case 'cross':
+          rc = this.e.vfx_sim_add_cross(zid, blend, opacity,
+                                        packHsb(...l.color),
+                                        l.centre_color ? packHsb(...l.centre_color) : 0,
+                                        l.decay_ms ?? 500, l.radius ?? 0, l.thickness ?? 4,
+                                        CROSS[l.axes ?? 'both'] ?? 0);
           break;
 
         case 'matrix':
@@ -445,6 +456,11 @@ function toDevicetree(scene, ledsPerHalf) {
       if (l.crest_color) out.push(`${ind}    crest-color = <${hsb(l.crest_color)}>;`);
     } else if (l.type === 'matrix') {
       if (l.head_color) out.push(`${ind}    head-color = <${hsb(l.head_color)}>;`);
+    } else if (l.type === 'cross') {
+      if (l.centre_color) out.push(`${ind}    centre-color = <${hsb(l.centre_color)}>;`);
+      if (l.axes && l.axes !== 'both') {
+        out.push(`${ind}    axes = <${CROSS_NAME[CROSS[l.axes]]}>;`);
+      }
     } else if (l.type === 'battery') {
       out.push(`${ind}    high-color = <${hsb(l.high_color)}>;`);
       out.push(`${ind}    low-color = <${hsb(l.low_color)}>;`);
@@ -610,6 +626,25 @@ const PRESETS = {
     layers: [
       { type: 'wave', zone: 'all', axis: 'radial',
         color: [175, 85, 90], wavelength: 0, period_ms: 2600, depth: 220 },
+    ],
+  },
+  Crosshair: {
+    name: 'Crosshair',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'solid', zone: 'all', color: [230, 80, 6] },
+      { type: 'cross', zone: 'all', blend: 'add',
+        color: [190, 90, 60], centre_color: [40, 20, 100],
+        decay_ms: 600, radius: 0, thickness: 4 },
+    ],
+  },
+  Nexus: {
+    name: 'Nexus',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'cross', zone: 'all',
+        color: [300, 95, 80], centre_color: [0, 0, 100],
+        decay_ms: 450, radius: 22, thickness: 4 },
     ],
   },
   'Status bar': {
