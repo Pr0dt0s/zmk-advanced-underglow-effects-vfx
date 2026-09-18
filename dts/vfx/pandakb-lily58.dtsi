@@ -1,0 +1,84 @@
+/*
+ * Copyright (c) 2026 The ZMK VFX Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * PandaKB Lily58 RGB MX: 35 LEDs per half, 70 across the board.
+ *
+ * Unlike <vfx/lily58-positions.dtsi>, which assumes 36 per-key LEDs snaked in
+ * a clean 6x6 grid, this board chains 6 downward-facing underglow LEDs FIRST,
+ * then 29 upward-facing per-key LEDs in a serpentine that alternates direction
+ * every row:
+ *
+ *   local 0-5    underglow (face down, placement below is a placeholder)
+ *   local 6-11   number row,  outer -> inner
+ *   local 12-17  QWERTY row,  inner -> outer
+ *   local 18-23  home row,    outer -> inner
+ *   local 24-29  bottom row,  inner -> outer
+ *   local 30-34  thumb cluster + the inner bracket key, outer -> inner
+ *
+ * Both halves use the same schema; the right is the left mirrored, so "outer"
+ * means the pinky edge of whichever half a pixel belongs to.
+ *
+ *   #include <vfx/pandakb-lily58.dtsi>
+ *
+ *   &vfx_engine {
+ *       virtual-length = <70>;
+ *       strip-offset = <0>;   // 35 on the right half
+ *       pixel-positions = <VFX_PANDAKB_LILY58_POSITIONS>;
+ *       key-pixels = <VFX_PANDAKB_LILY58_KEY_PIXELS>;
+ *   };
+ *
+ * CONFIDENCE. Local 6-23 on the right half were measured on hardware and agree
+ * with the QMK community LED table for the same 70 LED wiring, so the three
+ * main rows are solid. Local 24-29 follows from that table plus the serpentine.
+ * Local 30-34 has the right count but an unverified internal order, and the
+ * underglow coordinates are a guess: nothing reveals where those six sit, and
+ * they answer to no key, so they affect the shape of a ripple but never where
+ * one starts. The left half is the right half mirrored and was never measured.
+ *
+ * Units are about 10 per LED spacing, matching the rest of the module. Rows
+ * carry a per-column stagger so ripples come out round rather than rectangular.
+ */
+
+#pragma once
+
+/* x,y for all 70 pixels, in strip order: left half 0-34, right half 35-69. */
+#define VFX_PANDAKB_LILY58_POSITIONS \
+    /* 0-5 left underglow, spread under the half (placeholder) */ \
+    4 52  13 52  22 52  31 52  40 52  49 52 \
+    /* 6-11 number row, outer -> inner: ESC 1 2 3 4 5 */ \
+    0 4  10 4  20 1  30 0  40 2  50 5 \
+    /* 12-17 QWERTY row, inner -> outer: T R E W Q TAB */ \
+    50 15  40 12  30 10  20 11  10 14  0 14 \
+    /* 18-23 home row, outer -> inner: CTRL A S D F G */ \
+    0 24  10 24  20 21  30 20  40 22  50 25 \
+    /* 24-29 bottom row, inner -> outer: B V C X Z SHIFT */ \
+    50 35  40 32  30 30  20 31  10 34  0 34 \
+    /* 30-34 thumbs, outer -> inner: ALT GUI LOWER SPACE [ */ \
+    22 42  32 44  42 46  53 50  60 34 \
+    /* 35-40 right underglow (placeholder) */ \
+    81 52  90 52  99 52  108 52  117 52  126 52 \
+    /* 41-46 number row, outer -> inner: ` 0 9 8 7 6 */ \
+    130 4  120 4  110 1  100 0  90 2  80 5 \
+    /* 47-52 QWERTY row, inner -> outer: Y U I O P - */ \
+    80 15  90 12  100 10  110 11  120 14  130 14 \
+    /* 53-58 home row, outer -> inner: ' ; L K J H */ \
+    130 24  120 24  110 21  100 20  90 22  80 25 \
+    /* 59-64 bottom row, inner -> outer: N M , . / SHIFT */ \
+    80 35  90 32  100 30  110 31  120 34  130 34 \
+    /* 65-69 thumbs, outer -> inner: DEL BSPC RAISE ENTER ] */ \
+    108 42  98 44  88 46  77 50  70 34
+
+/* Pixel each key sits under, indexed by key position, in keymap order. */
+#define VFX_PANDAKB_LILY58_KEY_PIXELS \
+    /* ESC 1 2 3 4 5   |   6 7 8 9 0 ` */ \
+    6 7 8 9 10 11        46 45 44 43 42 41 \
+    /* TAB Q W E R T   |   Y U I O P - */ \
+    17 16 15 14 13 12    47 48 49 50 51 52 \
+    /* CTRL A S D F G  |   H J K L ; ' */ \
+    18 19 20 21 22 23    58 57 56 55 54 53 \
+    /* SHIFT Z X C V B [ | ] N M , . / SHIFT */ \
+    29 28 27 26 25 24 34   69 59 60 61 62 63 64 \
+    /* ALT GUI LOWER SPACE | ENTER RAISE BSPC DEL */ \
+    30 31 32 33          68 67 66 65
