@@ -128,7 +128,11 @@
                 color = <VFX_HSB(190, 40, 100)>;
                 decay-ms = <700>;
                 speed = <60>;
-                width = <10>;
+                /* Wider than one LED spacing, so the front always has more
+                 * than one pixel inside the band and crossfades between them
+                 * instead of strobing as it passes through the gaps.
+                 */
+                width = <15>;
             };
         };
 
