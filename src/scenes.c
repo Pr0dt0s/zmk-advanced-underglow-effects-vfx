@@ -310,6 +310,19 @@ DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_keyflash, VFX_KEYFLASH_DEFINE)
 
 DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_trail, VFX_TRAIL_DEFINE)
 
+#define VFX_PULSE_DEFINE(node)                                                                     \
+    static const struct vfx_pulse_cfg VFX_CFG_SYM(node) = {                                        \
+        .color = DT_PROP(node, color),                                                             \
+        .decay_ms = DT_PROP(node, decay_ms),                                                       \
+        .min_level = DT_PROP(node, min_level),                                                     \
+        .hue_step = DT_PROP(node, hue_step),                                                       \
+        .stack = DT_PROP(node, stack),                                                             \
+    };                                                                                             \
+    static struct vfx_pulse_state VFX_STATE_SYM(node);                                             \
+    static const struct vfx_layer_api *const VFX_API_SYM(node) = &vfx_layer_pulse_api;
+
+DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_pulse, VFX_PULSE_DEFINE)
+
 #define VFX_LAYER_STATE_DEFINE(node)                                                               \
     static const uint32_t _CONCAT(vfx_colors_, node)[] = DT_PROP(node, colors);                    \
     static const struct vfx_layer_state_cfg VFX_CFG_SYM(node) = {                                  \

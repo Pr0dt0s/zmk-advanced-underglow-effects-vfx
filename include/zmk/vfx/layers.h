@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <zmk/vfx/color.h>
@@ -210,6 +211,23 @@ struct vfx_trail_cfg {
 
 struct vfx_trail_state {
     uint8_t heat[VFX_TRAIL_MAX_PIXELS];
+    uint32_t last_ms;
+};
+
+/* Reacts to a press without caring which key it was, so it works on pixels
+ * that sit nowhere near the keys: the whole zone lifts and decays together.
+ */
+struct vfx_pulse_cfg {
+    uint32_t color;
+    uint16_t decay_ms;  /* time from a press back down to min_level */
+    uint8_t min_level;  /* 0-255 floor; 0 lets the power gate cut between presses */
+    uint8_t hue_step;   /* degrees the hue advances per press; 0 = fixed */
+    bool stack;         /* presses add rather than restarting from full */
+};
+
+struct vfx_pulse_state {
+    uint8_t level;
+    uint16_t hue_offset;
     uint32_t last_ms;
 };
 

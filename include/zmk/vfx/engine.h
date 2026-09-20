@@ -57,6 +57,7 @@ extern const struct vfx_layer_api vfx_layer_wpm_api;
 extern const struct vfx_layer_api vfx_layer_peripheral_battery_api;
 extern const struct vfx_layer_api vfx_layer_keyflash_api;
 extern const struct vfx_layer_api vfx_layer_trail_api;
+extern const struct vfx_layer_api vfx_layer_pulse_api;
 extern const struct vfx_layer_api vfx_layer_layer_state_api;
 extern const struct vfx_layer_api vfx_layer_battery_api;
 extern const struct vfx_layer_api vfx_layer_ble_profile_api;

@@ -386,6 +386,106 @@ static bool trail_is_animating(const struct vfx_layer *layer, const struct vfx_f
     return false;
 }
 
+/* -------------------------------------------------------------------- pulse */
+
+/* The only reactive generator that never asks where the key was.
+ *
+ * Everything else here places itself against the pressed key, which needs the
+ * pixels to sit under the keys in the first place. Underglow does not: it is
+ * behind the board, so the useful reading of a keypress there is that one
+ * happened at all, and the whole zone answers together.
+ */
+
+static void pulse_key_event(const struct vfx_layer *layer, const struct vfx_frame_ctx *ctx,
+                            uint32_t position, bool pressed, uint32_t time_ms) {
+    VFX_UNUSED(ctx);
+    VFX_UNUSED(position);
+    VFX_UNUSED(time_ms);
+
+    if (!pressed) {
+        return;
+    }
+
+    const struct vfx_pulse_cfg *cfg = layer->config;
+    struct vfx_pulse_state *st = layer->state;
+
+    if (cfg->stack) {
+        /* Typing faster than the decay piles up toward full rather than
+         * pinning there, so a fast run still reads as busier than one key.
+         */
+        const uint16_t sum = (uint16_t)st->level + 128U;
+
+        st->level = sum > 255U ? 255U : (uint8_t)sum;
+    } else {
+        st->level = 255;
+    }
+
+    st->hue_offset = vfx_hue_add(st->hue_offset, (int16_t)cfg->hue_step);
+}
+
+static void pulse_frame(const struct vfx_layer *layer, const struct vfx_frame_ctx *ctx) {
+    const struct vfx_pulse_cfg *cfg = layer->config;
+    struct vfx_pulse_state *st = layer->state;
+
+    const uint32_t elapsed = age_of(ctx->time_ms, st->last_ms);
+
+    st->last_ms = ctx->time_ms;
+
+    if (cfg->decay_ms == 0 || elapsed == 0) {
+        return;
+    }
+
+    /* Proportional to real elapsed time rather than to frames, so a pulse
+     * lasts the same wall time whatever the frame rate is doing.
+     */
+    const uint32_t drop = (elapsed * 255U) / cfg->decay_ms;
+
+    st->level = st->level > drop ? (uint8_t)(st->level - drop) : 0;
+}
+
+static bool pulse_pixel(const struct vfx_layer *layer, const struct vfx_frame_ctx *ctx,
+                        uint16_t zone_i, uint16_t strip_i, struct vfx_rgb *out) {
+    VFX_UNUSED(zone_i);
+    VFX_UNUSED(strip_i);
+
+    const struct vfx_pulse_cfg *cfg = layer->config;
+    const struct vfx_pulse_state *st = layer->state;
+
+    const uint8_t level = st->level > cfg->min_level ? st->level : cfg->min_level;
+
+    if (level == 0) {
+        return false;
+    }
+
+    struct vfx_hsb hsb = vfx_hsb_unpack(cfg->color);
+
+    hsb.h = vfx_hue_add(hsb.h, (int16_t)ctx->hue_shift);
+    hsb.h = vfx_hue_add(hsb.h, (int16_t)st->hue_offset);
+    hsb.b = (uint8_t)((uint16_t)hsb.b * level / 255U);
+
+    *out = vfx_hsb_to_rgb(hsb);
+
+    return true;
+}
+
+static bool pulse_is_animating(const struct vfx_layer *layer, const struct vfx_frame_ctx *ctx) {
+    VFX_UNUSED(ctx);
+
+    const struct vfx_pulse_state *st = layer->state;
+
+    /* Sitting at the floor is a still picture, so the engine may park until
+     * the next press wakes it.
+     */
+    return st->level > 0;
+}
+
+const struct vfx_layer_api vfx_layer_pulse_api = {
+    .frame = pulse_frame,
+    .pixel = pulse_pixel,
+    .key_event = pulse_key_event,
+    .is_animating = pulse_is_animating,
+};
+
 const struct vfx_layer_api vfx_layer_trail_api = {
     .frame = trail_frame,
     .pixel = trail_pixel,

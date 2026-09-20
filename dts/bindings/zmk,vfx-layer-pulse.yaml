@@ -1,0 +1,54 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Lifts the whole zone on a keypress and lets it fall back, without caring
+  which key was pressed.
+
+  Every other reactive generator places itself against the pressed key, which
+  only means anything when the pixels sit under the keys. Underglow is behind
+  the board, so the useful reading of a press there is that one happened at
+  all: the zone answers as one.
+
+  With min-level at 0 the zone is black between presses, so a scene built only
+  from this draws nothing at rest and the power gate can cut the rail until
+  the next keystroke.
+
+compatible: "zmk,vfx-layer-pulse"
+
+include: vfx-layer-common.yaml
+
+properties:
+  color:
+    type: int
+    required: true
+    description: Packed VFX_HSB() the zone lights up in.
+
+  decay-ms:
+    type: int
+    default: 500
+    description: |
+      Time from a press back down to min-level. Shorter reads as a blink,
+      longer as a swell. 0 holds the level indefinitely.
+
+  min-level:
+    type: int
+    default: 0
+    description: |
+      0-255 floor the zone never falls below, so the effect can sit as a dim
+      wash that brightens as you type rather than going dark between presses.
+      Leaving it at 0 is what lets the power gate cut.
+
+  hue-step:
+    type: int
+    default: 0
+    description: |
+      Degrees the hue advances on each press, so a run of typing walks the
+      colour wheel. 0 keeps the colour fixed.
+
+  stack:
+    type: boolean
+    description: |
+      Presses add to the current level instead of restarting it from full, so
+      typing faster than the decay builds up rather than pinning at maximum
+      from the first key.

@@ -136,6 +136,41 @@
             };
         };
 
+        /* Reacts to typing without reacting to where you typed, so it suits
+         * pixels that sit nowhere near the keys. Dark at rest, which lets the
+         * power gate cut the rail between keystrokes.
+         */
+        vfx_pulse: vfx_pulse {
+            compatible = "zmk,vfx-scene";
+            display-name = "Pulse";
+
+            flash {
+                compatible = "zmk,vfx-layer-pulse";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(190, 60, 100)>;
+                decay-ms = <450>;
+            };
+        };
+
+        /* The same idea as a bed rather than a blink: never quite dark, and
+         * each key walks the colour on a little, so a run of typing drifts
+         * through the wheel instead of flashing one colour.
+         */
+        vfx_glow_pulse: vfx_glow_pulse {
+            compatible = "zmk,vfx-scene";
+            display-name = "Glow Pulse";
+
+            wash {
+                compatible = "zmk,vfx-layer-pulse";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(265, 80, 100)>;
+                decay-ms = <900>;
+                min-level = <40>;
+                hue-step = <7>;
+                stack;
+            };
+        };
+
         /* Rain on a dark pool, which typing also disturbs. Drops from the
          * two sources are the same kind of drop, so they interfere.
          */
