@@ -107,3 +107,42 @@
 #define VFX_SET_BRT(v) VFX_SET_BRT_CMD v
 #define VFX_SET_SPD(v) VFX_SET_SPD_CMD v
 #define VFX_SET_HUE(v) VFX_SET_HUE_CMD v
+
+/* Channels.
+ *
+ * A board can split its strip into channels, each with its own scene list and
+ * its own scene, brightness, speed and hue, so that the underglow and the
+ * per-key LEDs run different effects at different brightnesses at once. They
+ * are declared as zmk,vfx-channel children of the engine, and a channel's id
+ * is its position in that list.
+ *
+ * The channel rides in param1 above the command, because param2 is already
+ * spoken for by the commands that carry a value. A zero there means every
+ * channel, so every unqualified macro above keeps addressing the whole board.
+ */
+#define VFX_CMD_MASK 0xFF
+#define VFX_CH_SHIFT 8
+
+#define VFX_CH_0 0
+#define VFX_CH_1 1
+#define VFX_CH_2 2
+#define VFX_CH_3 3
+
+/* Stored one higher than the id so that an absent channel reads as zero. */
+#define VFX_CMD_ON(cmd, ch) ((cmd) | (((ch) + 1) << VFX_CH_SHIFT))
+
+#define VFX_TOG_ON(ch) VFX_CMD_ON(VFX_TOG_CMD, ch) 0
+#define VFX_ON_ON(ch) VFX_CMD_ON(VFX_ON_CMD, ch) 0
+#define VFX_OFF_ON(ch) VFX_CMD_ON(VFX_OFF_CMD, ch) 0
+#define VFX_NEXT_ON(ch) VFX_CMD_ON(VFX_NEXT_CMD, ch) 0
+#define VFX_PREV_ON(ch) VFX_CMD_ON(VFX_PREV_CMD, ch) 0
+#define VFX_SEL_ON(ch, n) VFX_CMD_ON(VFX_SEL_CMD, ch) n
+#define VFX_BRI_ON(ch) VFX_CMD_ON(VFX_BRI_CMD, ch) 0
+#define VFX_BRD_ON(ch) VFX_CMD_ON(VFX_BRD_CMD, ch) 0
+#define VFX_SPI_ON(ch) VFX_CMD_ON(VFX_SPI_CMD, ch) 0
+#define VFX_SPD_ON(ch) VFX_CMD_ON(VFX_SPD_CMD, ch) 0
+#define VFX_HUI_ON(ch) VFX_CMD_ON(VFX_HUI_CMD, ch) 0
+#define VFX_HUD_ON(ch) VFX_CMD_ON(VFX_HUD_CMD, ch) 0
+#define VFX_SET_BRT_ON(ch, v) VFX_CMD_ON(VFX_SET_BRT_CMD, ch) v
+#define VFX_SET_SPD_ON(ch, v) VFX_CMD_ON(VFX_SET_SPD_CMD, ch) v
+#define VFX_SET_HUE_ON(ch, v) VFX_CMD_ON(VFX_SET_HUE_CMD, ch) v

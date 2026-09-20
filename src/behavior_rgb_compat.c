@@ -27,6 +27,10 @@ LOG_MODULE_DECLARE(zmk_vfx, CONFIG_ZMK_VFX_LOG_LEVEL);
  * Saturation has no engine-wide analogue: in VFX it is a property of each
  * layer's colors in devicetree, not one global value. RGB_SAI and RGB_SAD are
  * accepted and ignored rather than failing the binding.
+ *
+ * Channels have no analogue either, and &rgb_ug predates them, so everything
+ * here addresses the whole board. A keymap that wants one part of the strip on
+ * its own has to say so with &vfx.
  */
 
 #if DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT)
@@ -51,19 +55,19 @@ static int rgb_convert_central_state_dependent_params(struct zmk_behavior_bindin
      */
     switch (binding->param1) {
     case RGB_BRI_CMD:
-        binding->param2 = zmk_vfx_calc_brightness(1);
+        binding->param2 = zmk_vfx_calc_brightness(ZMK_VFX_CH_ALL, 1);
         binding->param1 = RGB_COMPAT_SET_BRT;
         break;
     case RGB_BRD_CMD:
-        binding->param2 = zmk_vfx_calc_brightness(-1);
+        binding->param2 = zmk_vfx_calc_brightness(ZMK_VFX_CH_ALL, -1);
         binding->param1 = RGB_COMPAT_SET_BRT;
         break;
     case RGB_EFF_CMD:
-        binding->param2 = zmk_vfx_calc_scene(1);
+        binding->param2 = zmk_vfx_calc_scene(ZMK_VFX_CH_ALL, 1);
         binding->param1 = RGB_EFS_CMD;
         break;
     case RGB_EFR_CMD:
-        binding->param2 = zmk_vfx_calc_scene(-1);
+        binding->param2 = zmk_vfx_calc_scene(ZMK_VFX_CH_ALL, -1);
         binding->param1 = RGB_EFS_CMD;
         break;
     default:
@@ -79,31 +83,31 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
 
     switch (binding->param1) {
     case RGB_TOG_CMD:
-        return zmk_vfx_toggle();
+        return zmk_vfx_toggle(ZMK_VFX_CH_ALL);
     case RGB_ON_CMD:
-        return zmk_vfx_on();
+        return zmk_vfx_on(ZMK_VFX_CH_ALL);
     case RGB_OFF_CMD:
-        return zmk_vfx_off();
+        return zmk_vfx_off(ZMK_VFX_CH_ALL);
     case RGB_HUI_CMD:
-        return zmk_vfx_change_hue(1);
+        return zmk_vfx_change_hue(ZMK_VFX_CH_ALL, 1);
     case RGB_HUD_CMD:
-        return zmk_vfx_change_hue(-1);
+        return zmk_vfx_change_hue(ZMK_VFX_CH_ALL, -1);
     case RGB_BRI_CMD:
-        return zmk_vfx_change_brightness(1);
+        return zmk_vfx_change_brightness(ZMK_VFX_CH_ALL, 1);
     case RGB_BRD_CMD:
-        return zmk_vfx_change_brightness(-1);
+        return zmk_vfx_change_brightness(ZMK_VFX_CH_ALL, -1);
     case RGB_COMPAT_SET_BRT:
-        return zmk_vfx_set_brightness((uint8_t)binding->param2);
+        return zmk_vfx_set_brightness(ZMK_VFX_CH_ALL, (uint8_t)binding->param2);
     case RGB_SPI_CMD:
-        return zmk_vfx_change_speed(1);
+        return zmk_vfx_change_speed(ZMK_VFX_CH_ALL, 1);
     case RGB_SPD_CMD:
-        return zmk_vfx_change_speed(-1);
+        return zmk_vfx_change_speed(ZMK_VFX_CH_ALL, -1);
     case RGB_EFF_CMD:
-        return zmk_vfx_cycle_scene(1);
+        return zmk_vfx_cycle_scene(ZMK_VFX_CH_ALL, 1);
     case RGB_EFR_CMD:
-        return zmk_vfx_cycle_scene(-1);
+        return zmk_vfx_cycle_scene(ZMK_VFX_CH_ALL, -1);
     case RGB_EFS_CMD:
-        return zmk_vfx_select_scene((uint8_t)binding->param2);
+        return zmk_vfx_select_scene(ZMK_VFX_CH_ALL, (uint8_t)binding->param2);
     case RGB_SAI_CMD:
     case RGB_SAD_CMD:
         LOG_DBG("Ignoring RGB saturation command: VFX sets saturation per layer in devicetree");
@@ -112,8 +116,9 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
         /* Hue maps onto the global hue rotation; brightness onto the global
          * brightness. Saturation is dropped, as above.
          */
-        zmk_vfx_set_hue((uint16_t)((binding->param2 >> 16) & 0x1FF));
-        return zmk_vfx_set_brightness((uint8_t)((binding->param2 & 0xFF) * 255U / 100U));
+        zmk_vfx_set_hue(ZMK_VFX_CH_ALL, (uint16_t)((binding->param2 >> 16) & 0x1FF));
+        return zmk_vfx_set_brightness(ZMK_VFX_CH_ALL,
+                                      (uint8_t)((binding->param2 & 0xFF) * 255U / 100U));
     }
 
     return -ENOTSUP;

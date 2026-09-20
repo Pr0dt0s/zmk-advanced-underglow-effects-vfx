@@ -71,6 +71,24 @@ static const struct behavior_parameter_metadata metadata = {
 
 #endif /* CONFIG_ZMK_BEHAVIOR_METADATA */
 
+/* param1 carries the command in its low byte and, above that, the channel the
+ * press addresses. Zero there means none was named, which is every channel.
+ */
+#define VFX_CMD_OF(p1) ((uint8_t)((p1) & VFX_CMD_MASK))
+
+static uint8_t vfx_channel_of(uint32_t param1) {
+    const uint32_t raw = (param1 >> VFX_CH_SHIFT) & 0xFF;
+
+    return raw == 0 ? ZMK_VFX_CH_ALL : (uint8_t)(raw - 1);
+}
+
+/* Swap the command but keep the channel, so a rewritten binding still reaches
+ * the same place once it is relayed.
+ */
+static uint32_t vfx_with_cmd(uint32_t param1, uint8_t cmd) {
+    return (param1 & ~(uint32_t)VFX_CMD_MASK) | cmd;
+}
+
 /* Rewrite a relative command into its absolute equivalent while still on the
  * central, before the binding is relayed.
  *
@@ -82,38 +100,40 @@ static int vfx_convert_central_state_dependent_params(struct zmk_behavior_bindin
                                                       struct zmk_behavior_binding_event event) {
     ARG_UNUSED(event);
 
-    switch (binding->param1) {
+    const uint8_t ch = vfx_channel_of(binding->param1);
+
+    switch (VFX_CMD_OF(binding->param1)) {
     case VFX_NEXT_CMD:
-        binding->param2 = zmk_vfx_calc_scene(1);
-        binding->param1 = VFX_SET_SCENE_CMD;
+        binding->param2 = zmk_vfx_calc_scene(ch, 1);
+        binding->param1 = vfx_with_cmd(binding->param1, VFX_SET_SCENE_CMD);
         break;
     case VFX_PREV_CMD:
-        binding->param2 = zmk_vfx_calc_scene(-1);
-        binding->param1 = VFX_SET_SCENE_CMD;
+        binding->param2 = zmk_vfx_calc_scene(ch, -1);
+        binding->param1 = vfx_with_cmd(binding->param1, VFX_SET_SCENE_CMD);
         break;
     case VFX_BRI_CMD:
-        binding->param2 = zmk_vfx_calc_brightness(1);
-        binding->param1 = VFX_SET_BRT_CMD;
+        binding->param2 = zmk_vfx_calc_brightness(ch, 1);
+        binding->param1 = vfx_with_cmd(binding->param1, VFX_SET_BRT_CMD);
         break;
     case VFX_BRD_CMD:
-        binding->param2 = zmk_vfx_calc_brightness(-1);
-        binding->param1 = VFX_SET_BRT_CMD;
+        binding->param2 = zmk_vfx_calc_brightness(ch, -1);
+        binding->param1 = vfx_with_cmd(binding->param1, VFX_SET_BRT_CMD);
         break;
     case VFX_SPI_CMD:
-        binding->param2 = zmk_vfx_calc_speed(1);
-        binding->param1 = VFX_SET_SPD_CMD;
+        binding->param2 = zmk_vfx_calc_speed(ch, 1);
+        binding->param1 = vfx_with_cmd(binding->param1, VFX_SET_SPD_CMD);
         break;
     case VFX_SPD_CMD:
-        binding->param2 = zmk_vfx_calc_speed(-1);
-        binding->param1 = VFX_SET_SPD_CMD;
+        binding->param2 = zmk_vfx_calc_speed(ch, -1);
+        binding->param1 = vfx_with_cmd(binding->param1, VFX_SET_SPD_CMD);
         break;
     case VFX_HUI_CMD:
-        binding->param2 = zmk_vfx_calc_hue(1);
-        binding->param1 = VFX_SET_HUE_CMD;
+        binding->param2 = zmk_vfx_calc_hue(ch, 1);
+        binding->param1 = vfx_with_cmd(binding->param1, VFX_SET_HUE_CMD);
         break;
     case VFX_HUD_CMD:
-        binding->param2 = zmk_vfx_calc_hue(-1);
-        binding->param1 = VFX_SET_HUE_CMD;
+        binding->param2 = zmk_vfx_calc_hue(ch, -1);
+        binding->param1 = vfx_with_cmd(binding->param1, VFX_SET_HUE_CMD);
         break;
     default:
         return 0;
@@ -128,38 +148,40 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
                                      struct zmk_behavior_binding_event event) {
     ARG_UNUSED(event);
 
-    switch (binding->param1) {
+    const uint8_t ch = vfx_channel_of(binding->param1);
+
+    switch (VFX_CMD_OF(binding->param1)) {
     case VFX_TOG_CMD:
-        return zmk_vfx_toggle();
+        return zmk_vfx_toggle(ch);
     case VFX_ON_CMD:
-        return zmk_vfx_on();
+        return zmk_vfx_on(ch);
     case VFX_OFF_CMD:
-        return zmk_vfx_off();
+        return zmk_vfx_off(ch);
     case VFX_NEXT_CMD:
-        return zmk_vfx_cycle_scene(1);
+        return zmk_vfx_cycle_scene(ch, 1);
     case VFX_PREV_CMD:
-        return zmk_vfx_cycle_scene(-1);
+        return zmk_vfx_cycle_scene(ch, -1);
     case VFX_SEL_CMD:
     case VFX_SET_SCENE_CMD:
-        return zmk_vfx_select_scene((uint8_t)binding->param2);
+        return zmk_vfx_select_scene(ch, (uint8_t)binding->param2);
     case VFX_BRI_CMD:
-        return zmk_vfx_change_brightness(1);
+        return zmk_vfx_change_brightness(ch, 1);
     case VFX_BRD_CMD:
-        return zmk_vfx_change_brightness(-1);
+        return zmk_vfx_change_brightness(ch, -1);
     case VFX_SET_BRT_CMD:
-        return zmk_vfx_set_brightness((uint8_t)binding->param2);
+        return zmk_vfx_set_brightness(ch, (uint8_t)binding->param2);
     case VFX_SPI_CMD:
-        return zmk_vfx_change_speed(1);
+        return zmk_vfx_change_speed(ch, 1);
     case VFX_SPD_CMD:
-        return zmk_vfx_change_speed(-1);
+        return zmk_vfx_change_speed(ch, -1);
     case VFX_SET_SPD_CMD:
-        return zmk_vfx_set_speed((uint8_t)binding->param2);
+        return zmk_vfx_set_speed(ch, (uint8_t)binding->param2);
     case VFX_HUI_CMD:
-        return zmk_vfx_change_hue(1);
+        return zmk_vfx_change_hue(ch, 1);
     case VFX_HUD_CMD:
-        return zmk_vfx_change_hue(-1);
+        return zmk_vfx_change_hue(ch, -1);
     case VFX_SET_HUE_CMD:
-        return zmk_vfx_set_hue((uint16_t)binding->param2);
+        return zmk_vfx_set_hue(ch, (uint16_t)binding->param2);
 
     /* Relayed from the central in synchronised split mode. These never appear
      * in a keymap; they arrive through ZMK's behavior relay, which is why

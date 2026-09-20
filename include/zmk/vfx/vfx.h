@@ -11,38 +11,47 @@
 
 /* Runtime control surface. The &vfx behavior and the rgb_ug compatibility
  * shim both drive the engine through these.
+ *
+ * Everything that a channel owns is addressed by channel id. Boards that
+ * declare no zmk,vfx-channel have exactly one, id 0, covering the strip.
  */
 
-int zmk_vfx_on(void);
-int zmk_vfx_off(void);
-int zmk_vfx_toggle(void);
-bool zmk_vfx_is_on(void);
+/* Every channel at once, which is what an unqualified keymap binding means. */
+#define ZMK_VFX_CH_ALL 0xFF
 
-int zmk_vfx_select_scene(uint8_t index);
-int zmk_vfx_cycle_scene(int direction);
-uint8_t zmk_vfx_current_scene(void);
-const char *zmk_vfx_scene_name(uint8_t index);
+int zmk_vfx_on(uint8_t ch);
+int zmk_vfx_off(uint8_t ch);
+int zmk_vfx_toggle(uint8_t ch);
+bool zmk_vfx_is_on(uint8_t ch);
 
-int zmk_vfx_set_brightness(uint8_t value);
-int zmk_vfx_set_speed(uint8_t value);
-int zmk_vfx_set_hue(uint16_t degrees);
+int zmk_vfx_select_scene(uint8_t ch, uint8_t index);
+int zmk_vfx_cycle_scene(uint8_t ch, int direction);
+uint8_t zmk_vfx_current_scene(uint8_t ch);
+const char *zmk_vfx_scene_name(uint8_t ch, uint8_t index);
 
-int zmk_vfx_change_brightness(int direction);
-int zmk_vfx_change_speed(int direction);
-int zmk_vfx_change_hue(int direction);
+int zmk_vfx_set_brightness(uint8_t ch, uint8_t value);
+int zmk_vfx_set_speed(uint8_t ch, uint8_t value);
+int zmk_vfx_set_hue(uint8_t ch, uint16_t degrees);
 
-uint8_t zmk_vfx_get_brightness(void);
-uint8_t zmk_vfx_get_speed(void);
-int16_t zmk_vfx_get_hue_shift(void);
+int zmk_vfx_change_brightness(uint8_t ch, int direction);
+int zmk_vfx_change_speed(uint8_t ch, int direction);
+int zmk_vfx_change_hue(uint8_t ch, int direction);
+
+uint8_t zmk_vfx_get_brightness(uint8_t ch);
+uint8_t zmk_vfx_get_speed(uint8_t ch);
+int16_t zmk_vfx_get_hue_shift(uint8_t ch);
 
 /* What a relative step would produce, without applying it. The behavior uses
  * these on the central to turn a relative press into an absolute command
  * before relaying it to the peripherals.
+ *
+ * ZMK_VFX_CH_ALL reads the first channel, since one value has to stand for
+ * the board once it is on the wire.
  */
-uint8_t zmk_vfx_calc_scene(int direction);
-uint8_t zmk_vfx_calc_brightness(int direction);
-uint8_t zmk_vfx_calc_speed(int direction);
-uint16_t zmk_vfx_calc_hue(int direction);
+uint8_t zmk_vfx_calc_scene(uint8_t ch, int direction);
+uint8_t zmk_vfx_calc_brightness(uint8_t ch, int direction);
+uint8_t zmk_vfx_calc_speed(uint8_t ch, int direction);
+uint16_t zmk_vfx_calc_hue(uint8_t ch, int direction);
 
 /* Persist the current state, debounced. */
 int zmk_vfx_save_state(void);

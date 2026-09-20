@@ -1,0 +1,61 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  A slice of the strip with its own scene list and its own scene, brightness,
+  speed and hue, so that one part of a board can run a different effect from
+  another rather than the whole strip sharing one.
+
+  The usual reason is a board whose underglow and per-key LEDs sit on the same
+  chain: they light different things and want different effects, and only a
+  channel lets them be controlled apart.
+
+    vfx_engine {
+        glow: channel-glow {
+            compatible = "zmk,vfx-channel";
+            range = <0 6>;
+            scenes = <&vfx_breathe &vfx_solid_warm &vfx_aurora>;
+            default-scene = <&vfx_breathe>;
+        };
+
+        keys: channel-keys {
+            compatible = "zmk,vfx-channel";
+            range = <6 29>;
+            scenes = <&vfx_reactive &vfx_matrix &vfx_crosshair>;
+        };
+    };
+
+  A channel's id is its position in the devicetree, and that id is what the
+  &vfx behavior's VFX_*_ON() macros address. Both halves of a split must
+  declare the same channels carrying the same scenes in the same order:
+  relative commands are resolved to an absolute index on the central and
+  relayed as a number, so halves that disagree will not land on the same scene.
+
+  Declaring no channel at all leaves the whole strip as a single channel
+  showing every scene, which is how a board that has never heard of channels
+  keeps working.
+
+compatible: "zmk,vfx-channel"
+
+properties:
+  range:
+    type: array
+    required: true
+    description: |
+      Start and length in pixels, <start len>, as local indices into this
+      half's own strip rather than into the virtual whole-board space. An
+      over-long length is clamped to the chain, so 255 means "to the end".
+
+  scenes:
+    type: phandles
+    required: true
+    description: |
+      The scenes this channel cycles, in order. Next and previous move within
+      this list, and selecting by index indexes it, so a channel only ever
+      shows scenes that make sense on the pixels it owns.
+
+  default-scene:
+    type: phandle
+    description: |
+      Scene shown on first boot, before any saved setting. Defaults to the
+      first entry in scenes. Must be one of them.

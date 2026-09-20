@@ -394,7 +394,7 @@ static const struct vfx_scene *const vfx_layer_scene_list[] = {
     DT_FOREACH_PROP_ELEM(VFX_ENGINE_NODE, layer_scenes, VFX_LAYER_SCENE_REF)};
 #endif
 
-int16_t vfx_layer_scene_index(uint8_t layer) {
+int16_t vfx_layer_scene_index(uint8_t layer, uint8_t ch) {
 #if DT_NODE_HAS_PROP(VFX_ENGINE_NODE, layer_scenes)
     if (layer >= ARRAY_SIZE(vfx_layer_scene_list)) {
         /* Past the end of the list means this layer has no scene of its own,
@@ -404,14 +404,25 @@ int16_t vfx_layer_scene_index(uint8_t layer) {
     }
 
     const struct vfx_scene *want = vfx_layer_scene_list[layer];
+    const struct vfx_channel *chan = vfx_channel_get(ch);
 
-    for (uint8_t i = 0; i < ARRAY_SIZE(vfx_scene_list); i++) {
-        if (vfx_scene_list[i] == want) {
+    if (!chan) {
+        return -1;
+    }
+
+    /* Layer scenes are named rather than numbered, so a channel follows the
+     * layer only if it actually carries that scene. Naming a reactive scene
+     * moves the keys and leaves an underglow channel that has never heard of
+     * it alone, which is the useful reading.
+     */
+    for (uint8_t i = 0; i < chan->num_scenes; i++) {
+        if (chan->scenes[i] == want) {
             return (int16_t)i;
         }
     }
 #else
     (void)layer;
+    (void)ch;
 #endif
 
     return -1;
@@ -427,6 +438,78 @@ uint8_t vfx_scene_default_index(void) {
         }
     }
 #endif
+
+    return 0;
+}
+
+/* --------------------------------------------------------------- channels */
+
+#define VFX_CH_SCENES_SYM(node) _CONCAT(vfx_ch_scenes_, node)
+
+#define VFX_CH_SCENE_REF(node, prop, idx) &VFX_SCENE_SYM(DT_PHANDLE_BY_IDX(node, prop, idx)),
+
+#define VFX_CH_DEFAULT_REF(node)                                                                   \
+    COND_CODE_1(DT_NODE_HAS_PROP(node, default_scene),                                             \
+                (&VFX_SCENE_SYM(DT_PHANDLE(node, default_scene))), (NULL))
+
+#if DT_HAS_COMPAT_STATUS_OKAY(zmk_vfx_channel)
+
+#define VFX_CHANNEL_SCENES(node)                                                                   \
+    static const struct vfx_scene *const VFX_CH_SCENES_SYM(node)[] = {                             \
+        DT_FOREACH_PROP_ELEM(node, scenes, VFX_CH_SCENE_REF)};
+
+DT_FOREACH_STATUS_OKAY(zmk_vfx_channel, VFX_CHANNEL_SCENES)
+
+#define VFX_CHANNEL_ENTRY(node)                                                                    \
+    {                                                                                              \
+        .start = DT_PROP_BY_IDX(node, range, 0),                                                   \
+        .len = DT_PROP_BY_IDX(node, range, 1),                                                     \
+        .scenes = VFX_CH_SCENES_SYM(node),                                                         \
+        .num_scenes = (uint8_t)ARRAY_SIZE(VFX_CH_SCENES_SYM(node)),                                \
+        .default_scene = VFX_CH_DEFAULT_REF(node),                                                 \
+    },
+
+static const struct vfx_channel vfx_channel_list[] = {
+    DT_FOREACH_STATUS_OKAY(zmk_vfx_channel, VFX_CHANNEL_ENTRY)};
+
+#else
+
+/* Nothing declared, so the whole strip is one channel showing every scene.
+ * The length is clamped to the chain at render time, the same way a zone is,
+ * so 255 just means "however many pixels this board has".
+ */
+static const struct vfx_channel vfx_channel_list[] = {{
+    .start = 0,
+    .len = 255,
+    .scenes = vfx_scene_list,
+    .num_scenes = (uint8_t)ARRAY_SIZE(vfx_scene_list),
+    .default_scene = VFX_CH_DEFAULT_REF(VFX_ENGINE_NODE),
+}};
+
+#endif
+
+uint8_t vfx_channel_count(void) { return (uint8_t)ARRAY_SIZE(vfx_channel_list); }
+
+const struct vfx_channel *vfx_channel_get(uint8_t index) {
+    if (index >= ARRAY_SIZE(vfx_channel_list)) {
+        return NULL;
+    }
+
+    return &vfx_channel_list[index];
+}
+
+uint8_t vfx_channel_default_index(uint8_t index) {
+    const struct vfx_channel *ch = vfx_channel_get(index);
+
+    if (!ch || !ch->default_scene) {
+        return 0;
+    }
+
+    for (uint8_t i = 0; i < ch->num_scenes; i++) {
+        if (ch->scenes[i] == ch->default_scene) {
+            return i;
+        }
+    }
 
     return 0;
 }

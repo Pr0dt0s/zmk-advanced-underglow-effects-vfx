@@ -123,12 +123,17 @@ static const struct device *const led_strip = DEVICE_DT_GET(STRIP_NODE);
 static struct led_rgb strip_pixels[STRIP_NUM_PIXELS];
 static struct vfx_rgb frame[STRIP_NUM_PIXELS];
 
-static struct {
-    uint8_t scene;
+/* Sized for the widest board rather than for this one, so that the saved
+ * settings blob has a fixed layout and adding a channel to a keymap does not
+ * silently reinterpret the stored bytes.
+ */
+#define VFX_MAX_CHANNELS 4
+
+struct vfx_chan_state {
+    uint8_t scene; /* position in this channel's own list, not the board's */
     uint8_t brightness; /* 0-255 */
     uint8_t speed;      /* 1-5 */
     int16_t hue_shift;
-    int32_t time_offset;
     bool on;
 
     /* A scene switch crossfades rather than cutting when transition-ms is
@@ -138,7 +143,41 @@ static struct {
     uint8_t prev_scene;
     uint32_t fade_start_ms;
     bool fading;
+};
+
+static struct {
+    struct vfx_chan_state chan[VFX_MAX_CHANNELS];
+
+    /* Board wide: the correction against the other half is a property of this
+     * half's timebase, not of anything a channel owns.
+     */
+    int32_t time_offset;
 } state;
+
+static uint8_t channel_count(void) {
+    const uint8_t n = vfx_channel_count();
+
+    return n > VFX_MAX_CHANNELS ? VFX_MAX_CHANNELS : n;
+}
+
+/* The strip is driven as a whole, so the timer and the power rail answer to
+ * whether anything at all is lit rather than to any one channel.
+ */
+static bool any_channel_on(void) {
+    for (uint8_t i = 0; i < channel_count(); i++) {
+        if (state.chan[i].on) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/* Each channel renders the whole strip here and then has only its own pixels
+ * taken, which is what lets a scene written against the full strip be used on
+ * a channel that owns a slice of it without being rewritten.
+ */
+static struct vfx_rgb chan_scratch[STRIP_NUM_PIXELS];
 
 #if VFX_TRANSITION_MS > 0
 static struct vfx_rgb fade_scratch[STRIP_NUM_PIXELS];
@@ -174,7 +213,11 @@ static uint8_t brightness_ceiling(uint8_t v) {
 static struct vfx_board_box board_box;
 static bool board_box_ready;
 
-static struct vfx_frame_ctx build_ctx(void) {
+/* Brightness, speed and hue are read straight off the channel, which is what
+ * makes per-channel control cost nothing extra: every generator already takes
+ * them from the context rather than from a global.
+ */
+static struct vfx_frame_ctx build_ctx(uint8_t ch) {
     if (!board_box_ready) {
         const struct vfx_frame_ctx probe = {
             .virtual_length = VFX_VIRTUAL_LENGTH,
@@ -186,20 +229,33 @@ static struct vfx_frame_ctx build_ctx(void) {
         board_box_ready = true;
     }
 
+    const struct vfx_chan_state *cs = &state.chan[ch];
+
     return (struct vfx_frame_ctx){
         .time_ms = (uint32_t)((int64_t)k_uptime_get() + state.time_offset),
         .virtual_length = VFX_VIRTUAL_LENGTH,
         .strip_offset = VFX_STRIP_OFFSET,
         .num_pixels = STRIP_NUM_PIXELS,
-        .speed = state.speed,
-        .brightness = brightness_ceiling(state.brightness),
-        .hue_shift = state.hue_shift,
+        .speed = cs->speed,
+        .brightness = brightness_ceiling(cs->brightness),
+        .hue_shift = cs->hue_shift,
         .key_pixels = VFX_KEY_PIXELS,
         .num_keys = VFX_NUM_KEYS,
         .pixel_xy = VFX_PIXEL_XY,
         .num_positions = VFX_NUM_POSITIONS,
         .board = board_box,
     };
+}
+
+/* Scene a channel is currently showing, resolved through its own list. */
+static const struct vfx_scene *channel_scene(uint8_t ch, uint8_t index) {
+    const struct vfx_channel *chan = vfx_channel_get(ch);
+
+    if (!chan || index >= chan->num_scenes) {
+        return NULL;
+    }
+
+    return chan->scenes[index];
 }
 
 static void push_frame(void) {
@@ -234,7 +290,7 @@ static void blank_strip_handler(struct k_work *work) {
      * leave the strip powered and drawing its quiescent current forever,
      * which is the one case where saving it matters most.
      */
-    if (!state.on) {
+    if (!any_channel_on()) {
         vfx_power_rail_disable();
         vfx_power_force_gated(&power_ctl);
     }
@@ -250,34 +306,63 @@ static void blank_strip(void) {
 static void vfx_tick(struct k_work *work) {
     ARG_UNUSED(work);
 
-    if (!state.on) {
+    if (!any_channel_on()) {
         return;
     }
 
-    const struct vfx_frame_ctx ctx = build_ctx();
-    const struct vfx_scene *scene = vfx_scene_get(state.scene);
     bool any_lit = false;
 
-#if VFX_TRANSITION_MS > 0
-    if (state.fading) {
-        const uint32_t elapsed =
-            ctx.time_ms > state.fade_start_ms ? ctx.time_ms - state.fade_start_ms : 0;
+    /* Pixels no channel claims stay dark rather than holding whatever the
+     * previous frame left there.
+     */
+    for (uint16_t i = 0; i < STRIP_NUM_PIXELS; i++) {
+        frame[i] = VFX_RGB_BLACK;
+    }
 
-        if (elapsed >= VFX_TRANSITION_MS) {
-            state.fading = false;
-        } else {
-            vfx_render_transition(vfx_scene_get(state.prev_scene), scene, &ctx,
-                                  (uint8_t)(elapsed * 255U / VFX_TRANSITION_MS), frame,
-                                  fade_scratch, &any_lit);
+    for (uint8_t ch = 0; ch < channel_count(); ch++) {
+        struct vfx_chan_state *cs = &state.chan[ch];
+        const struct vfx_channel *chan = vfx_channel_get(ch);
+
+        if (!cs->on || !chan || chan->start >= STRIP_NUM_PIXELS) {
+            continue;
+        }
+
+        const struct vfx_frame_ctx ctx = build_ctx(ch);
+        const struct vfx_scene *scene = channel_scene(ch, cs->scene);
+
+#if VFX_TRANSITION_MS > 0
+        if (cs->fading) {
+            const uint32_t elapsed =
+                ctx.time_ms > cs->fade_start_ms ? ctx.time_ms - cs->fade_start_ms : 0;
+
+            if (elapsed >= VFX_TRANSITION_MS) {
+                cs->fading = false;
+            } else {
+                vfx_render_transition(channel_scene(ch, cs->prev_scene), scene, &ctx,
+                                      (uint8_t)(elapsed * 255U / VFX_TRANSITION_MS), chan_scratch,
+                                      fade_scratch, NULL);
+            }
+        }
+
+        if (!cs->fading) {
+            vfx_render_frame(scene, &ctx, chan_scratch, NULL);
+        }
+#else
+        vfx_render_frame(scene, &ctx, chan_scratch, NULL);
+#endif
+
+        /* Lit is judged on what survives the mask, not on what the scene drew:
+         * a full-strip scene on a six pixel channel must not hold the rail up
+         * for pixels it does not own.
+         */
+        const uint16_t avail = (uint16_t)(STRIP_NUM_PIXELS - chan->start);
+        const uint16_t len = chan->len < avail ? chan->len : avail;
+
+        for (uint16_t p = chan->start; p < chan->start + len; p++) {
+            frame[p] = chan_scratch[p];
+            any_lit |= (frame[p].r | frame[p].g | frame[p].b) != 0;
         }
     }
-
-    if (!state.fading) {
-        vfx_render_frame(scene, &ctx, frame, &any_lit);
-    }
-#else
-    vfx_render_frame(scene, &ctx, frame, &any_lit);
-#endif
 
     frame_dirty = false;
 
@@ -335,7 +420,7 @@ K_TIMER_DEFINE(vfx_timer, vfx_timer_handler, NULL);
 static void vfx_timer_handler(struct k_timer *timer) {
     ARG_UNUSED(timer);
 
-    if (!state.on) {
+    if (!any_channel_on()) {
         return;
     }
 
@@ -343,16 +428,27 @@ static void vfx_timer_handler(struct k_timer *timer) {
      * second. Keep a slow heartbeat so an external change still lands promptly.
      */
     if (!frame_dirty) {
-        const struct vfx_frame_ctx ctx = build_ctx();
+        /* One animating channel is enough to keep the whole strip ticking,
+         * since they all ride the same timer and the same bus transfer.
+         */
+        bool idle = true;
 
-        bool idle = !vfx_scene_is_animating(vfx_scene_get(state.scene), &ctx);
+        for (uint8_t ch = 0; ch < channel_count() && idle; ch++) {
+            if (!state.chan[ch].on) {
+                continue;
+            }
+
+            const struct vfx_frame_ctx ctx = build_ctx(ch);
+
+            idle = !vfx_scene_is_animating(channel_scene(ch, state.chan[ch].scene), &ctx);
 
 #if VFX_TRANSITION_MS > 0
-        /* A fade is motion even between two still scenes, so parking the
-         * timer mid-fade would freeze it half way.
-         */
-        idle = idle && !state.fading;
+            /* A fade is motion even between two still scenes, so parking the
+             * timer mid-fade would freeze it half way.
+             */
+            idle = idle && !state.chan[ch].fading;
 #endif
+        }
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_POWER_GATE)
         /* A scene can be static and black, in which case the gate still has a
@@ -402,9 +498,15 @@ static int vfx_settings_set(const char *name, size_t len, settings_read_cb read_
         return rc;
     }
 
-    /* A saved scene index can point past the end if scenes were removed. */
-    if (state.scene >= vfx_scene_count()) {
-        state.scene = 0;
+    /* A saved scene index can point past the end if scenes were removed from
+     * a channel's list since it was written.
+     */
+    for (uint8_t ch = 0; ch < channel_count(); ch++) {
+        const struct vfx_channel *chan = vfx_channel_get(ch);
+
+        if (!chan || state.chan[ch].scene >= chan->num_scenes) {
+            state.chan[ch].scene = 0;
+        }
     }
 
     /* The split time offset is a live correction against the other half, not
@@ -415,7 +517,7 @@ static int vfx_settings_set(const char *name, size_t len, settings_read_cb read_
 
     frame_dirty = true;
 
-    if (state.on) {
+    if (any_channel_on()) {
         k_timer_start(&vfx_timer, K_NO_WAIT, K_MSEC(VFX_FRAME_MS));
     }
 
@@ -439,17 +541,60 @@ void zmk_vfx_request_frame(void) {
     /* Restarting rather than just submitting: the timer parks itself once a
      * scene stops animating, so a switch to an animated scene has to wake it.
      */
-    if (state.on) {
+    if (any_channel_on()) {
         k_timer_start(&vfx_timer, K_NO_WAIT, K_MSEC(VFX_FRAME_MS));
     }
 }
 
-int zmk_vfx_on(void) {
+/* Half-open span of channels a command addresses. Every setter has the same
+ * shape: one channel, or all of them.
+ */
+static bool channel_span(uint8_t ch, uint8_t *first, uint8_t *last) {
+    const uint8_t n = channel_count();
+
+    if (n == 0) {
+        return false;
+    }
+
+    if (ch == ZMK_VFX_CH_ALL) {
+        *first = 0;
+        *last = n;
+
+        return true;
+    }
+
+    if (ch >= n) {
+        return false;
+    }
+
+    *first = ch;
+    *last = (uint8_t)(ch + 1);
+
+    return true;
+}
+
+/* A read has to answer with one value, so reading "all" answers for the first
+ * channel rather than refusing.
+ */
+static uint8_t channel_for_read(uint8_t ch) {
+    return (ch == ZMK_VFX_CH_ALL || ch >= channel_count()) ? 0 : ch;
+}
+
+int zmk_vfx_on(uint8_t ch) {
     if (!device_is_ready(led_strip)) {
         return -ENODEV;
     }
 
-    state.on = true;
+    uint8_t first, last;
+
+    if (!channel_span(ch, &first, &last)) {
+        return -EINVAL;
+    }
+
+    for (uint8_t i = first; i < last; i++) {
+        state.chan[i].on = true;
+    }
+
     frame_dirty = true;
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_POWER_GATE)
@@ -469,44 +614,92 @@ int zmk_vfx_on(void) {
     return zmk_vfx_save_state();
 }
 
-int zmk_vfx_off(void) {
+int zmk_vfx_off(uint8_t ch) {
     if (!device_is_ready(led_strip)) {
         return -ENODEV;
     }
 
-    state.on = false;
-    k_timer_stop(&vfx_timer);
-    blank_strip();
+    uint8_t first, last;
+
+    if (!channel_span(ch, &first, &last)) {
+        return -EINVAL;
+    }
+
+    for (uint8_t i = first; i < last; i++) {
+        state.chan[i].on = false;
+    }
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_SKIP_UNCHANGED_FRAMES)
     last_sent_valid = false;
 #endif
 
+    /* The strip is one device, so it only stops being driven once every
+     * channel has gone dark. Turning one off while another still runs is a
+     * redraw with that channel's pixels blacked out.
+     */
+    if (any_channel_on()) {
+        zmk_vfx_request_frame();
+    } else {
+        k_timer_stop(&vfx_timer);
+        blank_strip();
+    }
+
     return zmk_vfx_save_state();
 }
 
-int zmk_vfx_toggle(void) { return state.on ? zmk_vfx_off() : zmk_vfx_on(); }
+int zmk_vfx_toggle(uint8_t ch) { return zmk_vfx_is_on(ch) ? zmk_vfx_off(ch) : zmk_vfx_on(ch); }
 
-bool zmk_vfx_is_on(void) { return state.on; }
+bool zmk_vfx_is_on(uint8_t ch) {
+    if (ch == ZMK_VFX_CH_ALL) {
+        return any_channel_on();
+    }
 
-static void start_scene(uint8_t index) {
+    return ch < channel_count() && state.chan[ch].on;
+}
+
+static void start_scene(uint8_t ch, uint8_t index) {
+    struct vfx_chan_state *cs = &state.chan[ch];
+
 #if VFX_TRANSITION_MS > 0
-    if (index != state.scene) {
-        state.prev_scene = state.scene;
-        state.fade_start_ms = (uint32_t)((int64_t)k_uptime_get() + state.time_offset);
-        state.fading = true;
+    if (index != cs->scene) {
+        cs->prev_scene = cs->scene;
+        cs->fade_start_ms = (uint32_t)((int64_t)k_uptime_get() + state.time_offset);
+        cs->fading = true;
     }
 #endif
 
-    state.scene = index;
+    cs->scene = index;
 }
 
-int zmk_vfx_select_scene(uint8_t index) {
-    if (index >= vfx_scene_count()) {
+int zmk_vfx_select_scene(uint8_t ch, uint8_t index) {
+    uint8_t first, last;
+
+    if (!channel_span(ch, &first, &last)) {
         return -EINVAL;
     }
 
-    start_scene(index);
+    for (uint8_t i = first; i < last; i++) {
+        const struct vfx_channel *chan = vfx_channel_get(i);
+
+        if (!chan || chan->num_scenes == 0) {
+            continue;
+        }
+
+        /* Channels carry lists of their own length, so one index cannot fit
+         * them all. Naming a channel is exact; addressing every channel takes
+         * the nearest scene each one has rather than failing outright.
+         */
+        if (index >= chan->num_scenes) {
+            if (ch != ZMK_VFX_CH_ALL) {
+                return -EINVAL;
+            }
+
+            start_scene(i, (uint8_t)(chan->num_scenes - 1));
+            continue;
+        }
+
+        start_scene(i, index);
+    }
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_POWER_GATE)
     /* A new scene must not inherit the previous one's blackout countdown. */
@@ -518,14 +711,14 @@ int zmk_vfx_select_scene(uint8_t index) {
     return zmk_vfx_save_state();
 }
 
-int zmk_vfx_cycle_scene(int direction) {
-    return zmk_vfx_select_scene(zmk_vfx_calc_scene(direction));
+int zmk_vfx_cycle_scene(uint8_t ch, int direction) {
+    return zmk_vfx_select_scene(ch, zmk_vfx_calc_scene(ch, direction));
 }
 
-uint8_t zmk_vfx_current_scene(void) { return state.scene; }
+uint8_t zmk_vfx_current_scene(uint8_t ch) { return state.chan[channel_for_read(ch)].scene; }
 
-const char *zmk_vfx_scene_name(uint8_t index) {
-    const struct vfx_scene *scene = vfx_scene_get(index);
+const char *zmk_vfx_scene_name(uint8_t ch, uint8_t index) {
+    const struct vfx_scene *scene = channel_scene(channel_for_read(ch), index);
 
     return scene ? scene->name : NULL;
 }
@@ -533,57 +726,98 @@ const char *zmk_vfx_scene_name(uint8_t index) {
 #define VFX_BRT_STEP (255 / 10)
 #define VFX_HUE_STEP 10
 
-uint8_t zmk_vfx_calc_scene(int direction) {
-    const uint8_t count = vfx_scene_count();
+uint8_t zmk_vfx_calc_scene(uint8_t ch, int direction) {
+    const uint8_t i = channel_for_read(ch);
+    const struct vfx_channel *chan = vfx_channel_get(i);
 
-    return (uint8_t)(((int)state.scene + count + direction) % count);
+    if (!chan || chan->num_scenes == 0) {
+        return 0;
+    }
+
+    return (uint8_t)(((int)state.chan[i].scene + chan->num_scenes + direction) % chan->num_scenes);
 }
 
-uint8_t zmk_vfx_calc_brightness(int direction) {
-    return (uint8_t)CLAMP((int)state.brightness + direction * VFX_BRT_STEP, 0, 255);
+uint8_t zmk_vfx_calc_brightness(uint8_t ch, int direction) {
+    return (uint8_t)CLAMP((int)state.chan[channel_for_read(ch)].brightness +
+                              direction * VFX_BRT_STEP,
+                          0, 255);
 }
 
-uint8_t zmk_vfx_calc_speed(int direction) {
-    return (uint8_t)CLAMP((int)state.speed + direction, 1, 5);
+uint8_t zmk_vfx_calc_speed(uint8_t ch, int direction) {
+    return (uint8_t)CLAMP((int)state.chan[channel_for_read(ch)].speed + direction, 1, 5);
 }
 
-uint16_t zmk_vfx_calc_hue(int direction) {
-    return vfx_hue_add((uint16_t)state.hue_shift, (int16_t)(direction * VFX_HUE_STEP));
+uint16_t zmk_vfx_calc_hue(uint8_t ch, int direction) {
+    return vfx_hue_add((uint16_t)state.chan[channel_for_read(ch)].hue_shift,
+                       (int16_t)(direction * VFX_HUE_STEP));
 }
 
-int zmk_vfx_set_brightness(uint8_t value) {
-    state.brightness = value;
+int zmk_vfx_set_brightness(uint8_t ch, uint8_t value) {
+    uint8_t first, last;
+
+    if (!channel_span(ch, &first, &last)) {
+        return -EINVAL;
+    }
+
+    for (uint8_t i = first; i < last; i++) {
+        state.chan[i].brightness = value;
+    }
+
     zmk_vfx_request_frame();
 
     return zmk_vfx_save_state();
 }
 
-int zmk_vfx_set_speed(uint8_t value) {
-    state.speed = (uint8_t)CLAMP(value, 1, 5);
+int zmk_vfx_set_speed(uint8_t ch, uint8_t value) {
+    uint8_t first, last;
+
+    if (!channel_span(ch, &first, &last)) {
+        return -EINVAL;
+    }
+
+    for (uint8_t i = first; i < last; i++) {
+        state.chan[i].speed = (uint8_t)CLAMP(value, 1, 5);
+    }
+
     zmk_vfx_request_frame();
 
     return zmk_vfx_save_state();
 }
 
-int zmk_vfx_set_hue(uint16_t degrees) {
-    /* Kept in 0-359 so the stored value never depends on how it was reached. */
-    state.hue_shift = (int16_t)(degrees % 360);
+int zmk_vfx_set_hue(uint8_t ch, uint16_t degrees) {
+    uint8_t first, last;
+
+    if (!channel_span(ch, &first, &last)) {
+        return -EINVAL;
+    }
+
+    for (uint8_t i = first; i < last; i++) {
+        /* Kept in 0-359 so the stored value never depends on how it was
+         * reached.
+         */
+        state.chan[i].hue_shift = (int16_t)(degrees % 360);
+    }
+
     zmk_vfx_request_frame();
 
     return zmk_vfx_save_state();
 }
 
-int zmk_vfx_change_brightness(int direction) {
-    return zmk_vfx_set_brightness(zmk_vfx_calc_brightness(direction));
+int zmk_vfx_change_brightness(uint8_t ch, int direction) {
+    return zmk_vfx_set_brightness(ch, zmk_vfx_calc_brightness(ch, direction));
 }
 
-int zmk_vfx_change_speed(int direction) { return zmk_vfx_set_speed(zmk_vfx_calc_speed(direction)); }
+int zmk_vfx_change_speed(uint8_t ch, int direction) {
+    return zmk_vfx_set_speed(ch, zmk_vfx_calc_speed(ch, direction));
+}
 
-int zmk_vfx_change_hue(int direction) { return zmk_vfx_set_hue(zmk_vfx_calc_hue(direction)); }
+int zmk_vfx_change_hue(uint8_t ch, int direction) {
+    return zmk_vfx_set_hue(ch, zmk_vfx_calc_hue(ch, direction));
+}
 
-uint8_t zmk_vfx_get_brightness(void) { return state.brightness; }
-uint8_t zmk_vfx_get_speed(void) { return state.speed; }
-int16_t zmk_vfx_get_hue_shift(void) { return state.hue_shift; }
+uint8_t zmk_vfx_get_brightness(uint8_t ch) { return state.chan[channel_for_read(ch)].brightness; }
+uint8_t zmk_vfx_get_speed(uint8_t ch) { return state.chan[channel_for_read(ch)].speed; }
+int16_t zmk_vfx_get_hue_shift(uint8_t ch) { return state.chan[channel_for_read(ch)].hue_shift; }
 
 void zmk_vfx_set_time_offset(int32_t offset_ms) { state.time_offset = offset_ms; }
 int32_t zmk_vfx_get_time_offset(void) { return state.time_offset; }
@@ -606,10 +840,25 @@ void zmk_vfx_apply_sync(uint32_t central_time_ms) {
     zmk_vfx_request_frame();
 }
 
-void zmk_vfx_inject_key(uint32_t position) {
-    const struct vfx_frame_ctx ctx = build_ctx();
+/* A press belongs to the board, not to a channel, so every lit channel gets
+ * told: a reactive scene on the keys and an ambient one on the underglow both
+ * have a claim on it.
+ */
+static void fan_key_event(uint32_t position, bool pressed) {
+    for (uint8_t ch = 0; ch < channel_count(); ch++) {
+        if (!state.chan[ch].on) {
+            continue;
+        }
 
-    vfx_scene_key_event(vfx_scene_get(state.scene), &ctx, position, true, ctx.time_ms);
+        const struct vfx_frame_ctx ctx = build_ctx(ch);
+
+        vfx_scene_key_event(channel_scene(ch, state.chan[ch].scene), &ctx, position, pressed,
+                            ctx.time_ms);
+    }
+}
+
+void zmk_vfx_inject_key(uint32_t position) {
+    fan_key_event(position, true);
     zmk_vfx_request_frame();
 }
 
@@ -618,12 +867,12 @@ static bool on_before_idle;
 
 static int vfx_auto_off(bool awake) {
     if (awake) {
-        return on_before_idle ? zmk_vfx_on() : 0;
+        return on_before_idle ? zmk_vfx_on(ZMK_VFX_CH_ALL) : 0;
     }
 
-    on_before_idle = state.on;
+    on_before_idle = any_channel_on();
 
-    return state.on ? zmk_vfx_off() : 0;
+    return on_before_idle ? zmk_vfx_off(ZMK_VFX_CH_ALL) : 0;
 }
 #endif
 
@@ -637,10 +886,7 @@ static int vfx_event_listener(const zmk_event_t *eh) {
          * reactive is idle until exactly this moment, and would otherwise
          * stay parked with the rail gated.
          */
-        const struct vfx_frame_ctx ctx = build_ctx();
-
-        vfx_scene_key_event(vfx_scene_get(state.scene), &ctx, pos->position, pos->state,
-                            ctx.time_ms);
+        fan_key_event(pos->position, pos->state);
 
         if (pos->state) {
             zmk_vfx_request_frame();
@@ -669,13 +915,15 @@ static int vfx_event_listener(const zmk_event_t *eh) {
              * choice is not persisted: it follows the layer, and saving it
              * would overwrite whatever scene the user actually picked.
              */
-            const int16_t want = vfx_layer_scene_index(status->active_layer);
+            for (uint8_t ch = 0; ch < channel_count(); ch++) {
+                const int16_t want = vfx_layer_scene_index(status->active_layer, ch);
 
-            if (want >= 0 && (uint8_t)want != state.scene) {
-                start_scene((uint8_t)want);
+                if (want >= 0 && (uint8_t)want != state.chan[ch].scene) {
+                    start_scene(ch, (uint8_t)want);
 #if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_POWER_GATE)
-                vfx_power_reset(&power_ctl);
+                    vfx_power_reset(&power_ctl);
 #endif
+                }
             }
         }
 #endif
@@ -777,18 +1025,27 @@ static int zmk_vfx_init(void) {
         return -ENODEV;
     }
 
-    state.scene = vfx_scene_default_index();
-    state.brightness = (uint8_t)((uint16_t)CONFIG_ZMK_VFX_BRT_START * 255U / 100U);
-    state.speed = CONFIG_ZMK_VFX_SPD_START;
-    state.hue_shift = 0;
+    if (vfx_channel_count() > VFX_MAX_CHANNELS) {
+        LOG_WRN("%d channels declared but only %d are supported; the rest stay dark",
+                vfx_channel_count(), VFX_MAX_CHANNELS);
+    }
+
+    for (uint8_t ch = 0; ch < channel_count(); ch++) {
+        state.chan[ch].scene = vfx_channel_default_index(ch);
+        state.chan[ch].brightness = (uint8_t)((uint16_t)CONFIG_ZMK_VFX_BRT_START * 255U / 100U);
+        state.chan[ch].speed = CONFIG_ZMK_VFX_SPD_START;
+        state.chan[ch].hue_shift = 0;
+        state.chan[ch].on = IS_ENABLED(CONFIG_ZMK_VFX_ON_START);
+    }
+
     state.time_offset = 0;
-    state.on = IS_ENABLED(CONFIG_ZMK_VFX_ON_START);
 
     /* Zones written as key positions need the key map and this half's offset,
-     * so they can only be turned into pixel indices now.
+     * so they can only be turned into pixel indices now. Any channel's context
+     * carries the same map, so the first one will do.
      */
     {
-        const struct vfx_frame_ctx ctx = build_ctx();
+        const struct vfx_frame_ctx ctx = build_ctx(0);
 
         vfx_resolve_key_zones(&ctx);
     }
@@ -801,10 +1058,10 @@ static int zmk_vfx_init(void) {
      */
 #endif
 
-    LOG_INF("VFX ready: %d pixels, %d scenes, %d fps", STRIP_NUM_PIXELS, vfx_scene_count(),
-            VFX_FPS);
+    LOG_INF("VFX ready: %d pixels, %d scenes, %d channels, %d fps", STRIP_NUM_PIXELS,
+            vfx_scene_count(), channel_count(), VFX_FPS);
 
-    if (state.on) {
+    if (any_channel_on()) {
         k_timer_start(&vfx_timer, K_NO_WAIT, K_MSEC(VFX_FRAME_MS));
     }
 
