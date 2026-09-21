@@ -53,6 +53,19 @@ uint8_t zmk_vfx_calc_brightness(uint8_t ch, int direction);
 uint8_t zmk_vfx_calc_speed(uint8_t ch, int direction);
 uint16_t zmk_vfx_calc_hue(uint8_t ch, int direction);
 
+/* Adjust one tuning slot, for layers that opted in with a tune-id. These
+ * address a slot rather than a channel: a slot is a handle on particular
+ * layers wherever they sit, which is what makes it the thing a host would
+ * name when changing something live.
+ *
+ * -EINVAL for a slot outside 1..VFX_TUNE_SLOTS-1, so a request relayed from
+ * somewhere else can be refused rather than quietly doing nothing.
+ */
+int zmk_vfx_tune_hue(uint8_t slot, int16_t degrees);
+int zmk_vfx_tune_level(uint8_t slot, uint8_t level);
+int zmk_vfx_tune_speed(uint8_t slot, uint8_t speed);
+int zmk_vfx_tune_reset(uint8_t slot);
+
 /* Persist the current state, debounced. */
 int zmk_vfx_save_state(void);
 

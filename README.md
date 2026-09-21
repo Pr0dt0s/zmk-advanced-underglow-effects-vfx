@@ -710,6 +710,82 @@ Note that "position" means position **along the strip**, not physical location:
 a serpentine strip makes a gradient snake rather than sweep. The simulator lets
 you pick the wiring so you can see what yours will do.
 
+## Adjusting a layer while the keyboard runs
+
+Everything on a layer is fixed in flash by devicetree and cannot be written
+to. Give one a `tune-id` and three things about it become adjustable at
+runtime — hue, level and speed:
+
+```dts
+wash {
+    compatible = "zmk,vfx-layer-gradient";
+    zone = <&vfx_all>;
+    stops = <VFX_HSB(200, 100, 40) VFX_HSB(280, 100, 60)>;
+    tune-id = <1>;
+};
+```
+
+```dts
+&vfx VFX_TUNE_LEVEL(1, 80)    // dim whatever is on slot 1
+&vfx VFX_TUNE_HUE(1, 120)     // rotate its colours
+&vfx VFX_TUNE_RESET(1)        // back to what devicetree said
+```
+
+Layers sharing an id move together, so a scene built from several of them
+dims as one thing. Slots run 1 to 7; 0 means a layer never opted in. The
+values persist.
+
+Those three were not chosen for being easy. They are the ones that ride paths
+the compositor already had — hue and speed by handing the layer its own frame
+context, level by folding into the opacity it was going to be blended with —
+so **no generator knows this exists and tuning costs nothing per pixel**. The
+alternative, moving every generator's configuration from flash into RAM to
+make any field writable, costs memory on every board whether or not anything
+is ever adjusted.
+
+### What this is not
+
+This is not runtime scene authoring. You cannot add a layer, change a
+generator or repoint a zone on a running keyboard: those live in flash, built
+by devicetree at compile time, and reaching them means a different data model
+(a RAM scene representation, bounded pools, serialisation) rather than a
+different transport. The composer in the simulator is the answer to that for
+now — design there, paste the devicetree, flash once.
+
+Nor does anything here talk to a host yet. `zmk_vfx_tune_*()` is the API a
+transport would call; see the roadmap.
+
+## Roadmap
+
+Honest about what is missing rather than implied by the rest of this file.
+
+**Host control.** The tuning API above is deliberately transport-independent,
+because the transport is a live question. ZMK Studio's RPC supports custom
+subsystems a module can register, which is the idiomatic route, but that
+support is not upstream: the modules using it pin a forked ZMK at
+`main+custom-studio-protocol`. `zzeneg/zmk-raw-hid` needs no fork and is
+bidirectional over USB and BLE, which makes it the pragmatic first target. A
+UI would then drive `zmk_vfx_tune_*()`, and the simulator's composer is most
+of the interface already.
+
+**Runtime scene authoring.** Adding and removing layers on a running board,
+as above. Wants a RAM scene model with bounded layer and config pools, and a
+way to persist what was built. Much larger than tuning, and worth doing only
+once tuning has shown the transport works.
+
+**Channels in the simulator.** The page renders one scene across the strip,
+so the separate scene, brightness and hue each channel carries at runtime
+have no equivalent there. Zones show the same pixels running different
+effects, which covers the look but not the control.
+
+**Caps word.** ZMK exposes neither a state accessor nor an event for it, so
+the indicator cannot be driven. Nothing to do here until that changes
+upstream.
+
+**More measured board maps.** `pandakb-lily58.dtsi` has the thumb cluster
+order and the underglow chain order still inferred rather than measured. Both
+are a pixel sweep away for anyone with the hardware in front of them.
+
 ## Licence
 
 MIT.

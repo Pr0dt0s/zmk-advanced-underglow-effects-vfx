@@ -284,6 +284,12 @@ struct vfx_layer {
     uint8_t opacity_src;  /* VFX_SRC_*; VFX_SRC_NONE leaves opacity alone */
     uint8_t opacity_min;  /* opacity when the signal reads zero */
     uint8_t opacity_full; /* signal value that reaches full opacity */
+
+    /* Tuning slot this layer answers to, or 0 for none. See zmk/vfx/tuning.h:
+     * everything else here is fixed in flash by devicetree, and this is the
+     * one handle a running keyboard has on it.
+     */
+    uint8_t tune_id;
 };
 
 struct vfx_scene {

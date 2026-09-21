@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include <zmk/vfx/engine.h>
+#include <zmk/vfx/tuning.h>
 #include <zmk/vfx/layers.h>
 #include <zmk/vfx/power.h>
 #include <zmk/vfx/status.h>
@@ -2496,6 +2497,109 @@ static void test_isqrt(void) {
     }
 }
 
+/* ------------------------------------------------------------------ tuning */
+
+/* A layer carrying a tune-id can be adjusted while the keyboard runs, which
+ * nothing else about a layer can be: the rest is fixed in flash by devicetree.
+ */
+static const struct vfx_zone tune_zone = {.pixels = NULL, .start = 0, .len = NPX};
+static const struct vfx_solid_cfg tune_cfg = {.color = VFX_HSB(0, 100, 100)};
+static struct vfx_solid_state tune_st;
+
+static struct vfx_rgb render_tuned(uint8_t tune_id) {
+    const struct vfx_layer layers[] = {{
+        .api = &vfx_layer_solid_api,
+        .zone = &tune_zone,
+        .config = &tune_cfg,
+        .state = &tune_st,
+        .blend = VFX_BLEND_NORMAL,
+        .opacity = 255,
+        .tune_id = tune_id,
+    }};
+    const struct vfx_scene scene = {.name = "tune", .layers = layers, .num_layers = 1};
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    return out[0];
+}
+
+static void test_tuning_leaves_untuned_layers_alone(void) {
+    vfx_tuning_reset_all();
+    CHECK(vfx_tuning_set_level(1, 0), "slot 1 must be settable");
+
+    /* Slot 0 means the layer never opted in, so dimming slot 1 to nothing
+     * must not reach it.
+     */
+    struct vfx_rgb px = render_tuned(0);
+
+    CHECK(px.r > 0, "an untuned layer must ignore the tuning table");
+}
+
+static void test_tuning_level_dims(void) {
+    vfx_tuning_reset_all();
+
+    const struct vfx_rgb full = render_tuned(1);
+
+    CHECK(vfx_tuning_set_level(1, 64), "slot 1 must be settable");
+
+    const struct vfx_rgb dimmed = render_tuned(1);
+
+    CHECK(dimmed.r < full.r && dimmed.r > 0, "level must dim rather than cut: %d -> %d",
+          full.r, dimmed.r);
+}
+
+static void test_tuning_hue_rotates(void) {
+    vfx_tuning_reset_all();
+
+    const struct vfx_rgb red = render_tuned(1);
+
+    CHECK(red.r > red.g, "the layer starts red");
+
+    CHECK(vfx_tuning_set_hue(1, 120), "slot 1 must be settable");
+
+    const struct vfx_rgb green = render_tuned(1);
+
+    CHECK(green.g > green.r, "a hue of 120 must turn it green: %d,%d,%d", green.r, green.g,
+          green.b);
+}
+
+static void test_tuning_rejects_bad_slots(void) {
+    CHECK(!vfx_tuning_set_level(0, 128), "slot 0 means untuned and must be refused");
+    CHECK(!vfx_tuning_set_level(VFX_TUNE_SLOTS, 128), "a slot past the end must be refused");
+    CHECK(vfx_tuning_get(0) == NULL, "slot 0 must read as absent");
+    CHECK(vfx_tuning_get(VFX_TUNE_SLOTS) == NULL, "a slot past the end must read as absent");
+}
+
+static void test_tuning_does_not_leak_between_layers(void) {
+    vfx_tuning_reset_all();
+    CHECK(vfx_tuning_set_hue(1, 120), "slot 1 must be settable");
+
+    /* The tuned layer is drawn first and must not leave its adjustment on the
+     * context the next layer is handed.
+     */
+    static const struct vfx_zone lower = {.pixels = NULL, .start = 0, .len = 1};
+    static const struct vfx_zone upper = {.pixels = NULL, .start = 1, .len = 1};
+    const struct vfx_layer layers[] = {
+        {.api = &vfx_layer_solid_api, .zone = &lower, .config = &tune_cfg, .state = &tune_st,
+         .blend = VFX_BLEND_NORMAL, .opacity = 255, .tune_id = 1},
+        {.api = &vfx_layer_solid_api, .zone = &upper, .config = &tune_cfg, .state = &tune_st,
+         .blend = VFX_BLEND_NORMAL, .opacity = 255, .tune_id = 0},
+    };
+    const struct vfx_scene scene = {.name = "leak", .layers = layers, .num_layers = 2};
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    vfx_render_frame(&scene, &ctx, out, NULL);
+
+    CHECK(out[0].g > out[0].r, "the tuned layer is rotated to green");
+    CHECK(out[1].r > out[1].g, "the untuned layer beside it stays red: %d,%d,%d", out[1].r,
+          out[1].g, out[1].b);
+}
+
 int main(void) {
     struct {
         const char *name;
@@ -2583,6 +2687,11 @@ int main(void) {
         {"matrix rain identical on both halves", test_matrix_rain_identical_on_both_halves},
         {"matrix rain lands where the leds are", test_matrix_rain_lands_where_the_leds_are},
         {"matrix falls back to the strip", test_matrix_falls_back_to_the_strip},
+        {"tuning leaves untuned layers alone", test_tuning_leaves_untuned_layers_alone},
+        {"tuning level dims", test_tuning_level_dims},
+        {"tuning hue rotates", test_tuning_hue_rotates},
+        {"tuning rejects bad slots", test_tuning_rejects_bad_slots},
+        {"tuning does not leak between layers", test_tuning_does_not_leak_between_layers},
     };
 
     for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {

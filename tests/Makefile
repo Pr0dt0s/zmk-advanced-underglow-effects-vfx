@@ -10,7 +10,7 @@ CPPFLAGS = -DVFX_SIM -I../include
 LDLIBS   = -lm
 
 CORE = ../src/color.c ../src/zone.c ../src/render.c ../src/power_policy.c \
-       ../src/mathtab.c ../src/status.c ../src/sync_policy.c \
+       ../src/mathtab.c ../src/status.c ../src/tuning.c ../src/sync_policy.c \
        ../src/layers/solid.c ../src/layers/gradient.c ../src/layers/ambient.c \
        ../src/layers/reactive.c ../src/layers/indicators.c ../src/layers/water.c ../src/layers/matrix.c ../src/layers/cross.c ../src/layers/fire.c ../src/layers/comet.c
 

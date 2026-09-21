@@ -8,6 +8,7 @@
 
 #include <zmk/vfx/engine.h>
 #include <zmk/vfx/status.h>
+#include <zmk/vfx/tuning.h>
 
 /* How strongly a layer shows this frame.
  *
@@ -68,22 +69,52 @@ void vfx_render_frame(const struct vfx_scene *scene, const struct vfx_frame_ctx 
         for (uint8_t l = 0; l < scene->num_layers; l++) {
             const struct vfx_layer *layer = &scene->layers[l];
 
-            const uint8_t opacity = layer_opacity(layer);
+            uint8_t opacity = layer_opacity(layer);
+
+            /* A tuned layer is handed a context of its own rather than having
+             * its configuration rewritten, so hue and speed arrive by the
+             * same route the channel's own already do and no generator needs
+             * to know that anything was adjusted.
+             */
+            const struct vfx_tuning *tune = vfx_tuning_get(layer->tune_id);
+
+            /* Kept local rather than written back over ctx, which is the
+             * whole scene's and would carry one layer's adjustment into
+             * every layer drawn after it.
+             */
+            const struct vfx_frame_ctx *lctx = ctx;
+            struct vfx_frame_ctx tuned;
+
+            if (tune) {
+                tuned = *ctx;
+                tuned.hue_shift = (int16_t)(ctx->hue_shift + tune->hue);
+
+                if (tune->speed) {
+                    tuned.speed = tune->speed;
+                }
+
+                /* Level rides the opacity this layer was going to be blended
+                 * with, which is already a multiply, rather than becoming a
+                 * second brightness pass over every pixel.
+                 */
+                opacity = (uint8_t)((uint16_t)opacity * tune->level / 255U);
+                lctx = &tuned;
+            }
 
             if (opacity == 0) {
                 continue;
             }
 
             if (layer->api->frame) {
-                layer->api->frame(layer, ctx);
+                layer->api->frame(layer, lctx);
             }
 
-            const uint16_t len = vfx_zone_clamped_len(layer->zone, ctx->num_pixels);
+            const uint16_t len = vfx_zone_clamped_len(layer->zone, lctx->num_pixels);
 
             for (uint16_t z = 0; z < len; z++) {
                 const uint16_t p = vfx_zone_pixel(layer->zone, z);
 
-                if (p >= ctx->num_pixels) {
+                if (p >= lctx->num_pixels) {
                     continue; /* explicit pixel list overshooting a short strip */
                 }
 
@@ -93,7 +124,7 @@ void vfx_render_frame(const struct vfx_scene *scene, const struct vfx_frame_ctx 
                  * Returning black instead would be wrong for every blend mode
                  * except NORMAL, and wasteful for that one.
                  */
-                if (!layer->api->pixel(layer, ctx, z, p, &src)) {
+                if (!layer->api->pixel(layer, lctx, z, p, &src)) {
                     continue;
                 }
 

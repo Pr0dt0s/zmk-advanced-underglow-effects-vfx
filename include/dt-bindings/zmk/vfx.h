@@ -101,6 +101,16 @@
 #define VFX_SYNC_CMD 16
 #define VFX_KEY_CMD 17
 
+/* Adjusting one tuning slot rather than the whole channel, for layers that
+ * opted in with a tune-id. param2 packs the slot into its high byte and the
+ * value into the low one, since param1 is already carrying the command and
+ * the channel.
+ */
+#define VFX_TUNE_HUE_CMD 18
+#define VFX_TUNE_LEVEL_CMD 19
+#define VFX_TUNE_SPEED_CMD 20
+#define VFX_TUNE_RESET_CMD 21
+
 #define VFX_TOG VFX_TOG_CMD 0
 #define VFX_ON VFX_ON_CMD 0
 #define VFX_OFF VFX_OFF_CMD 0
@@ -155,3 +165,18 @@
 #define VFX_SET_BRT_ON(ch, v) VFX_CMD_ON(VFX_SET_BRT_CMD, ch) v
 #define VFX_SET_SPD_ON(ch, v) VFX_CMD_ON(VFX_SET_SPD_CMD, ch) v
 #define VFX_SET_HUE_ON(ch, v) VFX_CMD_ON(VFX_SET_HUE_CMD, ch) v
+
+/* Adjusting a tuning slot, for layers carrying a matching tune-id.
+ *
+ * These address a slot rather than a channel, because a slot is a handle on
+ * particular layers wherever they sit. Hue is in degrees, level 0-255, speed
+ * 1-5 with 0 handing the layer back to its channel.
+ *
+ *   &vfx VFX_TUNE_LEVEL(1, 80)   dim whatever is on slot 1
+ */
+#define VFX_TUNE_ARG(slot, v) ((((slot) & 0xFF) << 8) | ((v) & 0xFF))
+
+#define VFX_TUNE_HUE(slot, deg) VFX_TUNE_HUE_CMD ((((slot) & 0xFF) << 16) | ((deg) & 0x1FF))
+#define VFX_TUNE_LEVEL(slot, v) VFX_TUNE_LEVEL_CMD VFX_TUNE_ARG(slot, v)
+#define VFX_TUNE_SPEED(slot, v) VFX_TUNE_SPEED_CMD VFX_TUNE_ARG(slot, v)
+#define VFX_TUNE_RESET(slot) VFX_TUNE_RESET_CMD VFX_TUNE_ARG(slot, 0)

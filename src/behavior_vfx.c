@@ -183,6 +183,22 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
     case VFX_SET_HUE_CMD:
         return zmk_vfx_set_hue(ch, (uint16_t)binding->param2);
 
+    /* These name a tuning slot rather than a channel, so they read param2
+     * rather than ch: a slot is a handle on particular layers wherever they
+     * happen to sit.
+     */
+    case VFX_TUNE_HUE_CMD:
+        return zmk_vfx_tune_hue((uint8_t)((binding->param2 >> 16) & 0xFF),
+                                (int16_t)(binding->param2 & 0x1FF));
+    case VFX_TUNE_LEVEL_CMD:
+        return zmk_vfx_tune_level((uint8_t)((binding->param2 >> 8) & 0xFF),
+                                  (uint8_t)(binding->param2 & 0xFF));
+    case VFX_TUNE_SPEED_CMD:
+        return zmk_vfx_tune_speed((uint8_t)((binding->param2 >> 8) & 0xFF),
+                                  (uint8_t)(binding->param2 & 0xFF));
+    case VFX_TUNE_RESET_CMD:
+        return zmk_vfx_tune_reset((uint8_t)((binding->param2 >> 8) & 0xFF));
+
     /* Relayed from the central in synchronised split mode. These never appear
      * in a keymap; they arrive through ZMK's behavior relay, which is why
      * they ride this behavior rather than a GATT service of their own.

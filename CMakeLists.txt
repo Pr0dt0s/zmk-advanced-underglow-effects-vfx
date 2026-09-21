@@ -24,6 +24,7 @@ if(CONFIG_ZMK_VFX)
     src/power_policy.c
     src/mathtab.c
     src/status.c
+    src/tuning.c
     src/sync_policy.c
     src/layers/solid.c
     src/layers/gradient.c

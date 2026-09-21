@@ -17,6 +17,7 @@
 #include <zmk/vfx/scenes.h>
 #include <zmk/vfx/status.h>
 #include <zmk/vfx/sync.h>
+#include <zmk/vfx/tuning.h>
 #include <zmk/vfx/vfx.h>
 #include <zmk/workqueue.h>
 
@@ -481,10 +482,41 @@ static void vfx_save_work_handler(struct k_work *work) {
     ARG_UNUSED(work);
 
     settings_save_one("vfx/state", &state, sizeof(state));
+
+    /* Saved apart from the channel table rather than folded into it: tuning
+     * belongs to layers, not to channels, and keeping them separate means
+     * adding a channel does not invalidate what was tuned.
+     */
+    uint16_t tune_len;
+    const void *tune = vfx_tuning_state(&tune_len);
+
+    settings_save_one("vfx/tune", tune, tune_len);
 }
 
 static int vfx_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg) {
     const char *next;
+
+    if (settings_name_steq(name, "tune", &next) && !next) {
+        uint16_t tune_len;
+        void *tune = vfx_tuning_state(&tune_len);
+
+        if (len != tune_len) {
+            /* More slots than the saved blob knew about, so the rest would be
+             * read as zero, which is every tuned layer dimmed away.
+             */
+            return -EINVAL;
+        }
+
+        const int rc = read_cb(cb_arg, tune, tune_len);
+
+        if (rc < 0) {
+            return rc;
+        }
+
+        frame_dirty = true;
+
+        return 0;
+    }
 
     if (!settings_name_steq(name, "state", &next) || next) {
         return -ENOENT;
@@ -819,6 +851,37 @@ int zmk_vfx_change_hue(uint8_t ch, int direction) {
     return zmk_vfx_set_hue(ch, zmk_vfx_calc_hue(ch, direction));
 }
 
+/* Tuning is not channel state, so it neither reads nor writes the channel
+ * table; it only has to be saved and to force a redraw.
+ */
+static int tuned(bool ok) {
+    if (!ok) {
+        return -EINVAL;
+    }
+
+    zmk_vfx_request_frame();
+
+    return zmk_vfx_save_state();
+}
+
+int zmk_vfx_tune_hue(uint8_t slot, int16_t degrees) {
+    return tuned(vfx_tuning_set_hue(slot, degrees));
+}
+
+int zmk_vfx_tune_level(uint8_t slot, uint8_t level) {
+    return tuned(vfx_tuning_set_level(slot, level));
+}
+
+int zmk_vfx_tune_speed(uint8_t slot, uint8_t speed) {
+    return tuned(vfx_tuning_set_speed(slot, speed));
+}
+
+int zmk_vfx_tune_reset(uint8_t slot) {
+    vfx_tuning_reset(slot);
+
+    return tuned(true);
+}
+
 uint8_t zmk_vfx_get_brightness(uint8_t ch) { return state.chan[channel_for_read(ch)].brightness; }
 uint8_t zmk_vfx_get_speed(uint8_t ch) { return state.chan[channel_for_read(ch)].speed; }
 int16_t zmk_vfx_get_hue_shift(uint8_t ch) { return state.chan[channel_for_read(ch)].hue_shift; }
@@ -1043,6 +1106,11 @@ static int zmk_vfx_init(void) {
         LOG_ERR("LED strip device %s is not ready", led_strip->name);
         return -ENODEV;
     }
+
+    /* Zeroed storage would read as every tuned layer dimmed to nothing, so
+     * the table gets its defaults before anything can render with it.
+     */
+    vfx_tuning_reset_all();
 
     if (vfx_channel_count() > VFX_MAX_CHANNELS) {
         LOG_WRN("%d channels declared but only %d are supported; the rest stay dark",

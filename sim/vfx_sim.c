@@ -21,6 +21,7 @@
 #include <zmk/vfx/layers.h>
 #include <zmk/vfx/power.h>
 #include <zmk/vfx/status.h>
+#include <zmk/vfx/tuning.h>
 #include <zmk/vfx/sync.h>
 
 #define EXPORT __attribute__((visibility("default")))
@@ -162,6 +163,8 @@ EXPORT void vfx_sim_init(int num_pixels, int virtual_length, int strip_offset) {
         num_pixels = MAX_PIXELS;
     }
 
+    vfx_tuning_reset_all();
+
     ctx.num_pixels = (uint16_t)num_pixels;
     ctx.virtual_length = (uint16_t)(virtual_length > 0 ? virtual_length : num_pixels);
     ctx.strip_offset = (uint16_t)(strip_offset > 0 ? strip_offset : 0);
@@ -253,6 +256,7 @@ static struct vfx_layer *next_layer(int zone, int blend, int opacity) {
     l->opacity_src = VFX_SRC_NONE;
     l->opacity_min = 0;
     l->opacity_full = 0;
+    l->tune_id = 0;
 
     return l;
 }
@@ -260,6 +264,25 @@ static struct vfx_layer *next_layer(int zone, int blend, int opacity) {
 /* Called after an add_*, since the source is the same question for every
  * generator and threading it through fifteen signatures would say otherwise.
  */
+/* Which tuning slot a layer answers to, set after the add for the same reason
+ * the opacity source is: it is the same question for every generator.
+ */
+EXPORT void vfx_sim_set_layer_tune(int layer, int slot) {
+    if (layer < 0 || layer >= num_layers) {
+        return;
+    }
+
+    layers[layer].tune_id = (uint8_t)slot;
+}
+
+EXPORT void vfx_sim_tune(int slot, int hue, int level, int speed) {
+    vfx_tuning_set_hue((uint8_t)slot, (int16_t)hue);
+    vfx_tuning_set_level((uint8_t)slot, (uint8_t)level);
+    vfx_tuning_set_speed((uint8_t)slot, (uint8_t)speed);
+}
+
+EXPORT void vfx_sim_tune_reset_all(void) { vfx_tuning_reset_all(); }
+
 EXPORT void vfx_sim_set_layer_source(int layer, int src, int min, int full) {
     if (layer < 0 || layer >= num_layers) {
         return;

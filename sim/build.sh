@@ -28,6 +28,7 @@ exports=(
   vfx_sim_sync_step vfx_sim_sync_max_slew vfx_sim_add_water vfx_sim_add_matrix vfx_sim_add_cross vfx_sim_add_fire vfx_sim_add_comet vfx_sim_set_positions
   vfx_sim_add_pulse vfx_sim_add_hold vfx_sim_add_dart vfx_sim_add_static
   vfx_sim_set_layer_source vfx_sim_set_active
+  vfx_sim_set_layer_tune vfx_sim_tune vfx_sim_tune_reset_all
 )
 
 args=(--target=wasm32 -nostdlib -O2 -flto -DVFX_SIM -I"$root/include"
@@ -42,6 +43,7 @@ clang "${args[@]}" \
   "$here/vfx_sim.c" \
   "$root/src/color.c" "$root/src/zone.c" "$root/src/render.c" \
   "$root/src/power_policy.c" "$root/src/mathtab.c" "$root/src/status.c" \
+  "$root/src/tuning.c" \
   "$root/src/sync_policy.c" \
   "$root/src/layers/solid.c" "$root/src/layers/gradient.c" \
   "$root/src/layers/ambient.c" "$root/src/layers/reactive.c" \

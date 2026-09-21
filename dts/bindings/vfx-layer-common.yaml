@@ -56,3 +56,18 @@ properties:
       suits percentages and is far too high for a WPM, so set it there.
 
       VFX_SRC_ACTIVITY ignores this, being a yes or no rather than a reading.
+
+  tune-id:
+    type: int
+    default: 0
+    description: |
+      Opt this layer into being adjusted while the keyboard runs, by hue,
+      level and speed, under the slot number given. 0, the default, means it
+      cannot be, and it is then used exactly as written here.
+
+      Layers sharing an id move together, which is how a scene built from
+      several of them dims as one thing rather than in pieces.
+
+      Everything else on a layer is fixed in flash by devicetree and cannot be
+      written to at all; these three are the handles a running keyboard has.
+      Slots run from 1 to VFX_TUNE_SLOTS - 1.

@@ -408,6 +408,7 @@ DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_ble_profile, VFX_BLE_PROFILE_DEFINE)
         .opacity_src = DT_PROP(node, opacity_source),                                             \
         .opacity_min = DT_PROP(node, opacity_min),                                                \
         .opacity_full = DT_PROP(node, opacity_full),                                              \
+        .tune_id = DT_PROP(node, tune_id),                                                        \
     },
 
 #define VFX_SCENE_DEFINE(node)                                                                     \
