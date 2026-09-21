@@ -18,6 +18,11 @@ static struct vfx_status status = {
     .ble_profile = 0,
     .ble_connected = false,
     .usb_output = false,
+
+    /* Assumed until told otherwise: a board that has just come up has someone
+     * at it, and starting dark would look like a fault.
+     */
+    .active = true,
 };
 
 const struct vfx_status *vfx_status_get(void) { return &status; }

@@ -272,7 +272,18 @@ struct vfx_layer {
     const void *config; /* generator specific, const: lives in flash */
     void *state;        /* generator specific, mutable */
     uint8_t blend;      /* VFX_BLEND_* */
-    uint8_t opacity;    /* 0-255 */
+    uint8_t opacity;    /* 0-255, and the value a driven layer reaches at full */
+
+    /* Optionally let something the keyboard knows drive how strongly this
+     * layer shows: typing speed, charge, whether anyone is at the keyboard.
+     *
+     * It lives here rather than in any one generator because it is the same
+     * question for all of them, and putting it in the compositor means every
+     * generator gains it without knowing that it did.
+     */
+    uint8_t opacity_src;  /* VFX_SRC_*; VFX_SRC_NONE leaves opacity alone */
+    uint8_t opacity_min;  /* opacity when the signal reads zero */
+    uint8_t opacity_full; /* signal value that reaches full opacity */
 };
 
 struct vfx_scene {

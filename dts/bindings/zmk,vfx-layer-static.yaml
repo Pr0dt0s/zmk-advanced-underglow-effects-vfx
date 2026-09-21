@@ -1,0 +1,44 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Independent randomness per pixel, re-rolled on a clock.
+
+  Twinkle carries a fade envelope and plasma is a smooth field, so neither can
+  be tuned into this: what is missing from both is pixels that have nothing to
+  do with their neighbours or with what they were a moment ago.
+
+  Like the other ambient generators it holds no state, deriving each roll from
+  the time and the pixel index, which is what keeps the two halves of a split
+  showing the same field without exchanging anything.
+
+compatible: "zmk,vfx-layer-static"
+
+include: vfx-layer-common.yaml
+
+properties:
+  color:
+    type: int
+    required: true
+    description: Packed VFX_HSB() the field is drawn in.
+
+  period-ms:
+    type: int
+    default: 90
+    description: |
+      How often the field is re-rolled. Short enough reads as noise, long
+      enough reads as a pattern that keeps changing its mind.
+
+  density:
+    type: int
+    default: 60
+    description: |
+      0-255 share of pixels lit in a roll. Low leaves a sparse scatter on
+      black; high fills the board and the effect becomes its flicker.
+
+  hue-spread:
+    type: int
+    default: 0
+    description: |
+      Degrees of hue jitter between pixels, so the field is not all one
+      colour. 0 keeps every lit pixel on the colour given.

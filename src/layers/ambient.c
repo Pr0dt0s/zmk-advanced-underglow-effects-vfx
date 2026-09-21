@@ -213,3 +213,59 @@ static bool plasma_pixel(const struct vfx_layer *layer, const struct vfx_frame_c
 const struct vfx_layer_api vfx_layer_plasma_api = {
     .pixel = plasma_pixel,
 };
+
+/* ------------------------------------------------------------------- static */
+
+/* Independent randomness per pixel, re-rolled on a clock.
+ *
+ * Twinkle carries a fade envelope and plasma is a smooth field, so neither
+ * can be tuned into this: what is missing from both is pixels that have
+ * nothing to do with their neighbours or with what they were a moment ago.
+ *
+ * Stateless, like the other ambient generators. Deriving the roll from the
+ * time bucket and the pixel index rather than remembering it is what keeps
+ * two halves of a split showing the same field without talking to each other.
+ */
+static bool static_pixel(const struct vfx_layer *layer, const struct vfx_frame_ctx *ctx,
+                         uint16_t zone_i, uint16_t strip_i, struct vfx_rgb *out) {
+    VFX_UNUSED(zone_i);
+
+    const struct vfx_static_cfg *cfg = layer->config;
+
+    if (cfg->period_ms == 0) {
+        return false;
+    }
+
+    const uint16_t vidx = vfx_virtual_idx(ctx, strip_i);
+    const uint32_t bucket = ((uint32_t)ctx->time_ms * ctx->speed / 3U) / cfg->period_ms;
+    const uint32_t h = vfx_hash32((uint32_t)vidx * 2654435761U ^ bucket);
+
+    if ((h & 0xFFU) >= cfg->density) {
+        return false;
+    }
+
+    struct vfx_hsb hsb = vfx_hsb_unpack(cfg->color);
+
+    /* Separate bytes of the same hash, so brightness and hue do not move
+     * together and the field does not read as one flickering colour.
+     */
+    const uint8_t level = (uint8_t)(128U + ((h >> 8) & 0x7FU));
+
+    if (cfg->hue_spread) {
+        const int16_t jitter =
+            (int16_t)((int32_t)((h >> 16) & 0xFFU) * cfg->hue_spread / 255 - cfg->hue_spread / 2);
+
+        hsb.h = vfx_hue_add(hsb.h, jitter);
+    }
+
+    hsb.h = vfx_hue_add(hsb.h, ctx->hue_shift);
+    hsb.b = (uint8_t)((uint16_t)hsb.b * level / 255U);
+
+    *out = vfx_hsb_to_rgb(hsb);
+
+    return true;
+}
+
+const struct vfx_layer_api vfx_layer_static_api = {
+    .pixel = static_pixel,
+};

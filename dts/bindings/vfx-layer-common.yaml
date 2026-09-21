@@ -20,4 +20,39 @@ properties:
   opacity:
     type: int
     default: 255
-    description: Layer opacity, 0-255. A layer at 0 is skipped entirely.
+    description: |
+      Layer opacity, 0-255. A layer at 0 is skipped entirely. With an
+      opacity-source set this becomes the value reached at full signal rather
+      than a constant.
+
+  opacity-source:
+    type: int
+    default: 0
+    description: |
+      Let something the keyboard already knows drive how strongly this layer
+      shows, using the VFX_SRC_* constants from dt-bindings/zmk/vfx.h:
+      typing speed, charge remaining, or whether anyone is at the keyboard.
+
+      This is how an ordinary generator becomes responsive without being
+      rewritten. A fire whose opacity follows VFX_SRC_WPM banks up as you type
+      and dies back when you stop, and it is still the same fire.
+
+      Left at VFX_SRC_NONE the layer holds whatever opacity says.
+    enum: [0, 1, 2, 3]
+
+  opacity-min:
+    type: int
+    default: 0
+    description: |
+      Opacity when the signal reads zero, so a driven layer can fade toward
+      dim rather than all the way out. Ignored without an opacity-source.
+
+  opacity-full:
+    type: int
+    default: 0
+    description: |
+      Signal value at which the layer reaches its full opacity: words per
+      minute for VFX_SRC_WPM, percent for VFX_SRC_BATTERY. 0 means 255, which
+      suits percentages and is far too high for a WPM, so set it there.
+
+      VFX_SRC_ACTIVITY ignores this, being a yes or no rather than a reading.

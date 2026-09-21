@@ -171,6 +171,97 @@
             };
         };
 
+        /* Only the keys you are actually holding, over a dim bed. Useful as
+         * much as decorative: it shows a chord while you are making it, and
+         * which layer key you are leaning on.
+         */
+        vfx_held: vfx_held {
+            compatible = "zmk,vfx-scene";
+            display-name = "Held";
+
+            bed {
+                compatible = "zmk,vfx-layer-solid";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(225, 70, 5)>;
+            };
+
+            keys {
+                compatible = "zmk,vfx-layer-hold";
+                zone = <&vfx_all>;
+                blend = <VFX_BLEND_ADD>;
+                color = <VFX_HSB(45, 55, 90)>;
+                release-ms = <260>;
+            };
+        };
+
+        /* Every keystroke throws a shot across the board. Dark at rest, so a
+         * board nobody is typing on draws nothing.
+         */
+        vfx_darts: vfx_darts {
+            compatible = "zmk,vfx-scene";
+            display-name = "Darts";
+
+            shots {
+                compatible = "zmk,vfx-layer-dart";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(285, 90, 70)>;
+                head-color = <VFX_HSB(300, 20, 100)>;
+                speed = <110>;
+                lifetime-ms = <1100>;
+                tail = <28>;
+                axis = <VFX_AXIS_X>;
+            };
+        };
+
+        /* A fire that answers to how fast you are typing rather than to the
+         * clock: banked embers at rest, and properly alight at speed. The
+         * generator is the same one as Fire; only its opacity is driven.
+         */
+        vfx_forge: vfx_forge {
+            compatible = "zmk,vfx-scene";
+            display-name = "Forge";
+
+            embers {
+                compatible = "zmk,vfx-layer-solid";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(12, 100, 12)>;
+            };
+
+            flames {
+                compatible = "zmk,vfx-layer-fire";
+                zone = <&vfx_all>;
+                blend = <VFX_BLEND_ADD>;
+                base-color = <VFX_HSB(0, 100, 55)>;
+                tip-color = <VFX_HSB(45, 75, 100)>;
+                period-ms = <420>;
+                cell = <12>;
+                height = <235>;
+                flicker = <200>;
+                axis = <VFX_AXIS_Y>;
+
+                /* Sixty words a minute is a good clip, so that is where it
+                 * reaches full rather than at some number nobody hits.
+                 */
+                opacity-source = <VFX_SRC_WPM>;
+                opacity-min = <25>;
+                opacity-full = <60>;
+            };
+        };
+
+        vfx_static: vfx_static {
+            compatible = "zmk,vfx-scene";
+            display-name = "Static";
+
+            snow {
+                compatible = "zmk,vfx-layer-static";
+                zone = <&vfx_all>;
+                color = <VFX_HSB(180, 15, 100)>;
+                period-ms = <70>;
+                density = <45>;
+                hue-spread = <40>;
+            };
+        };
+
         /* Rain on a dark pool, which typing also disturbs. Drops from the
          * two sources are the same kind of drop, so they interfere.
          */

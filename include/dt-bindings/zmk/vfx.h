@@ -18,6 +18,15 @@
 #define VFX_BLACK VFX_HSB(0, 0, 0)
 #define VFX_WHITE VFX_HSB(0, 0, 100)
 
+/* What a layer's opacity can be made to follow, so that something the
+ * keyboard already knows drives how strongly an effect shows rather than the
+ * effect having to be rewritten to care.
+ */
+#define VFX_SRC_NONE 0     /* fixed at the layer's own opacity */
+#define VFX_SRC_WPM 1      /* typing speed */
+#define VFX_SRC_BATTERY 2  /* charge remaining */
+#define VFX_SRC_ACTIVITY 3 /* whether anyone is at the keyboard */
+
 /* Blend modes for stacking a layer onto what is already composited. */
 #define VFX_BLEND_NORMAL 0
 #define VFX_BLEND_ADD 1

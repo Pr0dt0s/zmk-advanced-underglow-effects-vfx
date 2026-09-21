@@ -479,6 +479,260 @@ static bool pulse_is_animating(const struct vfx_layer *layer, const struct vfx_f
     return st->level > 0;
 }
 
+/* --------------------------------------------------------------------- hold */
+
+/* The only generator here that reads a release.
+ *
+ * Everything else is struck and then decays on a schedule fixed at the moment
+ * of the press, which cannot express "for as long as this is held" because
+ * that duration is not known yet when the key goes down.
+ */
+
+static bool hold_is_held(const struct vfx_hold_state *st, uint16_t p) {
+    return (st->held[p / 8] >> (p % 8)) & 1U;
+}
+
+static void hold_set_held(struct vfx_hold_state *st, uint16_t p, bool held) {
+    const uint8_t bit = (uint8_t)(1U << (p % 8));
+
+    if (held) {
+        st->held[p / 8] |= bit;
+    } else {
+        st->held[p / 8] &= (uint8_t)~bit;
+    }
+}
+
+static void hold_key_event(const struct vfx_layer *layer, const struct vfx_frame_ctx *ctx,
+                           uint32_t position, bool pressed, uint32_t time_ms) {
+    VFX_UNUSED(time_ms);
+
+    struct vfx_hold_state *st = layer->state;
+    const uint16_t vidx = vfx_key_pixel(ctx, position);
+
+    if (vidx >= VFX_HOLD_MAX_PIXELS) {
+        return;
+    }
+
+    hold_set_held(st, vidx, pressed);
+
+    if (pressed) {
+        st->level[vidx] = 255;
+    }
+}
+
+static void hold_frame(const struct vfx_layer *layer, const struct vfx_frame_ctx *ctx) {
+    const struct vfx_hold_cfg *cfg = layer->config;
+    struct vfx_hold_state *st = layer->state;
+
+    const uint32_t elapsed = age_of(ctx->time_ms, st->last_ms);
+
+    st->last_ms = ctx->time_ms;
+
+    if (elapsed == 0) {
+        return;
+    }
+
+    /* A held key is pinned rather than decayed, which is the whole point;
+     * only what has been let go falls away.
+     */
+    const uint32_t drop = cfg->release_ms ? (elapsed * 255U) / cfg->release_ms : 255U;
+
+    for (uint16_t i = 0; i < VFX_HOLD_MAX_PIXELS; i++) {
+        if (hold_is_held(st, i)) {
+            st->level[i] = 255;
+        } else if (st->level[i]) {
+            st->level[i] = st->level[i] > drop ? (uint8_t)(st->level[i] - drop) : 0;
+        }
+    }
+}
+
+static bool hold_pixel(const struct vfx_layer *layer, const struct vfx_frame_ctx *ctx,
+                       uint16_t zone_i, uint16_t strip_i, struct vfx_rgb *out) {
+    VFX_UNUSED(zone_i);
+
+    const struct vfx_hold_cfg *cfg = layer->config;
+    const struct vfx_hold_state *st = layer->state;
+
+    const uint16_t vidx = vfx_virtual_idx(ctx, strip_i);
+
+    if (vidx >= VFX_HOLD_MAX_PIXELS || st->level[vidx] == 0) {
+        return false;
+    }
+
+    struct vfx_hsb hsb = vfx_hsb_unpack(cfg->color);
+
+    hsb.h = vfx_hue_add(hsb.h, ctx->hue_shift);
+    hsb.b = (uint8_t)((uint16_t)hsb.b * st->level[vidx] / 255U);
+
+    *out = vfx_hsb_to_rgb(hsb);
+
+    return true;
+}
+
+static bool hold_is_animating(const struct vfx_layer *layer, const struct vfx_frame_ctx *ctx) {
+    VFX_UNUSED(ctx);
+
+    const struct vfx_hold_state *st = layer->state;
+
+    /* A key sitting held is a still picture, so only something still fading
+     * counts as motion and the engine can park while you rest on a key.
+     */
+    for (uint16_t i = 0; i < VFX_HOLD_MAX_PIXELS; i++) {
+        if (st->level[i] && !hold_is_held(st, i)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+const struct vfx_layer_api vfx_layer_hold_api = {
+    .frame = hold_frame,
+    .pixel = hold_pixel,
+    .key_event = hold_key_event,
+    .is_animating = hold_is_animating,
+};
+
+/* --------------------------------------------------------------------- dart */
+
+/* Struck by a key, then travels. Ripple expands as a ring and comet runs on a
+ * timer without being triggered, so neither stands in for this.
+ */
+
+static void dart_key_event(const struct vfx_layer *layer, const struct vfx_frame_ctx *ctx,
+                           uint32_t position, bool pressed, uint32_t time_ms) {
+    if (!pressed) {
+        return;
+    }
+
+    const struct vfx_dart_cfg *cfg = layer->config;
+    struct vfx_dart_state *st = layer->state;
+
+    struct vfx_dart_slot *chosen = NULL;
+
+    for (uint8_t i = 0; i < VFX_MAX_RIPPLES; i++) {
+        if (!st->slots[i].active) {
+            chosen = &st->slots[i];
+            break;
+        }
+    }
+
+    if (!chosen) {
+        chosen = &st->slots[st->next % VFX_MAX_RIPPLES];
+        st->next = (uint8_t)((st->next + 1) % VFX_MAX_RIPPLES);
+    }
+
+    chosen->active = true;
+    chosen->start_ms = time_ms;
+
+    /* Launched from where the key sits along the axis, so a key at one end
+     * throws from that end. Without a key map they all start from the same
+     * place, which still reads as a dart.
+     */
+    chosen->origin = (uint16_t)vfx_axis_pos(ctx, vfx_key_pixel(ctx, position), cfg->axis);
+}
+
+static void dart_frame(const struct vfx_layer *layer, const struct vfx_frame_ctx *ctx) {
+    const struct vfx_dart_cfg *cfg = layer->config;
+    struct vfx_dart_state *st = layer->state;
+
+    for (uint8_t i = 0; i < VFX_MAX_RIPPLES; i++) {
+        if (st->slots[i].active && age_of(ctx->time_ms, st->slots[i].start_ms) >= cfg->lifetime_ms) {
+            st->slots[i].active = false;
+        }
+    }
+}
+
+static bool dart_pixel(const struct vfx_layer *layer, const struct vfx_frame_ctx *ctx,
+                       uint16_t zone_i, uint16_t strip_i, struct vfx_rgb *out) {
+    VFX_UNUSED(zone_i);
+
+    const struct vfx_dart_cfg *cfg = layer->config;
+    const struct vfx_dart_state *st = layer->state;
+
+    if (cfg->lifetime_ms == 0 || cfg->tail == 0) {
+        return false;
+    }
+
+    const uint16_t vidx = vfx_virtual_idx(ctx, strip_i);
+    const int32_t here = (int32_t)vfx_axis_pos(ctx, vidx, cfg->axis);
+
+    uint16_t best = 0;
+
+    for (uint8_t i = 0; i < VFX_MAX_RIPPLES; i++) {
+        if (!st->slots[i].active) {
+            continue;
+        }
+
+        const uint32_t age = age_of(ctx->time_ms, st->slots[i].start_ms);
+
+        if (age >= cfg->lifetime_ms) {
+            continue;
+        }
+
+        const int32_t travelled = (int32_t)((uint32_t)cfg->speed * age / 1000U);
+        const int32_t head =
+            cfg->reverse ? (int32_t)st->slots[i].origin - travelled
+                         : (int32_t)st->slots[i].origin + travelled;
+
+        /* Behind the head along the direction of travel, so the tail is drawn
+         * where the dart has been rather than where it is going.
+         */
+        const int32_t behind = cfg->reverse ? here - head : head - here;
+
+        if (behind < 0 || behind > (int32_t)cfg->tail) {
+            continue;
+        }
+
+        const uint16_t shape = (uint16_t)(255U - ((uint32_t)behind * 255U) / cfg->tail);
+        const uint16_t fade = (uint16_t)(255U - (age * 255U) / cfg->lifetime_ms);
+        const uint16_t level = (uint16_t)(shape * fade / 255U);
+
+        if (level > best) {
+            best = level;
+        }
+    }
+
+    if (best == 0) {
+        return false;
+    }
+
+    /* The head runs toward its own colour, so the leading pixel reads as a
+     * bright point with the body trailing off behind it.
+     */
+    struct vfx_hsb hsb =
+        vfx_hsb_lerp(vfx_hsb_unpack(cfg->color), vfx_hsb_unpack(cfg->head_color),
+                     (uint8_t)(best > 255U ? 255U : best));
+
+    hsb.h = vfx_hue_add(hsb.h, ctx->hue_shift);
+    hsb.b = (uint8_t)((uint16_t)hsb.b * best / 255U);
+
+    *out = vfx_hsb_to_rgb(hsb);
+
+    return true;
+}
+
+static bool dart_is_animating(const struct vfx_layer *layer, const struct vfx_frame_ctx *ctx) {
+    VFX_UNUSED(ctx);
+
+    const struct vfx_dart_state *st = layer->state;
+
+    for (uint8_t i = 0; i < VFX_MAX_RIPPLES; i++) {
+        if (st->slots[i].active) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+const struct vfx_layer_api vfx_layer_dart_api = {
+    .frame = dart_frame,
+    .pixel = dart_pixel,
+    .key_event = dart_key_event,
+    .is_animating = dart_is_animating,
+};
+
 const struct vfx_layer_api vfx_layer_pulse_api = {
     .frame = pulse_frame,
     .pixel = pulse_pixel,

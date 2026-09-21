@@ -231,6 +231,62 @@ struct vfx_pulse_state {
     uint32_t last_ms;
 };
 
+#define VFX_HOLD_MAX_PIXELS 128
+
+/* Lit for exactly as long as the key is down.
+ *
+ * Every other reactive generator is struck and then decays, which cannot
+ * express a duration that is not known when the key goes down. This one is
+ * the only thing here that reads the release.
+ */
+struct vfx_hold_cfg {
+    uint32_t color;
+    uint16_t release_ms; /* fade once let go; 0 cuts straight out */
+};
+
+struct vfx_hold_state {
+    uint8_t level[VFX_HOLD_MAX_PIXELS];
+    uint8_t held[(VFX_HOLD_MAX_PIXELS + 7) / 8];
+    uint32_t last_ms;
+};
+
+/* A packet launched by a keypress that then travels on its own.
+ *
+ * Ripple expands as a ring from where it started and comet runs on a timer
+ * without being triggered at all, so a struck thing that then moves along an
+ * axis is not reachable by combining them.
+ */
+struct vfx_dart_slot {
+    uint32_t start_ms;
+    uint16_t origin; /* axis position of the key that launched it */
+    bool active;
+};
+
+struct vfx_dart_cfg {
+    uint32_t color;
+    uint32_t head_color;
+    uint16_t speed;       /* axis units per second */
+    uint16_t lifetime_ms; /* how long one lives */
+    uint8_t tail;         /* axis units trailing the head */
+    uint8_t axis;
+    bool reverse; /* travel toward decreasing axis instead */
+};
+
+struct vfx_dart_state {
+    struct vfx_dart_slot slots[VFX_MAX_RIPPLES];
+    uint8_t next;
+};
+
+/* Independent per-pixel randomness, re-rolled on a clock. Twinkle has a fade
+ * envelope and plasma is smooth, so neither can be made to look like this.
+ */
+struct vfx_static_cfg {
+    uint32_t color;
+    uint16_t period_ms; /* how often the field is re-rolled */
+    uint8_t density;    /* 0-255 share of pixels lit in a roll */
+    uint8_t hue_spread; /* degrees of hue jitter between pixels */
+};
+
 struct vfx_layer_state_cfg {
     const uint32_t *colors; /* one per keymap layer */
     uint8_t num_colors;

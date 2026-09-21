@@ -44,6 +44,12 @@ struct vfx_status {
     /* Words per minute, from ZMK's own estimate. */
     uint8_t wpm;
 
+    /* Whether anyone is at the keyboard. ZMK already decides this to idle the
+     * radio and dim the display; the engine watched it only to switch itself
+     * off, so nothing could draw with it until now.
+     */
+    bool active;
+
     /* The other half's battery, on a split central. 0 means not reported
      * yet, which is different from a flat cell and is drawn as such.
      */

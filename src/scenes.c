@@ -323,6 +323,43 @@ DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_trail, VFX_TRAIL_DEFINE)
 
 DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_pulse, VFX_PULSE_DEFINE)
 
+#define VFX_HOLD_DEFINE(node)                                                                      \
+    static const struct vfx_hold_cfg VFX_CFG_SYM(node) = {                                         \
+        .color = DT_PROP(node, color),                                                             \
+        .release_ms = DT_PROP(node, release_ms),                                                   \
+    };                                                                                             \
+    static struct vfx_hold_state VFX_STATE_SYM(node);                                              \
+    static const struct vfx_layer_api *const VFX_API_SYM(node) = &vfx_layer_hold_api;
+
+DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_hold, VFX_HOLD_DEFINE)
+
+#define VFX_DART_DEFINE(node)                                                                      \
+    static const struct vfx_dart_cfg VFX_CFG_SYM(node) = {                                         \
+        .color = DT_PROP(node, color),                                                             \
+        .head_color = DT_PROP(node, head_color),                                                   \
+        .speed = DT_PROP(node, speed),                                                             \
+        .lifetime_ms = DT_PROP(node, lifetime_ms),                                                 \
+        .tail = DT_PROP(node, tail),                                                               \
+        .axis = DT_PROP(node, axis),                                                               \
+        .reverse = DT_PROP(node, reverse),                                                         \
+    };                                                                                             \
+    static struct vfx_dart_state VFX_STATE_SYM(node);                                              \
+    static const struct vfx_layer_api *const VFX_API_SYM(node) = &vfx_layer_dart_api;
+
+DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_dart, VFX_DART_DEFINE)
+
+#define VFX_STATIC_DEFINE(node)                                                                    \
+    static const struct vfx_static_cfg VFX_CFG_SYM(node) = {                                       \
+        .color = DT_PROP(node, color),                                                             \
+        .period_ms = DT_PROP(node, period_ms),                                                     \
+        .density = DT_PROP(node, density),                                                         \
+        .hue_spread = DT_PROP(node, hue_spread),                                                   \
+    };                                                                                             \
+    static uint8_t VFX_STATE_SYM(node);                                                            \
+    static const struct vfx_layer_api *const VFX_API_SYM(node) = &vfx_layer_static_api;
+
+DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_static, VFX_STATIC_DEFINE)
+
 #define VFX_LAYER_STATE_DEFINE(node)                                                               \
     static const uint32_t _CONCAT(vfx_colors_, node)[] = DT_PROP(node, colors);                    \
     static const struct vfx_layer_state_cfg VFX_CFG_SYM(node) = {                                  \
@@ -367,7 +404,10 @@ DT_FOREACH_STATUS_OKAY(zmk_vfx_layer_ble_profile, VFX_BLE_PROFILE_DEFINE)
         .config = &VFX_CFG_SYM(node),                                                              \
         .state = &VFX_STATE_SYM(node),                                                             \
         .blend = DT_PROP(node, blend),                                                             \
-        .opacity = DT_PROP(node, opacity),                                                         \
+        .opacity = DT_PROP(node, opacity),                                                        \
+        .opacity_src = DT_PROP(node, opacity_source),                                             \
+        .opacity_min = DT_PROP(node, opacity_min),                                                \
+        .opacity_full = DT_PROP(node, opacity_full),                                              \
     },
 
 #define VFX_SCENE_DEFINE(node)                                                                     \

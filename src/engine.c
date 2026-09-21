@@ -27,7 +27,11 @@
 #include <zmk/event_manager.h>
 #include <zmk/events/position_state_changed.h>
 
-#if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_OFF_IDLE)
+/* Wanted for switching off when nobody is there, and again for letting a
+ * layer's opacity follow whether anybody is, so either reason pulls it in.
+ */
+#if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_OFF_IDLE) || IS_ENABLED(CONFIG_ZMK_VFX_INDICATORS)
+#define VFX_WATCHES_ACTIVITY 1
 #include <zmk/activity.h>
 #include <zmk/events/activity_state_changed.h>
 #endif
@@ -888,16 +892,31 @@ static int vfx_event_listener(const zmk_event_t *eh) {
          */
         fan_key_event(pos->position, pos->state);
 
-        if (pos->state) {
-            zmk_vfx_request_frame();
-        }
+        /* Both edges, not just the press. A layer that stays lit while a key
+         * is held has nothing to redraw until the release arrives, so the
+         * engine would still be parked at the moment it needed to go dark.
+         */
+        zmk_vfx_request_frame();
 
         return ZMK_EV_EVENT_BUBBLE;
     }
 
-#if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_OFF_IDLE)
+#if IS_ENABLED(VFX_WATCHES_ACTIVITY)
     if (as_zmk_activity_state_changed(eh) != NULL) {
-        return vfx_auto_off(zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE);
+        const bool awake = zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE;
+
+        vfx_status_mutable()->active = awake;
+
+        /* Recorded either way, since a layer can be drawing with it even when
+         * the engine is not using it to switch itself off.
+         */
+#if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_OFF_IDLE)
+        return vfx_auto_off(awake);
+#else
+        zmk_vfx_request_frame();
+
+        return ZMK_EV_EVENT_BUBBLE;
+#endif
     }
 #endif
 
@@ -995,7 +1014,7 @@ static int vfx_event_listener(const zmk_event_t *eh) {
 ZMK_LISTENER(zmk_vfx, vfx_event_listener);
 ZMK_SUBSCRIPTION(zmk_vfx, zmk_position_state_changed);
 
-#if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_OFF_IDLE)
+#if IS_ENABLED(VFX_WATCHES_ACTIVITY)
 ZMK_SUBSCRIPTION(zmk_vfx, zmk_activity_state_changed);
 #endif
 

@@ -1,0 +1,32 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Lights the key you are holding, for exactly as long as you hold it.
+
+  Every other reactive generator is struck and then decays on a schedule fixed
+  at the moment of the press, which cannot express a duration that is not
+  known yet when the key goes down. This is the only one that reads the
+  release, and so the only way to show a held modifier, a held layer key, or
+  a chord while it is being made.
+
+  Needs the engine's key-pixels property to know which pixel a key sits
+  under; without one the key positions are spread evenly and the wrong LED
+  lights up.
+
+compatible: "zmk,vfx-layer-hold"
+
+include: vfx-layer-common.yaml
+
+properties:
+  color:
+    type: int
+    required: true
+    description: Packed VFX_HSB() a held key lights up in.
+
+  release-ms:
+    type: int
+    default: 220
+    description: |
+      Time to fade out after the key is let go. 0 cuts straight out, which
+      reads as harsh at the speed people actually type.

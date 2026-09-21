@@ -1,0 +1,60 @@
+# Copyright (c) 2026 The ZMK VFX Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  A keypress launches a packet of light that then travels along an axis.
+
+  Ripple expands as a ring from where it started, and comet travels but runs
+  on a timer and is never triggered, so a struck thing that then moves is not
+  reachable by combining the two.
+
+  Each dart starts from where its key sits along the axis, so a key at one end
+  of the board throws from that end. On a short run of pixels, such as an
+  underglow channel, every keystroke reads as a shot down the strip.
+
+compatible: "zmk,vfx-layer-dart"
+
+include: vfx-layer-common.yaml
+
+# Distances are in the units pixel-positions uses: about 10 per LED on the
+# shipped maps. Without a position map they are strip indices, so scale down.
+
+properties:
+  color:
+    type: int
+    required: true
+    description: Packed VFX_HSB() of the body trailing the head.
+
+  head-color:
+    type: int
+    required: true
+    description: Packed VFX_HSB() of the leading point, usually paler.
+
+  speed:
+    type: int
+    default: 90
+    description: Axis units per second the dart travels.
+
+  lifetime-ms:
+    type: int
+    default: 900
+    description: |
+      How long one dart lives, fading out across that time. Together with
+      speed this sets how far it gets before it dies.
+
+  tail:
+    type: int
+    default: 25
+    description: Axis units of body trailing behind the head.
+
+  axis:
+    type: int
+    default: 1
+    description: |
+      Which way a dart runs, using the VFX_AXIS_* constants from
+      dt-bindings/zmk/vfx.h. Defaults to VFX_AXIS_X, across the board.
+    enum: [0, 1, 2, 3, 4, 5]
+
+  reverse:
+    type: boolean
+    description: Travel toward decreasing axis values instead of increasing.

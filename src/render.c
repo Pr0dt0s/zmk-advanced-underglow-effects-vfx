@@ -4,7 +4,52 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <dt-bindings/zmk/vfx.h>
+
 #include <zmk/vfx/engine.h>
+#include <zmk/vfx/status.h>
+
+/* How strongly a layer shows this frame.
+ *
+ * Most layers answer with the opacity they were given. One that names a
+ * source instead is scaled between opacity_min and that opacity according to
+ * where the signal currently sits, which is what lets an unmodified generator
+ * respond to typing speed or to charge.
+ */
+static uint8_t layer_opacity(const struct vfx_layer *layer) {
+    if (layer->opacity_src == VFX_SRC_NONE) {
+        return layer->opacity;
+    }
+
+    const struct vfx_status *st = vfx_status_get();
+    uint16_t signal;
+
+    switch (layer->opacity_src) {
+    case VFX_SRC_WPM:
+        signal = st->wpm;
+        break;
+    case VFX_SRC_BATTERY:
+        signal = st->battery_level;
+        break;
+    case VFX_SRC_ACTIVITY:
+        /* A yes or no rather than a reading, so it drives the ends directly
+         * and fades between them through whatever transition the scene has.
+         */
+        return st->active ? layer->opacity : layer->opacity_min;
+    default:
+        return layer->opacity;
+    }
+
+    const uint16_t full = layer->opacity_full ? layer->opacity_full : 255;
+
+    if (signal >= full) {
+        return layer->opacity;
+    }
+
+    const int16_t span = (int16_t)layer->opacity - (int16_t)layer->opacity_min;
+
+    return (uint8_t)((int16_t)layer->opacity_min + (span * (int16_t)signal) / (int16_t)full);
+}
 
 /* The compositor.
  *
@@ -23,7 +68,9 @@ void vfx_render_frame(const struct vfx_scene *scene, const struct vfx_frame_ctx 
         for (uint8_t l = 0; l < scene->num_layers; l++) {
             const struct vfx_layer *layer = &scene->layers[l];
 
-            if (layer->opacity == 0) {
+            const uint8_t opacity = layer_opacity(layer);
+
+            if (opacity == 0) {
                 continue;
             }
 
@@ -50,7 +97,7 @@ void vfx_render_frame(const struct vfx_scene *scene, const struct vfx_frame_ctx 
                     continue;
                 }
 
-                out[p] = vfx_blend(out[p], src, layer->blend, layer->opacity);
+                out[p] = vfx_blend(out[p], src, layer->blend, opacity);
             }
         }
     }
