@@ -783,8 +783,18 @@ the indicator cannot be driven. Nothing to do here until that changes
 upstream.
 
 **More measured board maps.** `pandakb-lily58.dtsi` has the thumb cluster
-order and the underglow chain order still inferred rather than measured. Both
-are a pixel sweep away for anyone with the hardware in front of them.
+order and the underglow chain order still inferred rather than measured. Rows
+6-23 were read off hardware; the rest follows from a community table and the
+serpentine, which is good evidence but not the same thing.
+
+Both are a pixel sweep away for anyone with the hardware in front of them,
+and the sweep is worth keeping as a pattern: a scene per pixel, each a
+`zmk,vfx-layer-solid` over a `range = <N 1>` zone, all of them appended to
+one channel's scene list so that stepping that channel walks the pixels one
+at a time. `Pr0dt0s/zmk-config` carries a working copy as
+`config/vfx-probe.dtsi`. The trap is that relative commands resolve to an
+absolute index on the central and relay as a bare number, so a probe file
+included on only one half of a split silently cannot be reached.
 
 ## Licence
 
