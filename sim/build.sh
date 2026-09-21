@@ -26,6 +26,8 @@ exports=(
   vfx_sim_add_ble_profile vfx_sim_set_status vfx_sim_set_extra_status vfx_sim_set_key_map
   vfx_sim_add_flag vfx_sim_add_wpm vfx_sim_add_peripheral_battery
   vfx_sim_sync_step vfx_sim_sync_max_slew vfx_sim_add_water vfx_sim_add_matrix vfx_sim_add_cross vfx_sim_add_fire vfx_sim_add_comet vfx_sim_set_positions
+  vfx_sim_add_pulse vfx_sim_add_hold vfx_sim_add_dart vfx_sim_add_static
+  vfx_sim_set_layer_source vfx_sim_set_active
 )
 
 args=(--target=wasm32 -nostdlib -O2 -flto -DVFX_SIM -I"$root/include"

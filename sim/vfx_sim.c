@@ -81,6 +81,13 @@ static struct vfx_layer_state_cfg layer_state_cfg[MAX_LAYERS];
 static uint32_t layer_state_colors[MAX_LAYERS][MAX_STOPS];
 static struct vfx_battery_cfg battery_cfg[MAX_LAYERS];
 static struct vfx_ble_profile_cfg ble_cfg[MAX_LAYERS];
+static struct vfx_pulse_cfg pulse_cfg[MAX_LAYERS];
+static struct vfx_pulse_state pulse_state[MAX_LAYERS];
+static struct vfx_hold_cfg hold_cfg[MAX_LAYERS];
+static struct vfx_hold_state hold_state[MAX_LAYERS];
+static struct vfx_dart_cfg dart_cfg[MAX_LAYERS];
+static struct vfx_dart_state dart_state[MAX_LAYERS];
+static struct vfx_static_cfg static_cfg[MAX_LAYERS];
 
 /* Stateless generators still need a state pointer. */
 static uint8_t stateless[MAX_LAYERS];
@@ -239,7 +246,28 @@ static struct vfx_layer *next_layer(int zone, int blend, int opacity) {
     l->blend = (uint8_t)blend;
     l->opacity = (uint8_t)(opacity < 0 ? 0 : (opacity > 255 ? 255 : opacity));
 
+    /* Cleared rather than left alone: the layer array outlives a scene, so a
+     * slot that carried a driven opacity once would keep driving the next
+     * scene's layer that happened to land in it.
+     */
+    l->opacity_src = VFX_SRC_NONE;
+    l->opacity_min = 0;
+    l->opacity_full = 0;
+
     return l;
+}
+
+/* Called after an add_*, since the source is the same question for every
+ * generator and threading it through fifteen signatures would say otherwise.
+ */
+EXPORT void vfx_sim_set_layer_source(int layer, int src, int min, int full) {
+    if (layer < 0 || layer >= num_layers) {
+        return;
+    }
+
+    layers[layer].opacity_src = (uint8_t)src;
+    layers[layer].opacity_min = (uint8_t)(min < 0 ? 0 : (min > 255 ? 255 : min));
+    layers[layer].opacity_full = (uint8_t)(full < 0 ? 0 : (full > 255 ? 255 : full));
 }
 
 EXPORT int vfx_sim_add_solid(int zone, int blend, int opacity, uint32_t color) {
@@ -651,6 +679,120 @@ EXPORT void vfx_sim_set_extra_status(int locks, int modifiers, int wpm, int peri
     st->modifiers = (uint8_t)modifiers;
     st->wpm = (uint8_t)(wpm < 0 ? 0 : (wpm > 255 ? 255 : wpm));
     st->peripheral_battery[0] = (uint8_t)peripheral_battery;
+}
+
+/* Whether anyone is at the keyboard. ZMK decides this from how long it has
+ * been since a keypress, which the page has no way to reach, so it is driven
+ * directly here.
+ */
+EXPORT void vfx_sim_set_active(int active) { vfx_status_mutable()->active = active != 0; }
+
+EXPORT int vfx_sim_add_pulse(int zone, int blend, int opacity, uint32_t color, int decay_ms,
+                             int min_level, int hue_step, int stack) {
+    struct vfx_layer *l = next_layer(zone, blend, opacity);
+
+    if (!l) {
+        return -1;
+    }
+
+    const int i = num_layers;
+
+    pulse_cfg[i] = (struct vfx_pulse_cfg){
+        .color = color,
+        .decay_ms = (uint16_t)decay_ms,
+        .min_level = (uint8_t)min_level,
+        .hue_step = (uint8_t)hue_step,
+        .stack = stack != 0,
+    };
+    pulse_state[i] = (struct vfx_pulse_state){0};
+
+    l->api = &vfx_layer_pulse_api;
+    l->config = &pulse_cfg[i];
+    l->state = &pulse_state[i];
+
+    scene.num_layers = (uint8_t)(++num_layers);
+
+    return i;
+}
+
+EXPORT int vfx_sim_add_hold(int zone, int blend, int opacity, uint32_t color, int release_ms) {
+    struct vfx_layer *l = next_layer(zone, blend, opacity);
+
+    if (!l) {
+        return -1;
+    }
+
+    const int i = num_layers;
+
+    hold_cfg[i] = (struct vfx_hold_cfg){
+        .color = color,
+        .release_ms = (uint16_t)release_ms,
+    };
+    hold_state[i] = (struct vfx_hold_state){0};
+
+    l->api = &vfx_layer_hold_api;
+    l->config = &hold_cfg[i];
+    l->state = &hold_state[i];
+
+    scene.num_layers = (uint8_t)(++num_layers);
+
+    return i;
+}
+
+EXPORT int vfx_sim_add_dart(int zone, int blend, int opacity, uint32_t color, uint32_t head,
+                            int speed, int lifetime_ms, int tail, int axis, int reverse) {
+    struct vfx_layer *l = next_layer(zone, blend, opacity);
+
+    if (!l) {
+        return -1;
+    }
+
+    const int i = num_layers;
+
+    dart_cfg[i] = (struct vfx_dart_cfg){
+        .color = color,
+        .head_color = head,
+        .speed = (uint16_t)speed,
+        .lifetime_ms = (uint16_t)lifetime_ms,
+        .tail = (uint8_t)tail,
+        .axis = (uint8_t)axis,
+        .reverse = reverse != 0,
+    };
+    dart_state[i] = (struct vfx_dart_state){0};
+
+    l->api = &vfx_layer_dart_api;
+    l->config = &dart_cfg[i];
+    l->state = &dart_state[i];
+
+    scene.num_layers = (uint8_t)(++num_layers);
+
+    return i;
+}
+
+EXPORT int vfx_sim_add_static(int zone, int blend, int opacity, uint32_t color, int period_ms,
+                              int density, int hue_spread) {
+    struct vfx_layer *l = next_layer(zone, blend, opacity);
+
+    if (!l) {
+        return -1;
+    }
+
+    const int i = num_layers;
+
+    static_cfg[i] = (struct vfx_static_cfg){
+        .color = color,
+        .period_ms = (uint16_t)period_ms,
+        .density = (uint8_t)density,
+        .hue_spread = (uint8_t)hue_spread,
+    };
+
+    l->api = &vfx_layer_static_api;
+    l->config = &static_cfg[i];
+    l->state = &stateless[i];
+
+    scene.num_layers = (uint8_t)(++num_layers);
+
+    return i;
 }
 
 EXPORT int vfx_sim_add_flag(int zone, int blend, int opacity, uint32_t color, int source,

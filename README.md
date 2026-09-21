@@ -110,11 +110,17 @@ unmodified — to WebAssembly and renders it under a Lily58 in the browser. No
 effect is reimplemented in JavaScript, so a frame on the page is the frame the
 keyboard produces.
 
-It does not yet reach everything. Each generator needs a small `vfx_sim_add_*`
-entry point to be reachable from the page, and `pulse`, `hold`, `dart` and
-`static` have none, so they compile into the WebAssembly but cannot be placed
-in a scene there. Channels and `opacity-source` are likewise not exposed. All
-of it works on hardware; it is the simulator's bindings that are behind.
+Every generator is reachable, including the reactive ones and a driven
+`opacity-source` — click a key on the board to fire a press, and the WPM
+control drives anything whose opacity follows it. Channels are the one thing
+not modelled: the page renders a single scene across the strip, so a channel's
+masking has no equivalent there.
+
+`tools/verify-sim.mjs` drives the page in a headless browser and asserts on
+what comes out rather than on whether it compiled: that a reactive scene is
+black until a key goes down, that a held key stays lit past any decay and
+falls when released, and that a driven opacity moves with its signal. CI runs
+it on every push.
 
 ```sh
 ./sim/build.sh && python3 -m http.server -d docs/sim

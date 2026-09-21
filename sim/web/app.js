@@ -14,6 +14,10 @@ const BLEND = { normal: 0, add: 1, multiply: 2, screen: 3, max: 4 };
 const AXIS = { strip: 0, x: 1, y: 2, radial: 3, angle: 4, spiral: 5 };
 const CROSS = { both: 0, horizontal: 1, vertical: 2 };
 
+/* What a layer's opacity can be made to follow, as VFX_SRC_* names them. */
+const SOURCES = { none: 0, wpm: 1, battery: 2, activity: 3 };
+const SOURCE_NAME = ['VFX_SRC_NONE', 'VFX_SRC_WPM', 'VFX_SRC_BATTERY', 'VFX_SRC_ACTIVITY'];
+
 /* Host lock LEDs and modifier bits, as <dt-bindings/zmk/vfx.h> names them. */
 const LOCKS = { num: 0x01, caps: 0x02, scroll: 0x04, compose: 0x08, kana: 0x10 };
 const MODS = { ctrl: 0x11, shift: 0x22, alt: 0x44, gui: 0x88 };
@@ -63,6 +67,14 @@ const LAYER_SPECS = {
   'layer-state': { id: 9,  args: [] },
   battery:       { id: 10, args: [['warn_below', 20]] },
   'ble-profile': { id: 11, args: [] },
+  /* These have add_* entry points of their own rather than going through
+   * vfx_sim_add_layer, so the id is never used; the args are here because the
+   * devicetree export reads them from the same table.
+   */
+  pulse:      { id: -1, args: [['decay_ms', 500], ['min_level', 0], ['hue_step', 0]] },
+  hold:       { id: -1, args: [['release_ms', 220]] },
+  dart:       { id: -1, args: [['speed', 90], ['lifetime_ms', 900], ['tail', 25]] },
+  static:     { id: -1, args: [['period_ms', 90], ['density', 60], ['hue_spread', 0]] },
 };
 
 const packHsb = (h, s, b) => (((h & 0x1ff) << 16) | ((s & 0xff) << 8) | (b & 0xff)) >>> 0;
@@ -232,6 +244,31 @@ class Half {
                                               l.usb_color ? packHsb(...l.usb_color) : 0);
           break;
 
+        case 'pulse':
+          rc = this.e.vfx_sim_add_pulse(zid, blend, opacity, packHsb(...l.color),
+                                        l.decay_ms ?? 500, l.min_level ?? 0,
+                                        l.hue_step ?? 0, l.stack ? 1 : 0);
+          break;
+
+        case 'hold':
+          rc = this.e.vfx_sim_add_hold(zid, blend, opacity, packHsb(...l.color),
+                                       l.release_ms ?? 220);
+          break;
+
+        case 'dart':
+          rc = this.e.vfx_sim_add_dart(zid, blend, opacity,
+                                       packHsb(...l.color),
+                                       l.head_color ? packHsb(...l.head_color) : 0,
+                                       l.speed ?? 90, l.lifetime_ms ?? 900, l.tail ?? 25,
+                                       AXIS[l.axis ?? 'x'] ?? 1, l.reverse ? 1 : 0);
+          break;
+
+        case 'static':
+          rc = this.e.vfx_sim_add_static(zid, blend, opacity, packHsb(...l.color),
+                                         l.period_ms ?? 90, l.density ?? 60,
+                                         l.hue_spread ?? 0);
+          break;
+
         default:
           rc = this.e.vfx_sim_add_layer(spec.id, zid, blend, opacity, packHsb(...l.color),
                                         args[0], args[1], args[2], args[3]);
@@ -239,7 +276,22 @@ class Half {
       }
 
       if (rc < 0) throw new Error(`layer ${i} was rejected by the engine`);
+
+      /* Applied after the fact rather than threaded through every add_*,
+       * because it is the same question for all of them.
+       */
+      if (l.opacity_source) {
+        this.e.vfx_sim_set_layer_source(rc, SOURCES[l.opacity_source] ?? 0,
+                                        l.opacity_min ?? 0, l.opacity_full ?? 0);
+      }
     }
+  }
+
+  /* Whether anyone is at the keyboard. ZMK works this out from how long it has
+   * been since a keypress, which the page cannot observe, so it is set here.
+   */
+  setActive(active) {
+    this.e.vfx_sim_set_active(active ? 1 : 0);
   }
 
   setStatus(activeLayer, battery, profile, connected, usb) {
@@ -562,6 +614,18 @@ function toDevicetree(scene, ledsPerHalf) {
       out.push(`${ind}    connected-color = <${hsb(l.connected_color)}>;`);
       out.push(`${ind}    disconnected-color = <${hsb(l.disconnected_color)}>;`);
       if (l.usb_color) out.push(`${ind}    usb-color = <${hsb(l.usb_color)}>;`);
+    } else if (l.type === 'dart') {
+      if (l.head_color) out.push(`${ind}    head-color = <${hsb(l.head_color)}>;`);
+      if (l.reverse) out.push(`${ind}    reverse;`);
+    } else if (l.type === 'pulse') {
+      if (l.stack) out.push(`${ind}    stack;`);
+    }
+
+    /* Not tied to any one generator, so emitted for whichever names one. */
+    if (l.opacity_source && l.opacity_source !== 'none') {
+      out.push(`${ind}    opacity-source = <${SOURCE_NAME[SOURCES[l.opacity_source]]}>;`);
+      if (l.opacity_min) out.push(`${ind}    opacity-min = <${l.opacity_min}>;`);
+      if (l.opacity_full) out.push(`${ind}    opacity-full = <${l.opacity_full}>;`);
     }
 
     if (l.axis && l.axis !== 'strip') {
@@ -692,6 +756,60 @@ const PRESETS = {
       { type: 'matrix', zone: 'all',
         color: [125, 100, 60], head_color: [110, 20, 100],
         speed: 150, tail: 24, drop_rate_ms: 0, columns: 12, jitter: 0, head_size: 8 },
+    ],
+  },
+  Pulse: {
+    name: 'Pulse',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'pulse', zone: 'all', color: [190, 60, 100], decay_ms: 450 },
+    ],
+  },
+  'Glow Pulse': {
+    name: 'Glow Pulse',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'pulse', zone: 'all', color: [265, 80, 100],
+        decay_ms: 900, min_level: 40, hue_step: 7, stack: true },
+    ],
+  },
+  Held: {
+    name: 'Held',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'solid', zone: 'all', color: [225, 70, 5] },
+      { type: 'hold', zone: 'all', blend: 'add', color: [45, 55, 90], release_ms: 260 },
+    ],
+  },
+  Darts: {
+    name: 'Darts',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'dart', zone: 'all', axis: 'x',
+        color: [285, 90, 70], head_color: [300, 20, 100],
+        speed: 110, lifetime_ms: 1100, tail: 28 },
+    ],
+  },
+  Forge: {
+    name: 'Forge',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'solid', zone: 'all', color: [12, 100, 12] },
+      /* The same fire as the Fire preset. Only its opacity is driven, which
+       * is the whole point of the source: the generator is untouched.
+       */
+      { type: 'fire', zone: 'all', blend: 'add',
+        base_color: [0, 100, 55], tip_color: [45, 75, 100],
+        period_ms: 420, cell: 12, height: 235, flicker: 200, axis: 'y',
+        opacity_source: 'wpm', opacity_min: 25, opacity_full: 60 },
+    ],
+  },
+  Static: {
+    name: 'Static',
+    zones: { all: { range: [0, 255] } },
+    layers: [
+      { type: 'static', zone: 'all', color: [180, 15, 100],
+        period_ms: 70, density: 45, hue_spread: 40 },
     ],
   },
   Pinwheel: {

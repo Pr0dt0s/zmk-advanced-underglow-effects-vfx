@@ -53,6 +53,17 @@ jobs:
           pip install Pillow
           node tools/record-gifs.mjs fire nexus
 
+      # Linking a generator says nothing about whether the page can reach it,
+      # and one wired up wrong renders black rather than failing. This drives
+      # the page and asserts on what comes out: dark until a key is pressed,
+      # still lit while one is held, and a driven opacity that moves with its
+      # signal.
+      - name: Check the generators behave in a browser
+        run: |
+          python3 -m http.server 8899 -d docs/sim &
+          sleep 2
+          node tools/verify-sim.mjs
+
       - uses: actions/upload-artifact@v4
         with:
           name: sample-clips
