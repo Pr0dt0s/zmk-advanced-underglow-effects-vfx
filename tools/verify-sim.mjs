@@ -143,6 +143,60 @@ for (const name of ['Pulse', 'Darts']) {
   check('Forge follows words per minute', typing > idle * 1.2, `${idle} -> ${typing}`);
 }
 
+/* A board with both kinds of LED on one chain. Left until last because it
+ * rewires the layout everything above assumed.
+ */
+{
+  await page.selectOption('#path', 'mixed');
+  await page.waitForTimeout(400);
+
+  const board = await page.evaluate(() => {
+    const l = window.vfxDebug.layout();
+    const perHalf = l.leds.length / 2;
+    const glow = l.leds.slice(0, perHalf).filter(p => p.kind === 'glow').length;
+
+    return {
+      perHalf,
+      glow,
+      keyed: l.leds.slice(0, perHalf).filter(p => p.kind === 'key').length,
+      /* Nearest-wins would hand some keys an underglow pixel, which starts a
+       * ripple behind the board instead of under the finger.
+       */
+      onGlow: l.keyPixels.filter(i => (i % perHalf) < glow).length,
+    };
+  });
+
+  check('Mixed board is underglow plus one LED per key',
+        board.perHalf === board.glow + board.keyed && board.glow > 0 && board.keyed > 0,
+        `${board.perHalf} = ${board.glow} + ${board.keyed}`);
+  check('No key is mapped onto an underglow pixel', board.onGlow === 0,
+        `${board.onGlow} would be`);
+
+  await apply('Underglow and keys');
+  await renderAt(120000);
+
+  const rest = await page.evaluate(() => {
+    const l = window.vfxDebug.layout();
+    const per = l.leds.length / 2;
+    const px = window.vfxDebug.pixels(0);
+    let glow = 0, keyed = 0;
+
+    for (let i = 0; i < per; i++) {
+      const sum = px[i * 3] + px[i * 3 + 1] + px[i * 3 + 2];
+
+      if (l.leds[i].kind === 'glow') glow += sum; else keyed += sum;
+    }
+
+    return { glow, keyed };
+  });
+
+  /* The point of the scene: an ambient wash below and nothing on the keys
+   * until one is pressed, which one uniform strip could not show.
+   */
+  check('The two groups run different effects', rest.glow > 0 && rest.keyed === 0,
+        `glow ${rest.glow}, keys ${rest.keyed}`);
+}
+
 if (errors.length) console.log(`\npage errors:\n  ${errors.join('\n  ')}`);
 
 await browser.close();

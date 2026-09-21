@@ -112,9 +112,20 @@ keyboard produces.
 
 Every generator is reachable, including the reactive ones and a driven
 `opacity-source` — click a key on the board to fire a press, and the WPM
-control drives anything whose opacity follows it. Channels are the one thing
-not modelled: the page renders a single scene across the strip, so a channel's
-masking has no equivalent there.
+control drives anything whose opacity follows it.
+
+The strip path includes **Underglow then per-key**, which models a board that
+lights the keys and the case from one chain: six downward-facing pixels ahead
+of one per key, drawn as a wash under the board and as lit keycaps
+respectively, with each key mapped to its own LED rather than to whichever is
+nearest. That is the wiring the PandaKB map describes, and the `Underglow and
+keys` preset puts an ambient wash on the first group and ripples on the
+second.
+
+Channels themselves are not modelled: the page renders one scene across the
+strip, so the separate scene, brightness and hue each channel carries at
+runtime have no equivalent here. Zones show the same pixels running different
+effects, which is most of what you want to look at.
 
 `tools/verify-sim.mjs` drives the page in a headless browser and asserts on
 what comes out rather than on whether it compiled: that a reactive scene is

@@ -14,6 +14,11 @@ const BLEND = { normal: 0, add: 1, multiply: 2, screen: 3, max: 4 };
 const AXIS = { strip: 0, x: 1, y: 2, radial: 3, angle: 4, spiral: 5 };
 const CROSS = { both: 0, horizontal: 1, vertical: 2 };
 
+/* Downward-facing pixels per half on a mixed board, chained ahead of the
+ * per-key ones. Six is what the PandaKB Lily58 RGB MX carries.
+ */
+const MIXED_GLOW = 6;
+
 /* What a layer's opacity can be made to follow, as VFX_SRC_* names them. */
 const SOURCES = { none: 0, wpm: 1, battery: 2, activity: 3 };
 const SOURCE_NAME = ['VFX_SRC_NONE', 'VFX_SRC_WPM', 'VFX_SRC_BATTERY', 'VFX_SRC_ACTIVITY'];
@@ -383,6 +388,38 @@ function buildLayout(canvas, ledsPerHalf, stripPath) {
 
     const lerp = (a, b, t) => a + (b - a) * t;
 
+    /* Boards that light the keys and the case from one chain, which is what
+     * the underglow-first wiring on a PandaKB Lily58 looks like. The two
+     * groups want different effects, and the simulator cannot show why until
+     * it can show them being different things.
+     */
+    if (stripPath === 'mixed') {
+      for (let i = 0; i < MIXED_GLOW; i++) {
+        leds.push({
+          half,
+          kind: 'glow',
+          x: lerp(x0, x1, [0.16, 0.5, 0.84][i % 3]),
+          y: lerp(y0, y1, i < 3 ? 0.28 : 0.74),
+        });
+      }
+
+      /* One per key, snaking so that adjacent indices are adjacent keys,
+       * which is how these boards are actually routed.
+       */
+      const rows = [...new Set(hk.map(r => Math.round(r.y)))].sort((a, b) => a - b);
+
+      rows.forEach((rowY, row) => {
+        const inRow = hk.filter(r => Math.round(r.y) === rowY)
+                        .sort((a, b) => (row % 2 ? b.x - a.x : a.x - b.x));
+
+        for (const r of inRow) {
+          leds.push({ half, kind: 'key', key: r.i, x: r.x + r.w / 2, y: r.y + r.h / 2 });
+        }
+      });
+
+      continue;
+    }
+
     if (stripPath === 'ring') {
       /* Walk the perimeter clockwise from the top left corner. */
       for (let i = 0; i < ledsPerHalf; i++) {
@@ -421,6 +458,16 @@ function buildLayout(canvas, ledsPerHalf, stripPath) {
    * starts under the key that was actually pressed.
    */
   const keyPixels = rects.map(r => {
+    /* A board with per-key LEDs knows exactly which one belongs to a key, and
+     * nearest-wins would sometimes answer with an underglow pixel instead —
+     * a ripple would then start behind the board rather than under the finger.
+     */
+    if (stripPath === 'mixed') {
+      const own = leds.findIndex(l => l.kind === 'key' && l.key === r.i);
+
+      if (own >= 0) return own;
+    }
+
     const cx = r.x + r.w / 2;
     const cy = r.y + r.h / 2;
     let best = 0;
@@ -439,8 +486,15 @@ function buildLayout(canvas, ledsPerHalf, stripPath) {
    * spacing between the first two LEDs so any wiring or count lands on that
    * convention.
    */
-  const step = leds.length > 1
-    ? Math.hypot(leds[1].x - leds[0].x, leds[1].y - leds[0].y) || 1
+  /* Measured between two adjacent per-key LEDs when there are any. The first
+   * two pixels of a mixed board are underglow sitting a third of the board
+   * apart, and scaling to that would put every distance property out by a
+   * factor of five.
+   */
+  const gauge = stripPath === 'mixed' ? MIXED_GLOW : 0;
+
+  const step = leds.length > gauge + 1
+    ? Math.hypot(leds[gauge + 1].x - leds[gauge].x, leds[gauge + 1].y - leds[gauge].y) || 1
     : 1;
   const k = 10 / step;
   const originX = Math.min(...leds.map(l => l.x));
@@ -480,14 +534,20 @@ function draw(ctx, halves) {
     const r = px[idx * 3], g = px[idx * 3 + 1], b = px[idx * 3 + 2];
     if ((r | g | b) === 0) continue;
 
-    const grad = ctx.createRadialGradient(led.x, led.y, 0, led.x, led.y, radius);
+    /* A per-key LED points up through its keycap, so it reads as a tight lit
+     * square rather than a wash on the desk. Drawing both the same way is
+     * what made the two groups indistinguishable.
+     */
+    const rad = led.kind === 'key' ? radius * 0.55 : radius;
+
+    const grad = ctx.createRadialGradient(led.x, led.y, 0, led.x, led.y, rad);
     grad.addColorStop(0, `rgba(${r},${g},${b},0.95)`);
-    grad.addColorStop(0.35, `rgba(${r},${g},${b},0.38)`);
+    grad.addColorStop(0.35, `rgba(${r},${g},${b},${led.kind === 'key' ? 0.72 : 0.38})`);
     grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
 
     ctx.fillStyle = grad;
     ctx.beginPath();
-    ctx.arc(led.x, led.y, radius, 0, Math.PI * 2);
+    ctx.arc(led.x, led.y, rad, 0, Math.PI * 2);
     ctx.fill();
   }
 
@@ -504,6 +564,36 @@ function draw(ctx, halves) {
     ctx.lineWidth = 1;
     ctx.stroke();
   }
+
+  /* A per-key LED shines through its own keycap, so it goes on after the
+   * plate rather than under it. Underglow stays beneath, which is the whole
+   * visible difference between the two on a board that has both.
+   */
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (const [n, led] of leds.entries()) {
+    if (led.kind !== 'key' || led.key === undefined) continue;
+
+    const half = halves[led.half];
+    const px = half.pixels;
+
+    if (!px || half.powerState === 1) continue;
+
+    const idx = n - (led.half === 1 ? leds.length / 2 : 0);
+    const r = px[idx * 3], g = px[idx * 3 + 1], b = px[idx * 3 + 2];
+
+    if ((r | g | b) === 0) continue;
+
+    const rect = rects[led.key];
+    const rad = Math.min(6, rect.w * 0.12);
+
+    ctx.beginPath();
+    ctx.roundRect(rect.x + 1.5, rect.y + 1.5, rect.w - 3, rect.h - 3, rad);
+    ctx.fillStyle = `rgba(${r},${g},${b},0.42)`;
+    ctx.fill();
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
 
   /* Small dots marking where each LED actually sits on the strip. */
   for (const led of leds) {
@@ -756,6 +846,22 @@ const PRESETS = {
       { type: 'matrix', zone: 'all',
         color: [125, 100, 60], head_color: [110, 20, 100],
         speed: 150, tail: 24, drop_rate_ms: 0, columns: 12, jitter: 0, head_size: 8 },
+    ],
+  },
+  /* Needs the "Underglow then per-key" wiring to mean anything: on any other
+   * path those ranges are just the first six and the rest of one uniform
+   * strip. Zones are how one scene addresses the two groups separately;
+   * channels go further and give each its own brightness and scene, which
+   * this page does not model.
+   */
+  'Underglow and keys': {
+    name: 'Underglow and keys',
+    zones: { glow: { range: [0, 6] }, keys: { range: [6, 29] } },
+    layers: [
+      { type: 'pulse', zone: 'glow', color: [265, 80, 100],
+        decay_ms: 900, min_level: 40, hue_step: 7, stack: true },
+      { type: 'ripple', zone: 'keys', color: [190, 40, 100],
+        decay_ms: 700, speed: 60, width: 15 },
     ],
   },
   Pulse: {
@@ -1177,7 +1283,27 @@ async function main() {
 
   $('path').addEventListener('change', e => {
     stripPath = e.target.value;
+
+    /* A mixed board's count is not a free choice: it is one LED per key plus
+     * the underglow, so the slider follows the wiring rather than fighting it.
+     */
+    if (stripPath === 'mixed') {
+      const perHalf = keys.filter(k => k.x < 800).length;
+
+      ledsPerHalf = MIXED_GLOW + perHalf;
+      $('count').value = ledsPerHalf;
+      $('out-count').textContent = ledsPerHalf;
+      $('count').disabled = true;
+
+      reinit();
+
+      return;
+    }
+
+    $('count').disabled = false;
+
     buildLayout(canvas, ledsPerHalf, stripPath);
+
     for (const h of halves) {
       h.setKeyMap(layout.keyPixels);
       h.setPositions(layout.positions);
