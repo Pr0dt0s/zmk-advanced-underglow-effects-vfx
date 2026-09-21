@@ -127,11 +127,26 @@ strip, so the separate scene, brightness and hue each channel carries at
 runtime have no equivalent here. Zones show the same pixels running different
 effects, which is most of what you want to look at.
 
+### Building a scene
+
+The panel under the presets is a composer: add a layer, pick its generator,
+and set its zone, blend, colours and properties with real controls rather than
+by remembering property names. Layers reorder and delete, every change lands
+on the strip immediately, and **Copy as devicetree** emits what you built,
+ready to paste into a keymap.
+
+The controls are generated from the same table the loader and the exporter
+read, so a generator gains an editor by being described once. The two things
+it does not cover are gradient stops and a layer-state colour list, both
+variable-length; the **Scene JSON** box underneath is the same object and
+edits either way round, so those stay reachable.
+
 `tools/verify-sim.mjs` drives the page in a headless browser and asserts on
 what comes out rather than on whether it compiled: that a reactive scene is
 black until a key goes down, that a held key stays lit past any decay and
-falls when released, and that a driven opacity moves with its signal. CI runs
-it on every push.
+falls when released, that a driven opacity moves with its signal, and that the
+composer's controls, its JSON and the strip all agree. CI runs it on every
+push.
 
 ```sh
 ./sim/build.sh && python3 -m http.server -d docs/sim

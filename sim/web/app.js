@@ -47,42 +47,89 @@ const BLEND_NAME = ['VFX_BLEND_NORMAL', 'VFX_BLEND_ADD', 'VFX_BLEND_MULTIPLY',
  * them, each with the same default the devicetree binding declares.
  */
 const LAYER_SPECS = {
-  solid:      { id: 0,  args: [] },
-  gradient:   { id: 1,  args: [] },
+  solid:      { id: 0,  args: [], colors: ['color'] },
+  gradient:   { id: 1,  args: [], colors: [], stops: 'stops', axis: true },
   breathe:    { id: 2,  args: [['period_ms', 4000], ['min_level', 0], [null, 0],
-                              ['hue_swing', 0]] },
+                              ['hue_swing', 0]], colors: ['color'] },
   wave:       { id: 3,  args: [['wavelength', 0], ['period_ms', 2000], ['depth', 255],
-                              ['axis', 0]] },
+                              ['axis', 0]], colors: ['color'], axis: true },
   twinkle:    { id: 4,  args: [['period_ms', 1200], ['density', 40], [null, 0],
-                              ['hue_spread', 0]] },
-  plasma:     { id: 5,  args: [['scale', 0], ['period_ms', 6000], ['hue_spread', 40]] },
-  ripple:     { id: 6,  args: [['decay_ms', 600], ['speed', 50], ['width', 10]] },
-  keyflash:   { id: 7,  args: [['decay_ms', 400], ['spread', 12]] },
-  trail:      { id: 8,  args: [['decay_ms', 1500], ['spread', 12]] },
+                              ['hue_spread', 0]], colors: ['color'] },
+  plasma:     { id: 5,  args: [['scale', 0], ['period_ms', 6000], ['hue_spread', 40]],
+                colors: ['color'] },
+  ripple:     { id: 6,  args: [['decay_ms', 600], ['speed', 50], ['width', 10]],
+                colors: ['color'] },
+  keyflash:   { id: 7,  args: [['decay_ms', 400], ['spread', 12]], colors: ['color'] },
+  trail:      { id: 8,  args: [['decay_ms', 1500], ['spread', 12]], colors: ['color'] },
   water:      { id: 13, args: [['wavelength', 20], ['speed', 45], ['lifetime_ms', 2500],
-                              ['drop_rate_ms', 0], ['amplitude', 200], ['damping', 7]] },
-  fire:       { id: 16, args: [['period_ms', 500], ['cell', 12], ['height', 200]] },
-  comet:      { id: 17, args: [['period_ms', 3000], ['tail', 60], ['count', 1]] },
-  flag:       { id: 18, args: [] },
-  wpm:        { id: 19, args: [['full', 80]] },
-  'peripheral-battery': { id: 20, args: [['warn_below', 20]] },
-  cross:      { id: 15, args: [['decay_ms', 500], ['radius', 0], ['thickness', 4]] },
+                              ['drop_rate_ms', 0], ['amplitude', 200], ['damping', 7]],
+                colors: ['color', 'crest_color'] },
+  fire:       { id: 16, args: [['period_ms', 500], ['cell', 12], ['height', 200],
+                              ['flicker', 180]],
+                colors: ['base_color', 'tip_color'], axis: true },
+  comet:      { id: 17, args: [['period_ms', 3000], ['tail', 60], ['count', 1]],
+                colors: ['color', 'head_color'], axis: true },
+  flag:       { id: 18, args: [], colors: ['color'] },
+  wpm:        { id: 19, args: [['full', 80]], colors: ['idle_color', 'fast_color'] },
+  'peripheral-battery': { id: 20, args: [['warn_below', 20]],
+                colors: ['low_color', 'high_color', 'empty_color', 'unknown_color'] },
+  cross:      { id: 15, args: [['decay_ms', 500], ['radius', 0], ['thickness', 4]],
+                colors: ['color', 'centre_color'] },
   matrix:     { id: 14, args: [['speed', 60], ['tail', 40], ['drop_rate_ms', 0],
-                              ['columns', 6], ['jitter', 60], ['head_size', 8]] },
-  'layer-state': { id: 9,  args: [] },
-  battery:       { id: 10, args: [['warn_below', 20]] },
-  'ble-profile': { id: 11, args: [] },
+                              ['columns', 6], ['jitter', 60], ['head_size', 8]],
+                colors: ['color', 'head_color'] },
+  'layer-state': { id: 9,  args: [], colors: [], stops: 'colors' },
+  battery:       { id: 10, args: [['warn_below', 20]],
+                colors: ['low_color', 'high_color', 'empty_color'] },
+  'ble-profile': { id: 11, args: [],
+                colors: ['connected_color', 'disconnected_color', 'usb_color'] },
   /* These have add_* entry points of their own rather than going through
    * vfx_sim_add_layer, so the id is never used; the args are here because the
-   * devicetree export reads them from the same table.
+   * devicetree export and the composer read them from the same table.
    */
-  pulse:      { id: -1, args: [['decay_ms', 500], ['min_level', 0], ['hue_step', 0]] },
-  hold:       { id: -1, args: [['release_ms', 220]] },
-  dart:       { id: -1, args: [['speed', 90], ['lifetime_ms', 900], ['tail', 25]] },
-  static:     { id: -1, args: [['period_ms', 90], ['density', 60], ['hue_spread', 0]] },
+  pulse:      { id: -1, args: [['decay_ms', 500], ['min_level', 0], ['hue_step', 0]],
+                colors: ['color'] },
+  hold:       { id: -1, args: [['release_ms', 220]], colors: ['color'] },
+  dart:       { id: -1, args: [['speed', 90], ['lifetime_ms', 900], ['tail', 25]],
+                colors: ['color', 'head_color'], axis: true },
+  static:     { id: -1, args: [['period_ms', 90], ['density', 60], ['hue_spread', 0]],
+                colors: ['color'] },
 };
 
 const packHsb = (h, s, b) => (((h & 0x1ff) << 16) | ((s & 0xff) << 8) | (b & 0xff)) >>> 0;
+
+/* Scenes carry colour as the engine does, hue in degrees with saturation and
+ * brightness as percentages. A colour input speaks hex, so the composer
+ * converts at the edge rather than changing how a scene is written down.
+ */
+function hsbToHex([h, s, b]) {
+  const v = b / 100, sat = s / 100;
+  const c = v * sat;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - c;
+  const seg = Math.floor((h % 360) / 60);
+  const [r, g, bl] = [[c, x, 0], [x, c, 0], [0, c, x],
+                      [0, x, c], [x, 0, c], [c, 0, x]][seg];
+  const to = n => Math.round((n + m) * 255).toString(16).padStart(2, '0');
+
+  return `#${to(r)}${to(g)}${to(bl)}`;
+}
+
+function hexToHsb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = ((n >> 16) & 0xff) / 255, g = ((n >> 8) & 0xff) / 255, b = (n & 0xff) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+
+  let h = 0;
+  if (d) {
+    if (max === r) h = 60 * (((g - b) / d) % 6);
+    else if (max === g) h = 60 * ((b - r) / d + 2);
+    else h = 60 * ((r - g) / d + 4);
+  }
+
+  return [Math.round((h + 360) % 360), Math.round(max ? (d / max) * 100 : 0),
+          Math.round(max * 100)];
+}
 
 /* ------------------------------------------------------------------ engine */
 
@@ -688,7 +735,9 @@ function toDevicetree(scene, ledsPerHalf) {
     } else if (l.type === 'fire') {
       out.push(`${ind}    base-color = <${hsb(l.base_color)}>;`);
       out.push(`${ind}    tip-color = <${hsb(l.tip_color)}>;`);
-      if (l.flicker !== undefined) out.push(`${ind}    flicker = <${l.flicker}>;`);
+      /* flicker rides the generic loop below, which emits it only when it
+       * differs from the binding's default.
+       */
     } else if (l.type === 'comet') {
       if (l.head_color) out.push(`${ind}    head-color = <${hsb(l.head_color)}>;`);
     } else if (l.type === 'cross') {
@@ -1138,6 +1187,167 @@ async function main() {
     }
   }
 
+  /* ------------------------------------------------------------- composer */
+
+  /* Builds the controls for a layer from the same table the loader and the
+   * devicetree export read, so a generator gains an editor by being described
+   * once rather than by being wired up in three places.
+   */
+  function layerCard(layer, i) {
+    const spec = LAYER_SPECS[layer.type] ?? { args: [], colors: [] };
+    const card = document.createElement('div');
+
+    card.className = 'layer-card';
+
+    const head = document.createElement('div');
+
+    head.className = 'layer-head';
+    head.innerHTML = `<strong>${layer.type}</strong>`;
+
+    const button = (label, title, fn) => {
+      const b = document.createElement('button');
+
+      b.textContent = label;
+      b.title = title;
+      b.className = 'tiny';
+      b.addEventListener('click', fn);
+      head.appendChild(b);
+
+      return b;
+    };
+
+    button('↑', 'Move earlier', () => {
+      if (i > 0) {
+        [scene.layers[i - 1], scene.layers[i]] = [scene.layers[i], scene.layers[i - 1]];
+        composed();
+      }
+    });
+    button('↓', 'Move later', () => {
+      if (i < scene.layers.length - 1) {
+        [scene.layers[i + 1], scene.layers[i]] = [scene.layers[i], scene.layers[i + 1]];
+        composed();
+      }
+    });
+    button('✕', 'Remove', () => { scene.layers.splice(i, 1); composed(); });
+
+    card.appendChild(head);
+
+    const grid = document.createElement('div');
+
+    grid.className = 'layer-grid';
+    card.appendChild(grid);
+
+    const field = (label, el) => {
+      const wrap = document.createElement('label');
+
+      wrap.className = 'field';
+      wrap.textContent = label;
+      wrap.appendChild(el);
+      grid.appendChild(wrap);
+    };
+
+    const select = (value, options, fn) => {
+      const el = document.createElement('select');
+
+      for (const o of options) {
+        const opt = document.createElement('option');
+
+        opt.value = o;
+        opt.textContent = o;
+        opt.selected = String(value) === String(o);
+        el.appendChild(opt);
+      }
+
+      el.addEventListener('change', () => { fn(el.value); composed(); });
+
+      return el;
+    };
+
+    const number = (value, fn) => {
+      const el = document.createElement('input');
+
+      el.type = 'number';
+      el.value = value;
+      el.addEventListener('change', () => { fn(Number(el.value)); composed(); });
+
+      return el;
+    };
+
+    field('zone', select(layer.zone, Object.keys(scene.zones ?? {}),
+                         v => { layer.zone = v; }));
+    field('blend', select(layer.blend ?? 'normal', Object.keys(BLEND),
+                          v => { layer.blend = v; }));
+    field('opacity', number(layer.opacity ?? 255, v => { layer.opacity = v; }));
+
+    for (const name of spec.colors ?? []) {
+      if (!layer[name]) continue;
+
+      const el = document.createElement('input');
+
+      el.type = 'color';
+      el.value = hsbToHex(layer[name]);
+      el.addEventListener('change', () => { layer[name] = hexToHsb(el.value); composed(); });
+
+      field(name.replace(/_/g, ' '), el);
+    }
+
+    for (const [name, dflt] of spec.args) {
+      if (name === null || name === 'axis') continue;
+
+      field(name.replace(/_/g, ' '), number(layer[name] ?? dflt, v => { layer[name] = v; }));
+    }
+
+    if (spec.axis) {
+      field('axis', select(layer.axis ?? 'strip', Object.keys(AXIS),
+                           v => { layer.axis = v; }));
+    }
+
+    /* Not tied to a generator, so offered on every layer. */
+    field('driven by', select(layer.opacity_source ?? 'none', Object.keys(SOURCES),
+                              v => {
+                                if (v === 'none') delete layer.opacity_source;
+                                else layer.opacity_source = v;
+                              }));
+
+    if (layer.opacity_source && layer.opacity_source !== 'none') {
+      field('opacity min', number(layer.opacity_min ?? 0, v => { layer.opacity_min = v; }));
+      field('signal at full', number(layer.opacity_full ?? 0,
+                                     v => { layer.opacity_full = v; }));
+    }
+
+    if (spec.stops) {
+      const note = document.createElement('p');
+
+      note.className = 'note';
+      note.textContent = `${spec.stops} is a list; edit it in the JSON below.`;
+      card.appendChild(note);
+    }
+
+    return card;
+  }
+
+  function renderComposer() {
+    const list = $('layer-list');
+
+    list.innerHTML = '';
+    (scene.layers ?? []).forEach((l, i) => list.appendChild(layerCard(l, i)));
+
+    if (!scene.layers?.length) {
+      list.innerHTML = '<p class="note">No layers. Add one, or pick a preset above.</p>';
+    }
+  }
+
+  /* One way in and out of a change: rebuild the controls, mirror the JSON,
+   * and put it on the strip, so the three never disagree about what the
+   * scene is.
+   */
+  function composed() {
+    renderComposer();
+    $('scene').value = JSON.stringify(scene, null, 2);
+    applyScene();
+    document.querySelectorAll('.preset').forEach(x => x.classList.remove('active'));
+  }
+
   function setStatus(msg, ok) {
     const el = $('scene-status');
     el.textContent = msg;
@@ -1331,8 +1541,46 @@ async function main() {
       return;
     }
     if (applyScene()) {
+      renderComposer();
       document.querySelectorAll('.preset').forEach(b => b.classList.remove('active'));
     }
+  });
+
+  for (const type of Object.keys(LAYER_SPECS)) {
+    const opt = document.createElement('option');
+
+    opt.value = type;
+    opt.textContent = type;
+    $('add-type').appendChild(opt);
+  }
+
+  $('add-layer').addEventListener('click', () => {
+    const type = $('add-type').value;
+    const spec = LAYER_SPECS[type];
+
+    scene.zones ??= { all: { range: [0, 255] } };
+    scene.layers ??= [];
+
+    const layer = { type, zone: Object.keys(scene.zones)[0] };
+
+    /* Enough of a starting point to light up, since a layer added with no
+     * colour renders black and reads as the composer having done nothing.
+     */
+    for (const name of spec.colors ?? []) layer[name] = [200, 90, 100];
+    for (const [name, dflt] of spec.args) {
+      if (name !== null && name !== 'axis') layer[name] = dflt;
+    }
+
+    if (spec.stops === 'stops') layer.stops = [[0, 100, 100], [180, 100, 100]];
+    if (spec.stops === 'colors') layer.colors = [[0, 0, 0], [50, 100, 70]];
+
+    scene.layers.push(layer);
+    composed();
+  });
+
+  $('clear-layers').addEventListener('click', () => {
+    scene.layers = [];
+    composed();
   });
 
   $('export').addEventListener('click', async () => {
@@ -1354,6 +1602,7 @@ async function main() {
     b.addEventListener('click', () => {
       scene = structuredClone(PRESETS[name]);
       $('scene').value = JSON.stringify(scene, null, 2);
+      renderComposer();
       applyScene();
       for (const h of halves) h.e.vfx_sim_power_reset();
       document.querySelectorAll('.preset').forEach(x => x.classList.remove('active'));
@@ -1381,6 +1630,7 @@ async function main() {
   });
 
   $('scene').value = JSON.stringify(scene, null, 2);
+  renderComposer();
   reinit();
 
   /* Small handle for poking at the engine from the console or a test. */

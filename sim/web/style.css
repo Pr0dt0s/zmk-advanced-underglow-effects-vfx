@@ -124,3 +124,62 @@ textarea:focus { outline: none; border-color: var(--accent); }
   /* The simulator is a light-emitting surface; a dark stage is the honest
      rendering, so the page stays dark in both schemes by design. */
 }
+
+/* ------------------------------------------------------------- composer */
+
+.layer-card {
+  border: 1px solid #262c38;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: #11141b;
+}
+
+.layer-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.layer-head strong { flex: 1; }
+
+button.tiny {
+  padding: 1px 7px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Auto-fit rather than a fixed count: a solid has three controls and a water
+ * has ten, and both should fill the panel rather than one of them wrapping
+ * after every field.
+ */
+.layer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 6px 10px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: #9aa6bd;
+  gap: 2px;
+}
+
+.field input,
+.field select { width: 100%; }
+.field input[type="color"] { height: 26px; padding: 1px; }
+
+#json-box summary {
+  cursor: pointer;
+  color: #9aa6bd;
+  font-size: 13px;
+  margin: 6px 0;
+}
+
+/* Left to itself the picker takes the whole row and dwarfs the two buttons
+ * beside it, which reads as the important control when it is not.
+ */
+#add-type { max-width: 220px; }

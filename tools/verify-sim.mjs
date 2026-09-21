@@ -197,6 +197,55 @@ for (const name of ['Pulse', 'Darts']) {
         `glow ${rest.glow}, keys ${rest.keyed}`);
 }
 
+/* The composer has three places that must agree about what the scene is: the
+ * controls, the JSON, and the strip. Checking one would not notice the others
+ * drifting.
+ */
+{
+  await page.click('#clear-layers');
+  await renderAt(120000);
+
+  check('Clearing the layers leaves nothing lit', (await lit()) === 0);
+
+  await page.selectOption('#add-type', 'solid');
+  await page.click('#add-layer');
+  await renderAt(120000);
+
+  check('An added layer reaches the strip', (await lit()) > 0);
+
+  const swatch = page.locator('.layer-card input[type="color"]').first();
+
+  await swatch.fill('#ff0000');
+  await swatch.dispatchEvent('change');
+  await renderAt(120000);
+
+  const first = await page.evaluate(() => Array.from(window.vfxDebug.pixels(0)).slice(0, 3));
+
+  check('The colour picker reaches the strip', first.join(',') === '255,0,0', first.join(','));
+
+  await page.selectOption('#add-type', 'ripple');
+  await page.click('#add-layer');
+
+  const mirrored = JSON.parse(await page.inputValue('#scene'));
+
+  check('The JSON mirrors what the controls built',
+        mirrored.layers.map(l => l.type).join('+') === 'solid+ripple',
+        mirrored.layers.map(l => l.type).join('+'));
+
+  await page.locator('.layer-card').nth(1).locator('button', { hasText: '↑' }).click();
+
+  const reordered = JSON.parse(await page.inputValue('#scene'));
+
+  check('Layers reorder', reordered.layers.map(l => l.type).join('+') === 'ripple+solid',
+        reordered.layers.map(l => l.type).join('+'));
+
+  await page.locator('.layer-card').nth(0).locator('button', { hasText: '✕' }).click();
+
+  const removed = JSON.parse(await page.inputValue('#scene'));
+
+  check('Layers remove', removed.layers.length === 1 && removed.layers[0].type === 'solid');
+}
+
 if (errors.length) console.log(`\npage errors:\n  ${errors.join('\n  ')}`);
 
 await browser.close();

@@ -124,9 +124,30 @@
     <div class="panel wide">
       <h2>Scene</h2>
       <div class="row" id="presets"></div>
-      <textarea id="scene" spellcheck="false" rows="16"></textarea>
+
+      <div id="composer">
+        <div id="layer-list"></div>
+        <div class="row">
+          <select id="add-type"></select>
+          <button id="add-layer">Add layer</button>
+          <button id="clear-layers">Clear</button>
+        </div>
+      </div>
+
+      <details id="json-box">
+        <summary>Scene JSON</summary>
+        <p class="note">
+          The composer writes this, and editing it by hand works too — it is
+          the same object either way. Gradient stops and per-layer colour
+          lists are only editable here.
+        </p>
+        <textarea id="scene" spellcheck="false" rows="14"></textarea>
+        <div class="row">
+          <button id="apply" class="primary">Apply edited JSON</button>
+        </div>
+      </details>
+
       <div class="row">
-        <button id="apply" class="primary">Apply scene</button>
         <button id="export">Copy as devicetree</button>
         <span id="scene-status" class="status"></span>
       </div>
