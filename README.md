@@ -80,12 +80,41 @@ Add `#include <behaviors/vfx.dtsi>` to your keymap for the `&vfx` behavior.
 A complete working configuration lives in [`example/`](example/), which is
 what CI builds.
 
+### If the colours come out wrong
+
+Before blaming an effect, check `color-mapping` on your strip node. It is a
+list of Zephyr `LED_COLOR_ID` values, and those are **not** zero-based on red:
+
+```
+LED_COLOR_ID_WHITE 0   LED_COLOR_ID_RED 1
+LED_COLOR_ID_GREEN 2   LED_COLOR_ID_BLUE 3
+```
+
+So the GRB order that WS2812 and SK6812 want is `<2 1 3>`. Writing `<1 0 2>`
+in the belief that it means green-red-blue instead says red-white-green, which
+on a strip with no white channel feeds the chip's red line a constant zero and
+never transmits blue at all. The symptom is that red never appears however you
+configure a scene, greens look blue, and it is very easy to spend an evening
+adjusting effects that were correct all along.
+
+A quick way to tell: light three separate runs of pixels at hue 0, 120 and 240
+and check they read red, green and blue in that order. If they are rotated or
+reversed, it is the mapping, not the scene. Zero the hue shift first
+(`&vfx VFX_SET_HUE(0)`), since a stored one rotates all three together and
+looks exactly like a wiring fault.
+
 ## The simulator
 
 `sim/` compiles the real compositor — `render.c`, `color.c` and the generators,
 unmodified — to WebAssembly and renders it under a Lily58 in the browser. No
 effect is reimplemented in JavaScript, so a frame on the page is the frame the
 keyboard produces.
+
+It does not yet reach everything. Each generator needs a small `vfx_sim_add_*`
+entry point to be reachable from the page, and `pulse`, `hold`, `dart` and
+`static` have none, so they compile into the WebAssembly but cannot be placed
+in a scene there. Channels and `opacity-source` are likewise not exposed. All
+of it works on hardware; it is the simulator's bindings that are behind.
 
 ```sh
 ./sim/build.sh && python3 -m http.server -d docs/sim
@@ -236,6 +265,10 @@ that landed on its own strip, so one definition covers the whole board.
 | `zmk,vfx-layer-cross` | Lights the pressed key's row and column |
 | `zmk,vfx-layer-keyflash` | Lights the pressed key and fades in place |
 | `zmk,vfx-layer-trail` | Decaying heat map that builds up as you type |
+| `zmk,vfx-layer-pulse` | Lifts the whole zone on any press, ignoring which key |
+| `zmk,vfx-layer-hold` | Lights a key for as long as it is held down |
+| `zmk,vfx-layer-dart` | A press launches a packet that travels along an axis |
+| `zmk,vfx-layer-static` | Independent per-pixel randomness, re-rolled on a clock |
 | `zmk,vfx-layer-layer-state` | Colour per active keymap layer |
 | `zmk,vfx-layer-battery` | Fills a zone in proportion to charge |
 | `zmk,vfx-layer-ble-profile` | One pixel per profile, lighting the selected one |
@@ -269,6 +302,28 @@ nor an event for that one, so it could not be driven on hardware.
 On a split, the layer and BLE profile indicators only work on the **central**
 half. ZMK compiles its keymap and BLE profile code for the central only, so a
 peripheral has no layer or profile to report and those layers stay dark there.
+
+### Which reactive generator
+
+They differ in what they take from a keypress, which is what decides whether
+one can stand in for another:
+
+| | Reads | Good for |
+|---|---|---|
+| `ripple`, `cross`, `keyflash`, `trail` | **where** the key is | LEDs that sit under the keys |
+| `pulse` | only **that** a key was pressed | LEDs that do not: underglow, a status strip |
+| `dart` | where it started, then moves off | anything long enough to travel along |
+| `hold` | **when it is let go** | showing a chord, or the layer key you are leaning on |
+
+The first group needs `key-pixels` and pixels mounted under the keys. Point
+one at underglow behind the board and it aims at a key position that means
+nothing there, which reads as noise. `pulse` takes the other half of a
+keypress — that one happened at all — and lifts the whole zone together.
+
+`hold` is the only one that reads a release. The rest are struck and then
+decay on a schedule fixed at the moment of the press, which cannot express a
+duration nobody knows yet, so "lit for as long as you hold it" is not
+reachable by combining them however they are stacked.
 Battery works on both, and shows each half's own cell.
 
 Every generator takes `zone`, `blend` (`VFX_BLEND_NORMAL`, `_ADD`,
@@ -301,6 +356,84 @@ rain, which is dark and idle between presses and so lets the power gate cut
 the rail. It is the one generator that needs to know which way is *down*, so
 give it `pixel-positions` below; without a map it treats strip order as the
 direction of travel and falls in a single column.
+
+### Letting something drive how strongly a layer shows
+
+A layer's `opacity` is normally a fixed number. Point `opacity-source` at
+something the keyboard already knows and it becomes the value reached at full
+signal instead, with `opacity-min` at the bottom:
+
+```dts
+flames {
+    compatible = "zmk,vfx-layer-fire";
+    zone = <&vfx_all>;
+    /* ...the same fire as ever... */
+
+    opacity-source = <VFX_SRC_WPM>;
+    opacity-min = <25>;
+    opacity-full = <60>;   /* words per minute that reaches full */
+};
+```
+
+That is the shipped `Forge` preset, and the point of it is that the generator
+is untouched: an ordinary fire banks up as you type and dies back when you
+stop, without a line of fire code knowing that typing exists. Because this
+lives in the compositor rather than in any generator, every one of them gains
+it at once.
+
+| Source | Signal | `opacity-full` means |
+|---|---|---|
+| `VFX_SRC_NONE` | — | fixed at `opacity`, the default |
+| `VFX_SRC_WPM` | typing speed | words per minute, so set it around 60 |
+| `VFX_SRC_BATTERY` | charge | percent, so 100, or leave it |
+| `VFX_SRC_ACTIVITY` | anyone at the keyboard | ignored, it is a yes or no |
+
+`opacity-full` at 0 means 255, which suits a percentage and is far too high
+for a WPM — a fire driven by typing and left at the default would never get
+off `opacity-min`.
+
+`VFX_SRC_WPM` needs `CONFIG_ZMK_WPM=y` on the central, with the same caveat as
+the `wpm` layer above.
+
+### Channels: different effects on different pixels
+
+Some boards chain LEDs that light quite different things — underglow behind
+the board and per-key LEDs above it, on one wire. A channel is a slice of the
+strip with its own scene list, and its own scene, brightness, speed, hue and
+on/off at runtime:
+
+```dts
+&vfx_engine {
+    glow: channel-glow {
+        compatible = "zmk,vfx-channel";
+        range = <0 6>;
+        scenes = <&vfx_glow_pulse &vfx_breathe &vfx_ember>;
+        default-scene = <&vfx_glow_pulse>;
+    };
+
+    keys: channel-keys {
+        compatible = "zmk,vfx-channel";
+        range = <6 29>;
+        scenes = <&vfx_reactive &vfx_matrix &vfx_crosshair>;
+    };
+};
+```
+
+`range` is `<start len>` in **local** indices into this half's own strip, not
+into the whole-board space, so the same declaration suits both halves of a
+split. A channel's id is its position in the devicetree, and that id is what
+the behavior's `VFX_*_ON()` macros address: `glow` above is 0, `keys` is 1.
+
+Scenes are rendered whole and then masked to the channel that asked for them,
+which is why the shipped presets — every one of them written against the full
+strip — work unchanged on a channel that owns six pixels of it. Declaring no
+channel at all leaves one covering everything, which is what a board that has
+never heard of channels keeps doing.
+
+**Both halves of a split must declare the same channels carrying the same
+scenes in the same order.** Next and previous are resolved to an absolute
+index on the central and relayed as a number, so a half that knows fewer
+scenes silently clamps what the other half can ever reach.
 
 ### A scene per layer, and fading between them
 
@@ -421,6 +554,17 @@ half's key field in a 6x6 grid, generated by `sim/derive-positions.py`. If
 ripples come out the wrong shape on your board, replace it with your own
 pairs — it is just a list.
 
+`<vfx/pandakb-lily58.dtsi>` is the other shipped map, for the PandaKB Lily58
+RGB MX, and it is worth reading as an example of how far a real board can sit
+from the generic guess: 35 LEDs a side rather than 36, six downward-facing
+underglow ones chained **before** the 29 per-key ones, and a serpentine that
+turns round every row. It brings a `key-pixels` list as well as positions.
+
+Nothing in the firmware can work any of that out, so if your board is not one
+of these two, expect to measure it. The quickest way is a throwaway scene per
+pixel — one `solid` layer on a `range = <n 1>` zone — stepped with `VFX_NEXT`
+while you write down which LED lights.
+
 Distances in effect properties are in whatever units the map uses. The shipped
 map puts about 10 units between adjacent LEDs, which leaves sub-LED resolution
 so wavefronts move smoothly, and the defaults assume it. Without a map,
@@ -439,6 +583,26 @@ animated, but not lined up with the keys.
 Relative commands are rewritten to absolute ones on the central before being
 relayed, so both halves land on the same value rather than each applying its
 own increment to its own starting point.
+
+Every one has an `_ON(ch)` form that addresses a single channel —
+`VFX_NEXT_ON(1)`, `VFX_BRI_ON(0)`, `VFX_SEL_ON(1, 4)` — while the plain forms
+above mean every channel, which is what they did before channels existed.
+
+The channel rides in `param1` above the command, because `param2` is already
+spoken for by the commands that carry a value.
+
+A `mod-morph` is a tidy way to drive two channels without doubling the keys,
+since one key can then mean the per-key LEDs alone and the underglow with a
+modifier held:
+
+```dts
+vfx_next_ch: vfx_next_ch {
+    compatible = "zmk,behavior-mod-morph";
+    #binding-cells = <0>;
+    bindings = <&vfx VFX_NEXT_ON(1)>, <&vfx VFX_NEXT_ON(0)>;
+    mods = <MOD_RSFT>;
+};
+```
 
 `&rgb_ug` keeps working through the compatibility shim. Saturation is the one
 command with no equivalent, because VFX sets saturation per layer in
@@ -478,13 +642,37 @@ its own slice and animations line up across the seam.
 **Free-running** (default) costs no radio traffic: generators derive their
 output from time and position alone, so two halves agreeing on the clock
 produce identical frames. What they do not share is a clock, and two crystals
-drift apart over hours. Reactive effects see only their own half's keys.
+drift apart over hours.
 
 **Synchronised** (`CONFIG_ZMK_VFX_SPLIT_SYNCED=y`) has the central beacon its
-uptime, and optionally relay key positions so a ripple crosses the seam. It
-uses ZMK's existing behavior relay rather than a GATT service of its own.
-Corrections are eased in under a frame at a time rather than stepped, which
-would tear whatever is animating.
+uptime, and relay key positions so a ripple crosses the seam. It uses ZMK's
+existing behavior relay rather than a GATT service of its own. Corrections are
+eased in under a frame at a time rather than stepped, which would tear
+whatever is animating.
+
+#### Which half hears which keys
+
+Free-running is often described as "each half only reacts to its own keys",
+which is half right and misleading in a way worth spelling out, because it
+sends people hunting for a bug that is not there.
+
+The two halves do not start level. ZMK has to hand the central every
+peripheral press in order to run the keymap, and the engine reacts to every
+key event it sees rather than filtering by source. So:
+
+| Pressed on | Central draws it | Peripheral draws it |
+|---|---|---|
+| the central | yes, locally | **no**, until something relays it |
+| the peripheral | yes, ZMK delivered it | yes, locally |
+
+Relaying only has to go one way, and that is exactly what
+`CONFIG_ZMK_VFX_SYNC_RELAY_KEYS` (on by default under synced mode) does: the
+central forwards its own local presses, and skips anything that arrived from a
+peripheral, which would otherwise be drawn there twice.
+
+The practical upshot when testing: a press on the **peripheral** half already
+appears on both, even free-running. It is a press on the **central** that goes
+nowhere until you switch synced mode on.
 
 Note that "position" means position **along the strip**, not physical location:
 a serpentine strip makes a gradient snake rather than sweep. The simulator lets
