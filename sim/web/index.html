@@ -166,18 +166,45 @@
         Talks to a real keyboard over WebHID rather than to the compositor
         above, if it is running <code>CONFIG_ZMK_VFX_RAW_HID</code> with
         <a href="https://github.com/zzeneg/zmk-raw-hid">zzeneg/zmk-raw-hid</a>
-        wired in. This drives <code>zmk_vfx_tune_*()</code> on the board
-        itself: give a layer a <code>tune-id</code> in devicetree first, then
-        its slot's hue, level and speed become live sliders here. Needs
-        Chrome or Edge, and has not been tried against real hardware — see
-        the README.
+        wired in. Needs Chrome or Edge, and has not been tried against real
+        hardware — see the README.
       </p>
       <div class="row">
         <button id="host-connect">Connect</button>
         <button id="host-disconnect" hidden>Disconnect</button>
         <span id="host-status" class="status"></span>
       </div>
+
+      <h3>Tuning</h3>
+      <p class="note" style="margin-top:0">
+        Drives <code>zmk_vfx_tune_*()</code>: give a layer a
+        <code>tune-id</code> in devicetree, and its slot's hue, level and
+        speed become live sliders here.
+      </p>
       <div id="host-slots"></div>
+
+      <h3>Scenes</h3>
+      <p class="note" style="margin-top:0">
+        Drives <code>zmk_vfx_scene_*()</code> (needs
+        <code>CONFIG_ZMK_VFX_RUNTIME_SCENES</code> too): builds a channel's
+        scene on the board itself, live, out of the same ten generators the
+        composer above can also reach. Channels are found by asking each one
+        in turn until the board says there isn't one; a channel found this
+        way but never built on here shows as empty, not as unreachable.
+      </p>
+      <div class="row" id="host-channels"></div>
+      <div id="host-scene" hidden>
+        <div class="row">
+          <label class="radio"><input type="checkbox" id="host-scene-active"> Active (showing
+            this scene instead of the compiled list)</label>
+          <button id="host-scene-reset">Reset</button>
+        </div>
+        <div id="host-scene-layers"></div>
+        <div class="row">
+          <select id="host-add-type"></select>
+          <button id="host-add-layer">Add layer</button>
+        </div>
+      </div>
     </div>
   </section>
 </main>

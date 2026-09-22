@@ -19,6 +19,10 @@
 #include <zmk/vfx/sync.h>
 #include <zmk/vfx/tuning.h>
 #include <zmk/vfx/vfx.h>
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
+#include <zmk/vfx/runtime_scene.h>
+#endif
 #include <zmk/workqueue.h>
 
 #if IS_ENABLED(CONFIG_SETTINGS)
@@ -127,12 +131,6 @@ static const struct device *const led_strip = DEVICE_DT_GET(STRIP_NODE);
 
 static struct led_rgb strip_pixels[STRIP_NUM_PIXELS];
 static struct vfx_rgb frame[STRIP_NUM_PIXELS];
-
-/* Sized for the widest board rather than for this one, so that the saved
- * settings blob has a fixed layout and adding a channel to a keymap does not
- * silently reinterpret the stored bytes.
- */
-#define VFX_MAX_CHANNELS 4
 
 struct vfx_chan_state {
     uint8_t scene; /* position in this channel's own list, not the board's */
@@ -263,6 +261,24 @@ static const struct vfx_scene *channel_scene(uint8_t ch, uint8_t index) {
     return chan->scenes[index];
 }
 
+/* Whatever a channel is actually showing right now, which is its own
+ * runtime-built scene while one is active and its compiled list otherwise.
+ * The tick loop, the idle check and reactive key delivery all just want
+ * "the current scene" and should not each have to know runtime scenes
+ * exist; only channel_scene() itself, and the crossfade's outgoing scene
+ * (which is never a runtime one -- activating and deactivating cut rather
+ * than fade), still name an index directly.
+ */
+static const struct vfx_scene *current_channel_scene(uint8_t ch) {
+#if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
+    if (vfx_runtime_is_active(ch)) {
+        return vfx_runtime_scene(ch);
+    }
+#endif
+
+    return channel_scene(ch, state.chan[ch].scene);
+}
+
 static void push_frame(void) {
     for (uint16_t i = 0; i < STRIP_NUM_PIXELS; i++) {
         strip_pixels[i].r = frame[i].r;
@@ -333,7 +349,7 @@ static void vfx_tick(struct k_work *work) {
         }
 
         const struct vfx_frame_ctx ctx = build_ctx(ch);
-        const struct vfx_scene *scene = channel_scene(ch, cs->scene);
+        const struct vfx_scene *scene = current_channel_scene(ch);
 
 #if VFX_TRANSITION_MS > 0
         if (cs->fading) {
@@ -445,7 +461,7 @@ static void vfx_timer_handler(struct k_timer *timer) {
 
             const struct vfx_frame_ctx ctx = build_ctx(ch);
 
-            idle = !vfx_scene_is_animating(channel_scene(ch, state.chan[ch].scene), &ctx);
+            idle = !vfx_scene_is_animating(current_channel_scene(ch), &ctx);
 
 #if VFX_TRANSITION_MS > 0
             /* A fade is motion even between two still scenes, so parking the
@@ -491,6 +507,13 @@ static void vfx_save_work_handler(struct k_work *work) {
     const void *tune = vfx_tuning_state(&tune_len);
 
     settings_save_one("vfx/tune", tune, tune_len);
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
+    uint16_t rt_len;
+    const void *rt = vfx_runtime_state(&rt_len);
+
+    settings_save_one("vfx/rt", rt, rt_len);
+#endif
 }
 
 static int vfx_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg) {
@@ -517,6 +540,39 @@ static int vfx_settings_set(const char *name, size_t len, settings_read_cb read_
 
         return 0;
     }
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
+    if (settings_name_steq(name, "rt", &next) && !next) {
+        uint16_t rt_len;
+        /* vfx_runtime_state()'s scratch buffer doubles as the landing spot
+         * for the loaded bytes: read_cb fills it directly, same as "tune"
+         * above does with its own scratch. vfx_runtime_restore_state()
+         * then copies it right back into itself, a harmless no-op on the
+         * way to the one thing this path actually needs -- rebuilding
+         * every channel's zone/config/state/layer pointers from what was
+         * just loaded, which persisting the blob alone cannot do.
+         */
+        void *rt = (void *)vfx_runtime_state(&rt_len);
+
+        if (len != rt_len) {
+            return -EINVAL;
+        }
+
+        const int rc = read_cb(cb_arg, rt, rt_len);
+
+        if (rc < 0) {
+            return rc;
+        }
+
+        if (!vfx_runtime_restore_state(rt, rt_len)) {
+            return -EINVAL;
+        }
+
+        frame_dirty = true;
+
+        return 0;
+    }
+#endif
 
     if (!settings_name_steq(name, "state", &next) || next) {
         return -ENOENT;
@@ -721,6 +777,14 @@ int zmk_vfx_select_scene(uint8_t ch, uint8_t index) {
             continue;
         }
 
+#if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
+        /* Picking a compiled scene has to give up the channel, or NEXT/PREV
+         * on the keymap would appear to do nothing while a runtime scene
+         * stayed stuck on screen.
+         */
+        vfx_runtime_set_active(i, false);
+#endif
+
         /* Channels carry lists of their own length, so one index cannot fit
          * them all. Naming a channel is exact; addressing every channel takes
          * the nearest scene each one has rather than failing outright.
@@ -882,6 +946,135 @@ int zmk_vfx_tune_reset(uint8_t slot) {
     return tuned(true);
 }
 
+#if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
+/* Same shape as tuned() above: every runtime-scene write asks for a redraw
+ * and persists, whether it touched one layer or the whole channel.
+ */
+static int runtime_result(bool ok) {
+    if (!ok) {
+        return -EINVAL;
+    }
+
+    zmk_vfx_request_frame();
+
+    return zmk_vfx_save_state();
+}
+
+int zmk_vfx_scene_reset(uint8_t ch) {
+    if (ch >= channel_count()) {
+        return -EINVAL;
+    }
+
+    vfx_runtime_reset(ch);
+
+    return runtime_result(true);
+}
+
+int zmk_vfx_scene_add_layer(uint8_t ch, const struct vfx_rt_params *params, uint8_t *slot_out) {
+    if (ch >= channel_count()) {
+        return -EINVAL;
+    }
+
+    const int slot = vfx_runtime_add_layer(ch, params);
+
+    if (slot < 0) {
+        /* A pool that is merely full is a different problem for a host to
+         * react to (remove something) than a request that was malformed
+         * (an unusable type, say), so this is the one write worth telling
+         * apart from -EINVAL rather than collapsing both into it.
+         */
+        uint8_t count;
+        bool active;
+
+        return (vfx_runtime_get_info(ch, &count, &active) && count >= VFX_RT_MAX_LAYERS)
+                 ? -ENOSPC
+                 : -EINVAL;
+    }
+
+    if (slot_out) {
+        *slot_out = (uint8_t)slot;
+    }
+
+    return runtime_result(true);
+}
+
+int zmk_vfx_scene_set_arg(uint8_t ch, uint8_t slot, uint8_t idx, int16_t value) {
+    if (ch >= channel_count()) {
+        return -EINVAL;
+    }
+
+    return runtime_result(vfx_runtime_set_arg(ch, slot, idx, value));
+}
+
+int zmk_vfx_scene_set_color(uint8_t ch, uint8_t slot, uint16_t hue, uint8_t sat, uint8_t bri) {
+    if (ch >= channel_count()) {
+        return -EINVAL;
+    }
+
+    return runtime_result(vfx_runtime_set_color(ch, slot, hue, sat, bri));
+}
+
+int zmk_vfx_scene_remove_layer(uint8_t ch, uint8_t slot) {
+    if (ch >= channel_count()) {
+        return -EINVAL;
+    }
+
+    return runtime_result(vfx_runtime_remove_layer(ch, slot));
+}
+
+int zmk_vfx_scene_move_layer(uint8_t ch, uint8_t slot, int8_t direction) {
+    if (ch >= channel_count()) {
+        return -EINVAL;
+    }
+
+    return runtime_result(vfx_runtime_move_layer(ch, slot, direction));
+}
+
+int zmk_vfx_scene_activate(uint8_t ch) {
+    if (ch >= channel_count()) {
+        return -EINVAL;
+    }
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_POWER_GATE)
+    /* Same reason zmk_vfx_select_scene() does this: a scene switching in
+     * must not inherit whatever blackout countdown the last one left
+     * running.
+     */
+    vfx_power_reset(&power_ctl);
+#endif
+
+    return runtime_result(vfx_runtime_set_active(ch, true));
+}
+
+int zmk_vfx_scene_deactivate(uint8_t ch) {
+    if (ch >= channel_count()) {
+        return -EINVAL;
+    }
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_AUTO_POWER_GATE)
+    vfx_power_reset(&power_ctl);
+#endif
+
+    return runtime_result(vfx_runtime_set_active(ch, false));
+}
+
+int zmk_vfx_scene_info(uint8_t ch, uint8_t *count, bool *active) {
+    if (ch >= channel_count() || !vfx_runtime_get_info(ch, count, active)) {
+        return -EINVAL;
+    }
+
+    return 0;
+}
+
+int zmk_vfx_scene_get_layer(uint8_t ch, uint8_t slot, struct vfx_rt_params *out) {
+    if (ch >= channel_count() || !vfx_runtime_get_layer(ch, slot, out)) {
+        return -EINVAL;
+    }
+
+    return 0;
+}
+#endif /* CONFIG_ZMK_VFX_RUNTIME_SCENES */
+
 uint8_t zmk_vfx_get_brightness(uint8_t ch) { return state.chan[channel_for_read(ch)].brightness; }
 uint8_t zmk_vfx_get_speed(uint8_t ch) { return state.chan[channel_for_read(ch)].speed; }
 int16_t zmk_vfx_get_hue_shift(uint8_t ch) { return state.chan[channel_for_read(ch)].hue_shift; }
@@ -919,8 +1112,7 @@ static void fan_key_event(uint32_t position, bool pressed) {
 
         const struct vfx_frame_ctx ctx = build_ctx(ch);
 
-        vfx_scene_key_event(channel_scene(ch, state.chan[ch].scene), &ctx, position, pressed,
-                            ctx.time_ms);
+        vfx_scene_key_event(current_channel_scene(ch), &ctx, position, pressed, ctx.time_ms);
     }
 }
 
@@ -1111,6 +1303,10 @@ static int zmk_vfx_init(void) {
      * the table gets its defaults before anything can render with it.
      */
     vfx_tuning_reset_all();
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
+    vfx_runtime_init();
+#endif
 
     if (vfx_channel_count() > VFX_MAX_CHANNELS) {
         LOG_WRN("%d channels declared but only %d are supported; the rest stay dark",

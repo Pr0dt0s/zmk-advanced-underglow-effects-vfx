@@ -44,4 +44,5 @@ if(CONFIG_ZMK_VFX)
   target_sources_ifdef(CONFIG_ZMK_VFX_SPLIT_SYNCED app PRIVATE src/split_sync.c)
   target_sources_ifdef(CONFIG_ZMK_VFX_RAW_HID app PRIVATE
                        src/hid_protocol.c src/hid_transport.c)
+  target_sources_ifdef(CONFIG_ZMK_VFX_RUNTIME_SCENES app PRIVATE src/runtime_scene.c)
 endif()

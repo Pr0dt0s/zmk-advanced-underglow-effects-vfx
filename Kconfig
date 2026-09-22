@@ -194,6 +194,33 @@ config ZMK_VFX_RAW_HID
       raw_hid_adapter shield to your build before turning this on. See the
       README for the wire format.
 
+config ZMK_VFX_RUNTIME_SCENES
+    bool "Build a channel's scene at runtime rather than only in devicetree"
+    help
+      Adds zmk_vfx_scene_*(): add, edit, remove and reorder layers in a
+      bounded per-channel pool, and switch a channel to showing it instead
+      of its compiled list. Persisted the same way tuning is.
+
+      Only ten generators are buildable this way -- see runtime_scene.h for
+      which, and why the rest still need devicetree. Costs RAM on every
+      board that turns it on, sized by the option below, whether or not
+      anything is ever built at runtime.
+
+      Nothing drives this by itself: it needs a transport, and
+      CONFIG_ZMK_VFX_RAW_HID is the only one today.
+
+if ZMK_VFX_RUNTIME_SCENES
+
+config ZMK_VFX_RUNTIME_MAX_LAYERS
+    int "Layers a channel's runtime scene pool holds at once"
+    range 1 16
+    default 6
+    help
+      Sized per channel, not shared across them: a board with two channels
+      each turning this on costs twice this many layers' worth of RAM.
+
+endif # ZMK_VFX_RUNTIME_SCENES
+
 module = ZMK_VFX
 module-str = zmk_vfx
 source "subsys/logging/Kconfig.template.log_config"

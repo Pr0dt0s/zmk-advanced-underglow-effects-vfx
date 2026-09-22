@@ -14,6 +14,7 @@
 
 #include <zmk/vfx/engine.h>
 #include <zmk/vfx/hid_protocol.h>
+#include <zmk/vfx/runtime_scene.h>
 #include <zmk/vfx/tuning.h>
 #include <zmk/vfx/layers.h>
 #include <zmk/vfx/power.h>
@@ -2712,6 +2713,453 @@ static void test_hid_state_encodes_a_negative_hue(void) {
     CHECK(buf[6] == VFX_HID_STATUS_OK, "status must round-trip");
 }
 
+/* ---- host control: the scene-authoring ops on top of the wire format --- */
+
+static void test_hid_scene_add_layer_decodes_every_field(void) {
+    const uint8_t req[] = {
+        VFX_HID_OP_SCENE_ADD_LAYER,
+        2,          /* ch */
+        5,          /* type */
+        10,         /* zone start */
+        20,         /* zone len */
+        1,          /* blend */
+        200,        /* opacity */
+        0x2C, 0x01, /* hue = 300 */
+        80,         /* sat */
+        90,         /* bri */
+        0xE2, 0xFF, /* arg0 = -30 */
+        0x64, 0x00, /* arg1 = 100 */
+        0x00, 0x00, /* arg2 = 0 */
+        0x01, 0x00, /* arg3 = 1 */
+        0x03,       /* flags */
+    };
+    struct vfx_hid_request out;
+
+    CHECK(vfx_hid_decode(req, sizeof(req), &out), "a full SCENE_ADD_LAYER report must decode");
+    CHECK(out.ch == 2 && out.type == 5, "ch and type must round-trip: %d, %d", out.ch, out.type);
+    CHECK(out.zone_start == 10 && out.zone_len == 20, "zone must round-trip: %d, %d",
+        out.zone_start, out.zone_len);
+    CHECK(out.blend == 1 && out.opacity == 200, "blend and opacity must round-trip: %d, %d",
+        out.blend, out.opacity);
+    CHECK(out.hue == 300 && out.sat == 80 && out.bri == 90, "colour must round-trip: %d,%d,%d",
+        out.hue, out.sat, out.bri);
+    CHECK(out.args[0] == -30 && out.args[1] == 100 && out.args[2] == 0 && out.args[3] == 1,
+        "all four args must round-trip, including a negative one: %d,%d,%d,%d", out.args[0],
+        out.args[1], out.args[2], out.args[3]);
+    CHECK(out.flags == 3, "flags must round-trip");
+
+    const uint8_t truncated[] = {VFX_HID_OP_SCENE_ADD_LAYER, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+
+    CHECK(!vfx_hid_decode(truncated, sizeof(truncated), &out),
+        "a SCENE_ADD_LAYER report short of its 19 payload bytes must be refused");
+}
+
+static void test_hid_scene_set_arg_and_color_decode(void) {
+    const uint8_t arg_req[] = {VFX_HID_OP_SCENE_SET_ARG, 1, 3, 2, 0x38, 0xFF};
+    struct vfx_hid_request arg_out;
+
+    CHECK(vfx_hid_decode(arg_req, sizeof(arg_req), &arg_out), "SCENE_SET_ARG must decode");
+    CHECK(arg_out.ch == 1 && arg_out.slot == 3 && arg_out.arg_idx == 2 && arg_out.args[0] == -200,
+        "ch, slot, index and a negative value must all round-trip: %d,%d,%d,%d", arg_out.ch,
+        arg_out.slot, arg_out.arg_idx, arg_out.args[0]);
+
+    const uint8_t color_req[] = {VFX_HID_OP_SCENE_SET_COLOR, 0, 4, 0x2C, 0x01, 50, 60};
+    struct vfx_hid_request color_out;
+
+    CHECK(vfx_hid_decode(color_req, sizeof(color_req), &color_out), "SCENE_SET_COLOR must decode");
+    CHECK(color_out.slot == 4 && color_out.hue == 300 && color_out.sat == 50 &&
+              color_out.bri == 60,
+        "slot and colour must all round-trip: %d,%d,%d,%d", color_out.slot, color_out.hue,
+        color_out.sat, color_out.bri);
+}
+
+static void test_hid_scene_channel_only_ops_decode(void) {
+    for (uint8_t op = VFX_HID_OP_SCENE_RESET; op <= VFX_HID_OP_SCENE_GET_INFO; op++) {
+        if (op == VFX_HID_OP_SCENE_ADD_LAYER || op == VFX_HID_OP_SCENE_SET_ARG ||
+            op == VFX_HID_OP_SCENE_SET_COLOR || op == VFX_HID_OP_SCENE_REMOVE_LAYER ||
+            op == VFX_HID_OP_SCENE_MOVE_LAYER || op == VFX_HID_OP_SCENE_GET_LAYER) {
+            continue; /* covered by their own tests; these carry more than ch */
+        }
+
+        const uint8_t req[] = {op, 3};
+        struct vfx_hid_request out;
+
+        CHECK(vfx_hid_decode(req, sizeof(req), &out), "op 0x%02x must decode from ch alone", op);
+        CHECK(out.ch == 3, "op 0x%02x must carry ch through: got %d", op, out.ch);
+    }
+}
+
+static void test_hid_scene_remove_and_move_decode(void) {
+    const uint8_t remove_req[] = {VFX_HID_OP_SCENE_REMOVE_LAYER, 1, 5};
+    struct vfx_hid_request remove_out;
+
+    CHECK(vfx_hid_decode(remove_req, sizeof(remove_req), &remove_out),
+        "SCENE_REMOVE_LAYER must decode");
+    CHECK(remove_out.ch == 1 && remove_out.slot == 5, "ch and slot must round-trip: %d, %d",
+        remove_out.ch, remove_out.slot);
+
+    const uint8_t move_req[] = {VFX_HID_OP_SCENE_MOVE_LAYER, 1, 5, 0xFF};
+    struct vfx_hid_request move_out;
+
+    CHECK(vfx_hid_decode(move_req, sizeof(move_req), &move_out), "SCENE_MOVE_LAYER must decode");
+    CHECK(move_out.direction == -1, "direction must decode as signed, got %d", move_out.direction);
+}
+
+static void test_hid_scene_info_and_layer_encode(void) {
+    uint8_t buf[VFX_HID_MAX_REPLY_LEN];
+    uint8_t len = vfx_hid_encode_scene_info(2, 4, true, VFX_HID_STATUS_OK, buf);
+
+    CHECK(len == 5, "SCENE_INFO is five bytes, got %d", len);
+    CHECK(buf[0] == VFX_HID_REPLY_SCENE_INFO, "SCENE_INFO must use GET_INFO's op with the reply bit");
+    CHECK(buf[1] == 2 && buf[2] == 4 && buf[3] == 1, "ch, count and active must round-trip: %d,%d,%d",
+        buf[1], buf[2], buf[3]);
+
+    const int16_t args[4] = {-30, 100, 0, 1};
+
+    len = vfx_hid_encode_scene_layer(2, 5, 6, 10, 20, 1, 200, 300, 80, 90, args, 3,
+                                     VFX_HID_STATUS_OK, buf);
+
+    CHECK(len == 22, "SCENE_LAYER is 22 bytes, got %d", len);
+    CHECK(buf[0] == VFX_HID_REPLY_SCENE_LAYER, "SCENE_LAYER must use GET_LAYER's op with the reply bit");
+    CHECK(buf[1] == 2 && buf[2] == 5 && buf[3] == 6, "ch, slot and type must round-trip: %d,%d,%d",
+        buf[1], buf[2], buf[3]);
+    CHECK(buf[4] == 10 && buf[5] == 20, "zone must round-trip: %d, %d", buf[4], buf[5]);
+
+    const int16_t hue = (int16_t)((uint16_t)buf[8] | ((uint16_t)buf[9] << 8));
+    const int16_t arg0 = (int16_t)((uint16_t)buf[12] | ((uint16_t)buf[13] << 8));
+
+    CHECK(hue == 300, "hue must round-trip through the wire, got %d", hue);
+    CHECK(arg0 == -30, "a negative arg must round-trip through the wire, got %d", arg0);
+    CHECK(buf[20] == 3, "flags must round-trip");
+    CHECK(buf[21] == VFX_HID_STATUS_OK, "status must round-trip");
+}
+
+static void test_hid_scene_add_layer_ack_reports_the_assigned_slot(void) {
+    uint8_t buf[VFX_HID_MAX_REPLY_LEN];
+    /* SCENE_ADD_LAYER's success reply is an ordinary ACK, with slot set to
+     * the id the pool assigned rather than one echoed from the request --
+     * ADD_LAYER's request never named a slot in the first place.
+     */
+    const uint8_t len = vfx_hid_encode_ack(VFX_HID_OP_SCENE_ADD_LAYER, 4, VFX_HID_STATUS_OK, buf);
+
+    CHECK(len == 3, "an ACK is three bytes regardless of which op it answers, got %d", len);
+    CHECK(buf[0] == (VFX_HID_OP_SCENE_ADD_LAYER | VFX_HID_REPLY_BIT),
+        "the reply op must be SCENE_ADD_LAYER's own with the reply bit set");
+    CHECK(buf[1] == 4, "byte 1 must carry the newly assigned slot");
+}
+
+/* ---- runtime scene authoring -------------------------------------------
+ *
+ * A scene built through vfx_runtime_add_layer() and friends rather than by
+ * devicetree, rendered through the exact same vfx_render_frame() every
+ * compiled scene goes through -- these tests are about the pool (add,
+ * remove, reorder, edit, persist), not about the generators, which their
+ * own tests above already cover.
+ */
+
+static struct vfx_rt_params rt_solid(uint8_t start, uint8_t len, uint16_t hue) {
+    return (struct vfx_rt_params){
+        .type = VFX_RT_SOLID,
+        .zone_start = start,
+        .zone_len = len,
+        .blend = VFX_BLEND_NORMAL,
+        .opacity = 255,
+        .hue = hue,
+        .sat = 100,
+        .bri = 100,
+    };
+}
+
+static void test_runtime_add_layer_renders(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params red = rt_solid(0, NPX, 0);
+    const int slot = vfx_runtime_add_layer(0, &red);
+
+    CHECK(slot == 0, "the first layer in an empty channel gets slot 0, got %d", slot);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, out, NULL);
+
+    CHECK(out[0].r > out[0].g && out[0].r > out[0].b, "hue 0 must render red: %d,%d,%d", out[0].r,
+          out[0].g, out[0].b);
+}
+
+static void test_runtime_empty_scene_is_null(void) {
+    vfx_runtime_init();
+
+    CHECK(vfx_runtime_scene(0) == NULL, "a channel with nothing added must have no scene yet");
+
+    struct vfx_rt_params red = rt_solid(0, NPX, 0);
+    const int slot = vfx_runtime_add_layer(0, &red);
+
+    vfx_runtime_remove_layer(0, (uint8_t)slot);
+
+    CHECK(vfx_runtime_scene(0) == NULL, "removing the only layer must go back to no scene");
+}
+
+static void test_runtime_channels_are_independent(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params red = rt_solid(0, NPX, 0);
+
+    vfx_runtime_add_layer(0, &red);
+
+    CHECK(vfx_runtime_scene(0) != NULL, "channel 0 got a layer");
+    CHECK(vfx_runtime_scene(1) == NULL, "channel 1 got nothing and must have no scene of its own");
+}
+
+static void test_runtime_remove_layer_shifts_order(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params red = rt_solid(0, NPX, 0);
+    struct vfx_rt_params green = rt_solid(0, NPX, 120);
+    const int first = vfx_runtime_add_layer(0, &red);
+    const int second = vfx_runtime_add_layer(0, &green);
+
+    vfx_runtime_remove_layer(0, (uint8_t)first);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, out, NULL);
+
+    CHECK(out[0].g > out[0].r, "the remaining layer must still render: %d,%d,%d", out[0].r,
+          out[0].g, out[0].b);
+
+    /* The freed slot must be reusable rather than leaked. */
+    struct vfx_rt_params blue = rt_solid(0, NPX, 240);
+    const int reused = vfx_runtime_add_layer(0, &blue);
+
+    CHECK(reused == first, "a freed slot must be handed back out, got %d instead of %d", reused,
+          first);
+    VFX_UNUSED(second);
+}
+
+static void test_runtime_move_layer_swaps_render_order(void) {
+    vfx_runtime_init();
+
+    /* Both fill the same zone at full opacity in NORMAL blend, so whichever
+     * one renders *later* -- the higher render-order position -- is the one
+     * that shows, same as the composer's own layer stack.
+     */
+    struct vfx_rt_params red = rt_solid(0, NPX, 0);
+    struct vfx_rt_params green = rt_solid(0, NPX, 120);
+    const int first = vfx_runtime_add_layer(0, &red);
+    const int second = vfx_runtime_add_layer(0, &green);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, out, NULL);
+    CHECK(out[0].g > out[0].r, "green, added second, renders later and must show before the move");
+
+    /* MOVE_UP means toward index 0 (earlier), same sense the composer's own
+     * "Move earlier" button uses -- so moving `second` up swaps it with
+     * `first`, leaving order [second, first] and `first` rendering last.
+     */
+    CHECK(vfx_runtime_move_layer(0, (uint8_t)second, VFX_RT_MOVE_UP),
+          "moving the later layer earlier must succeed with a neighbour to swap with");
+
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, out, NULL);
+    CHECK(out[0].r > out[0].g, "red must render last, and so show, after the swap: %d,%d,%d",
+          out[0].r, out[0].g, out[0].b);
+
+    CHECK(!vfx_runtime_move_layer(0, (uint8_t)second, VFX_RT_MOVE_UP),
+        "second is now at index 0 and has no earlier position to swap with");
+    CHECK(!vfx_runtime_move_layer(0, (uint8_t)first, VFX_RT_MOVE_DOWN),
+        "first is now at the last index and has no later position to swap with");
+}
+
+static void test_runtime_set_color_and_arg_rebuild_the_layer(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params red = rt_solid(0, NPX, 0);
+    const int slot = vfx_runtime_add_layer(0, &red);
+
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, out, NULL);
+    CHECK(out[0].r > out[0].g, "starts red");
+
+    CHECK(vfx_runtime_set_color(0, (uint8_t)slot, 120, 100, 100), "set_color must succeed");
+
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, out, NULL);
+    CHECK(out[0].g > out[0].r, "set_color must actually change what renders: %d,%d,%d", out[0].r,
+          out[0].g, out[0].b);
+
+    /* Breathe's min_level is args[1]: raising it must lift the floor a fully
+     * decayed breathe still shows, which is the one argument easy to see
+     * without stepping through an animation.
+     */
+    struct vfx_rt_params dim_breathe = {
+        .type = VFX_RT_BREATHE,
+        .zone_start = 0,
+        .zone_len = NPX,
+        .blend = VFX_BLEND_NORMAL,
+        .opacity = 255,
+        .hue = 0,
+        .sat = 100,
+        .bri = 100,
+        .args = {4000, 0, 0, 0},
+    };
+    const int b = vfx_runtime_add_layer(1, &dim_breathe);
+
+    vfx_render_frame(vfx_runtime_scene(1), &ctx, out, NULL);
+    const uint8_t floor_before = out[0].r;
+
+    CHECK(vfx_runtime_set_arg(1, (uint8_t)b, 1, 200), "set_arg must succeed");
+
+    vfx_render_frame(vfx_runtime_scene(1), &ctx, out, NULL);
+    CHECK(out[0].r > floor_before, "raising min_level must raise the floor: %d -> %d",
+          floor_before, out[0].r);
+}
+
+static void test_runtime_pool_full_rejects_further_adds(void) {
+    vfx_runtime_init();
+
+    int last = -1;
+
+    for (int i = 0; i < VFX_RT_MAX_LAYERS; i++) {
+        struct vfx_rt_params p = rt_solid(0, 1, 0);
+
+        last = vfx_runtime_add_layer(0, &p);
+        CHECK(last >= 0, "layer %d of a full pool must still be accepted", i);
+    }
+
+    struct vfx_rt_params overflow = rt_solid(0, 1, 0);
+
+    CHECK(vfx_runtime_add_layer(0, &overflow) == -1,
+        "a pool already at VFX_RT_MAX_LAYERS must refuse one more");
+    VFX_UNUSED(last);
+}
+
+static void test_runtime_rejects_bad_slots_and_channels(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params red = rt_solid(0, NPX, 0);
+    const int slot = vfx_runtime_add_layer(0, &red);
+
+    CHECK(vfx_runtime_add_layer(VFX_MAX_CHANNELS, &red) == -1,
+        "a channel past the end must be refused");
+    CHECK(!vfx_runtime_set_arg(0, (uint8_t)(slot + 1), 0, 0),
+        "a slot nothing was ever added to must be refused");
+    CHECK(!vfx_runtime_set_color(0, (uint8_t)(slot + 1), 0, 0, 0),
+        "set_color on an unused slot must be refused");
+    CHECK(!vfx_runtime_remove_layer(0, (uint8_t)(slot + 1)),
+        "removing an unused slot must be refused");
+    CHECK(!vfx_runtime_set_arg(0, (uint8_t)slot, 4, 0), "an arg index past 0-3 must be refused");
+}
+
+static void test_runtime_activate_is_independent_of_scene_content(void) {
+    vfx_runtime_init();
+
+    CHECK(!vfx_runtime_is_active(0), "a channel starts inactive");
+    CHECK(vfx_runtime_set_active(0, true), "activating must succeed");
+    CHECK(vfx_runtime_is_active(0), "must read back active");
+
+    /* Activation and content are independent: a channel can be switched on
+     * with nothing built yet, which is what lets a host activate first and
+     * then build live rather than having to stage everything invisibly.
+     */
+    CHECK(vfx_runtime_scene(0) == NULL, "still no scene with nothing added");
+
+    struct vfx_rt_params red = rt_solid(0, NPX, 0);
+
+    vfx_runtime_add_layer(0, &red);
+    CHECK(vfx_runtime_scene(0) != NULL, "adding a layer while active must take effect immediately");
+}
+
+static void test_runtime_reset_clears_layers_but_keeps_active(void) {
+    vfx_runtime_init();
+    vfx_runtime_set_active(0, true);
+
+    struct vfx_rt_params red = rt_solid(0, NPX, 0);
+
+    vfx_runtime_add_layer(0, &red);
+    vfx_runtime_reset(0);
+
+    CHECK(vfx_runtime_scene(0) == NULL, "reset must clear every layer");
+    CHECK(vfx_runtime_is_active(0),
+        "reset must not deactivate the channel: a host resets to rebuild live, not to hand "
+        "control back to the compiled list");
+}
+
+static void test_runtime_get_info_and_get_layer_report_the_pool(void) {
+    vfx_runtime_init();
+
+    uint8_t count;
+    bool active;
+
+    CHECK(vfx_runtime_get_info(0, &count, &active) && count == 0 && !active,
+        "an untouched channel reports zero layers and inactive");
+
+    struct vfx_rt_params red = rt_solid(3, 5, 0);
+    const int slot = vfx_runtime_add_layer(0, &red);
+
+    vfx_runtime_set_active(0, true);
+
+    CHECK(vfx_runtime_get_info(0, &count, &active) && count == 1 && active,
+        "get_info must reflect the layer just added and the activation");
+
+    struct vfx_rt_params out;
+
+    CHECK(vfx_runtime_get_layer(0, (uint8_t)slot, &out), "get_layer must find a used slot");
+    CHECK(out.zone_start == 3 && out.zone_len == 5,
+        "get_layer must return what was actually built, not defaults: %d,%d", out.zone_start,
+        out.zone_len);
+}
+
+static void test_runtime_save_and_restore_round_trips(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params red = rt_solid(0, NPX / 2, 0);
+    struct vfx_rt_params green = rt_solid(NPX / 2, NPX / 2, 120);
+
+    vfx_runtime_add_layer(0, &red);
+    vfx_runtime_add_layer(0, &green);
+    vfx_runtime_set_active(0, true);
+
+    struct vfx_rgb before[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, before, NULL);
+
+    uint16_t len;
+    const void *blob = vfx_runtime_state(&len);
+    uint8_t copy[4096];
+
+    CHECK(len <= sizeof(copy), "test buffer must be large enough for the real blob (%u bytes)",
+          len);
+    memcpy(copy, blob, len);
+
+    /* Simulates a reboot: the live pool is gone, only the saved bytes are
+     * left, exactly as though settings had just been loaded from flash into
+     * a fresh boot image.
+     */
+    vfx_runtime_init();
+    CHECK(vfx_runtime_scene(0) == NULL, "the fresh pool must start empty");
+
+    CHECK(vfx_runtime_restore_state(copy, len), "restoring a blob of the right length must succeed");
+    CHECK(vfx_runtime_is_active(0), "restore must bring the activation flag back");
+
+    struct vfx_rgb after[NPX];
+
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, after, NULL);
+
+    for (int i = 0; i < NPX; i++) {
+        CHECK(before[i].r == after[i].r && before[i].g == after[i].g && before[i].b == after[i].b,
+            "pixel %d must render the same after restore: %d,%d,%d -> %d,%d,%d", i, before[i].r,
+            before[i].g, before[i].b, after[i].r, after[i].g, after[i].b);
+    }
+
+    CHECK(!vfx_runtime_restore_state(copy, (uint16_t)(len - 1)),
+        "a blob of the wrong length must be refused rather than misread");
+}
+
 int main(void) {
     struct {
         const char *name;
@@ -2812,6 +3260,29 @@ int main(void) {
         {"hid decode rejects unknown op", test_hid_decode_rejects_unknown_op},
         {"hid ack carries the request's own op", test_hid_ack_carries_the_requests_own_op},
         {"hid state encodes a negative hue", test_hid_state_encodes_a_negative_hue},
+        {"hid scene add layer decodes every field", test_hid_scene_add_layer_decodes_every_field},
+        {"hid scene set arg and color decode", test_hid_scene_set_arg_and_color_decode},
+        {"hid scene channel only ops decode", test_hid_scene_channel_only_ops_decode},
+        {"hid scene remove and move decode", test_hid_scene_remove_and_move_decode},
+        {"hid scene info and layer encode", test_hid_scene_info_and_layer_encode},
+        {"hid scene add layer ack reports the assigned slot",
+         test_hid_scene_add_layer_ack_reports_the_assigned_slot},
+        {"runtime add layer renders", test_runtime_add_layer_renders},
+        {"runtime empty scene is null", test_runtime_empty_scene_is_null},
+        {"runtime channels are independent", test_runtime_channels_are_independent},
+        {"runtime remove layer shifts order", test_runtime_remove_layer_shifts_order},
+        {"runtime move layer swaps render order", test_runtime_move_layer_swaps_render_order},
+        {"runtime set color and arg rebuild the layer",
+         test_runtime_set_color_and_arg_rebuild_the_layer},
+        {"runtime pool full rejects further adds", test_runtime_pool_full_rejects_further_adds},
+        {"runtime rejects bad slots and channels", test_runtime_rejects_bad_slots_and_channels},
+        {"runtime activate is independent of scene content",
+         test_runtime_activate_is_independent_of_scene_content},
+        {"runtime reset clears layers but keeps active",
+         test_runtime_reset_clears_layers_but_keeps_active},
+        {"runtime get info and get layer report the pool",
+         test_runtime_get_info_and_get_layer_report_the_pool},
+        {"runtime save and restore round trips", test_runtime_save_and_restore_round_trips},
     };
 
     for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {

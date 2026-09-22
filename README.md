@@ -862,17 +862,120 @@ where a transport like this actually tends to break. If you try it on a
 board, especially over BLE where `zmk-raw-hid` requires
 `BT_SECURITY_L2`, an issue report is worth more than the code.
 
+## Runtime scene authoring
+
+[Adjusting a layer while the keyboard runs](#adjusting-a-layer-while-the-keyboard-runs)
+moves a slider on a layer devicetree already built. This is the other half:
+building a channel's scene itself at runtime, over the same transport —
+adding, editing, reordering and removing layers on a running board rather
+than only in a `.keymap`.
+
+```ini
+CONFIG_ZMK_VFX_RAW_HID=y
+CONFIG_ZMK_VFX_RUNTIME_SCENES=y
+```
+
+It reuses the WebAssembly simulator's own trick for building a scene without
+an allocator — `sim/vfx_sim.c` writes into a fixed arena instead of reading
+flash-const structs, and `src/runtime_scene.c` does the same into a bounded
+per-channel pool of RAM instead. `zmk_vfx_scene_*()` (declared in `vfx.h`,
+implemented over `runtime_scene.h`) is the API this builds on, one channel's
+pool at a time; devicetree's compiled scene list stays exactly as it was,
+and a channel switches to showing this instead of it only once something has
+actually been built and activated.
+
+**Only ten generators are buildable this way**: `solid`, `breathe`, `wave`,
+`twinkle`, `plasma`, `ripple`, `keyflash`, `pulse`, `dart`, `static` — every
+one of them "one colour plus up to four small numbers", which is what fits a
+32-byte HID report and keeps every slot in the pool the same small size.
+`trail` and `hold` carry a byte of state per pixel; `gradient` takes a
+variable-length stop list; `water`, `matrix`, `fire`, `comet` and `cross`
+want a second colour and more arguments than four; the indicator layers read
+board state through a config that is itself a pointer. None of those are
+reachable here — devicetree remains the only way to reach them, same as it
+already was for everything else. `runtime_scene.h` has the full reasoning
+next to the generator list itself.
+
+A layer's zone is a plain pixel range (`start`, `len`), the same numbers
+`range = <start len>` takes in devicetree; the `keys` and `pixels` zone
+forms are not reachable from a runtime scene either.
+
+### The wire format
+
+Ten more ops on the same transport as tuning, all gated behind
+`CONFIG_ZMK_VFX_RUNTIME_SCENES` in addition to `CONFIG_ZMK_VFX_RAW_HID` — a
+board running raw-hid without runtime scenes still answers every one of
+these, with `status` `1` and nothing built, rather than leaving a host
+waiting on a reply that never comes. `ch` is a channel index; unlike a
+tuning slot, a runtime scene belongs to one channel, so there is no "every
+channel" form of any of these. `slot` here is a layer's id within that
+channel's own pool — a different id space from a tuning slot, assigned by
+`SCENE_ADD_LAYER`'s own reply.
+
+| Request | Bytes | Reply | Bytes |
+|---|---|---|---|
+| `SCENE_RESET` (`0x07`) | ch | `0x87`: ch, status | 3 |
+| `SCENE_ADD_LAYER` (`0x08`) | ch, type, zone start, zone len, blend, opacity, hue (`int16`), sat, bri, 4 args (`int16` each), flags | `0x88`: slot (or `0xFF`), status | 3 |
+| `SCENE_SET_ARG` (`0x09`) | ch, slot, arg index, value (`int16`) | `0x89`: slot, status | 3 |
+| `SCENE_SET_COLOR` (`0x0A`) | ch, slot, hue (`int16`), sat, bri | `0x8A`: slot, status | 3 |
+| `SCENE_REMOVE_LAYER` (`0x0B`) | ch, slot | `0x8B`: slot, status | 3 |
+| `SCENE_MOVE_LAYER` (`0x0C`) | ch, slot, direction (`int8`, ±1) | `0x8C`: slot, status | 3 |
+| `SCENE_ACTIVATE` (`0x0D`) | ch | `0x8D`: ch, status | 3 |
+| `SCENE_DEACTIVATE` (`0x0E`) | ch | `0x8E`: ch, status | 3 |
+| `SCENE_GET_INFO` (`0x0F`) | ch | `0x8F`: ch, count, active, status | 5 |
+| `SCENE_GET_LAYER` (`0x10`) | ch, slot | `0x90`: ch, slot, type, zone start, zone len, blend, opacity, hue, sat, bri, 4 args, flags, status | 22 |
+
+`status` is `0` for ok, `1` (`BAD_SLOT`) for a channel, slot, generator type
+or argument index outside range, `2` (`POOL_FULL`) only from
+`SCENE_ADD_LAYER` when the channel's pool already has
+`CONFIG_ZMK_VFX_RUNTIME_MAX_LAYERS` layers in it — broken out from
+`BAD_SLOT` because it is the one rejection a host would react to
+differently, by removing a layer rather than by fixing what it sent.
+`flags` is one byte: bit 0 is `pulse`'s `stack`, bit 1 is `dart`'s
+`reverse`, bits 2-4 are `dart`'s `axis` (`VFX_AXIS_*`, the same values
+`dt-bindings/zmk/vfx.h` defines) — nothing else buildable here reads either
+bit.
+
+There is no op that lists which slots are in use or their render order, only
+`SCENE_GET_LAYER` for one slot at a time — a host discovers a channel's
+layers by probing slots in turn and keeping whichever answer `0`, which
+tells it *what* is built but not the order it renders in. `host.js` tracks
+order itself for anything built live in the current browser session; a scene
+built earlier and then reconnected to shows its layers, correctly, in
+whatever order probing happened to find them rather than the order they were
+actually added in. Fixing this means a wire op that returns the render order
+directly, which nothing here has needed enough to add yet.
+
+### Persistence
+
+Saved the same way tuning is: `vfx_runtime_state()` hands
+`vfx_save_work_handler()` a snapshot to write to the `"vfx/rt"` settings key,
+debounced the same 2 seconds after the last change as everything else this
+module persists. What gets saved is deliberately not the live pool itself —
+every slot's `zone`/`config`/`state`/`layer` are plain pointers into that
+same pool, not something to trust after a reboot or a different build — only
+each slot's params, the render order, the count and whether the channel is
+active. Loading rebuilds every slot's pointers from those params before a
+frame is ever composited from them.
+
+### The simulator's own panel
+
+The **Scenes** part of the Host control panel drives this: pick a channel's
+tab, add a layer, edit its zone, colour, arguments and (for `pulse` and
+`dart`) their own flag or axis, reorder or remove it, and flip **Active** to
+show it instead of the channel's compiled list. Editing a layer's zone,
+blend or opacity has no dedicated wire op, so the panel rebuilds the whole
+layer with `SCENE_ADD_LAYER` under the hood — the same thing devicetree
+would require if you changed a layer's zone there, just without reflashing.
+
+Same caveat as tuning: `tests/` proves the wire format round-trips with no
+Zephyr in scope, and `tools/verify-host-hid.mjs` now drives the Scenes panel
+against a fake device too, but **none of it has been tried against a real
+board.**
+
 ## Roadmap
 
 Honest about what is missing rather than implied by the rest of this file.
-
-**Runtime scene authoring.** Adding and removing layers on a running board,
-which is a different and much larger thing than adjusting one that is
-already there. Wants a RAM scene model with bounded layer and config pools,
-and a way to persist what was built. Host control existing now makes this
-worth picking up: the transport (`zzeneg/zmk-raw-hid`, see above) and a
-browser-side client for it are no longer open questions, only what to send
-over it.
 
 **Caps word.** ZMK exposes neither a state accessor nor an event for it, so
 the indicator cannot be driven. Nothing to do here until that changes

@@ -12,6 +12,13 @@
 
 #define VFX_ENGINE_NODE DT_INST(0, zmk_vfx_engine)
 
+/* Sized for the widest board rather than for this one, so that the saved
+ * settings blob has a fixed layout and adding a channel to a keymap does not
+ * silently reinterpret the stored bytes. Shared with runtime_scene.c, which
+ * needs the same bound to size its own per-channel pool.
+ */
+#define VFX_MAX_CHANNELS 4
+
 uint8_t vfx_scene_count(void);
 const struct vfx_scene *vfx_scene_get(uint8_t index);
 uint8_t vfx_scene_default_index(void);

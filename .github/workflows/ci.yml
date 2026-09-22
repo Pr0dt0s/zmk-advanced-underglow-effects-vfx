@@ -176,7 +176,7 @@ jobs:
           # this module's own transport needs enabling here.
           - name: raw hid transport
             shield: lily58_left raw_hid_adapter
-            args: -DCONFIG_ZMK_VFX_RAW_HID=y
+            args: -DCONFIG_ZMK_VFX_RAW_HID=y -DCONFIG_ZMK_VFX_RUNTIME_SCENES=y
             prep: "true"
     steps:
       - name: Checkout the module

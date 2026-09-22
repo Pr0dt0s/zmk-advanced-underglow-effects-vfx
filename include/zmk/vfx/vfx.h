@@ -66,6 +66,42 @@ int zmk_vfx_tune_level(uint8_t slot, uint8_t level);
 int zmk_vfx_tune_speed(uint8_t slot, uint8_t speed);
 int zmk_vfx_tune_reset(uint8_t slot);
 
+/* Building a channel's own scene at runtime rather than picking one from
+ * its compiled list. Requires CONFIG_ZMK_VFX_RUNTIME_SCENES; every one of
+ * these is a thin wrapper over runtime_scene.h's own builder, adding the
+ * same two side effects zmk_vfx_tune_*() adds over vfx_tuning_set_*():
+ * asking for a redraw and persisting, debounced.
+ *
+ * `ch` is a channel index, never ZMK_VFX_CH_ALL: a runtime scene belongs to
+ * one channel, unlike a tuning slot which can belong to layers on several.
+ * -EINVAL for a channel out of range, an unusable generator type, an
+ * argument index outside 0-3, or a slot nothing was added to; -ENOSPC if
+ * the channel's pool is already full.
+ */
+struct vfx_rt_params;
+
+int zmk_vfx_scene_reset(uint8_t ch);
+int zmk_vfx_scene_add_layer(uint8_t ch, const struct vfx_rt_params *params, uint8_t *slot_out);
+int zmk_vfx_scene_set_arg(uint8_t ch, uint8_t slot, uint8_t idx, int16_t value);
+int zmk_vfx_scene_set_color(uint8_t ch, uint8_t slot, uint16_t hue, uint8_t sat, uint8_t bri);
+int zmk_vfx_scene_remove_layer(uint8_t ch, uint8_t slot);
+int zmk_vfx_scene_move_layer(uint8_t ch, uint8_t slot, int8_t direction);
+
+/* Switches the channel between showing this scene and its compiled list.
+ * Selecting any compiled scene (zmk_vfx_select_scene()) also deactivates,
+ * so NEXT/PREV on the keymap are never left silently stuck on it.
+ */
+int zmk_vfx_scene_activate(uint8_t ch);
+int zmk_vfx_scene_deactivate(uint8_t ch);
+
+/* Reads, for a host reconnecting to sync its own view rather than trusting
+ * whatever it last knew. Same -EINVAL as the writers above; count and
+ * active are left untouched on failure so a caller can pass its own
+ * defaults in without a separate zero-init.
+ */
+int zmk_vfx_scene_info(uint8_t ch, uint8_t *count, bool *active);
+int zmk_vfx_scene_get_layer(uint8_t ch, uint8_t slot, struct vfx_rt_params *out);
+
 /* Persist the current state, debounced. */
 int zmk_vfx_save_state(void);
 
