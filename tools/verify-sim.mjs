@@ -9,8 +9,10 @@
  * can reach it, and an effect wired up wrong renders black rather than
  * failing. These assertions are about behaviour that would otherwise only be
  * caught by flashing a keyboard: that a reactive scene is dark until a key is
- * pressed, that a held key stays lit until it is let go, and that a driven
- * opacity actually follows its signal.
+ * pressed, that a held key stays lit until it is let go, that a driven
+ * opacity actually follows its signal, and that a board with more than one
+ * channel keeps them independent -- their scenes, their brightness, and
+ * turning one off.
  *
  *   python3 -m http.server 8899 -d docs/sim &
  *   node tools/verify-sim.mjs
@@ -172,10 +174,11 @@ for (const name of ['Pulse', 'Darts']) {
   check('No key is mapped onto an underglow pixel', board.onGlow === 0,
         `${board.onGlow} would be`);
 
-  await apply('Underglow and keys');
-  await renderAt(120000);
-
-  const rest = await page.evaluate(() => {
+  /* Switching to a board with an underglow-first chain gives it two
+   * channels, glow and keys, each defaulted to its own scene -- no preset
+   * click needed, unlike before channels existed.
+   */
+  const groupSums = async () => page.evaluate(() => {
     const l = window.vfxDebug.layout();
     const per = l.leds.length / 2;
     const px = window.vfxDebug.pixels(0);
@@ -190,11 +193,61 @@ for (const name of ['Pulse', 'Darts']) {
     return { glow, keyed };
   });
 
-  /* The point of the scene: an ambient wash below and nothing on the keys
-   * until one is pressed, which one uniform strip could not show.
+  await renderAt(120000);
+
+  const rest = await groupSums();
+
+  /* The point of channels: an ambient wash below and nothing on the keys
+   * until one is pressed, which one scene on a uniform strip could not show.
    */
-  check('The two groups run different effects', rest.glow > 0 && rest.keyed === 0,
+  check('The two channels default to different effects', rest.glow > 0 && rest.keyed === 0,
         `glow ${rest.glow}, keys ${rest.keyed}`);
+
+  /* Independent scene, independent brightness: turning the keys channel off
+   * must not touch glow, and only pressing a key (not shown here) would ever
+   * light it.
+   */
+  await page.evaluate(() => window.vfxDebug.selectChannel(1));
+  await page.click('#chan-on');
+  await renderAt(121000);
+
+  const keysOff = await groupSums();
+
+  check('Turning a channel off leaves the other alone',
+        keysOff.glow === rest.glow && keysOff.keyed === 0,
+        `glow ${rest.glow} -> ${keysOff.glow}, keys -> ${keysOff.keyed}`);
+
+  await page.click('#chan-on');
+
+  await page.evaluate(() => window.vfxDebug.selectChannel(0));
+
+  /* fill() does not support range inputs, so the slider is driven directly
+   * and given the same 'input' event the mouse would fire.
+   */
+  const setBrightness = v => page.evaluate(x => {
+    const el = document.getElementById('brightness');
+
+    el.value = x;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }, v);
+
+  await setBrightness(0);
+  await renderAt(122000);
+
+  const glowDimmed = await groupSums();
+
+  check("A channel's brightness does not reach the other channel",
+        glowDimmed.glow === 0 && glowDimmed.keyed === 0,
+        `glow -> ${glowDimmed.glow}, keys ${glowDimmed.keyed}`);
+
+  await setBrightness(255);
+
+  /* Restores the one-channel world the rest of this file assumes: with two
+   * channels left in place, the glow channel's own baseline would still be
+   * lit and the composer checks below would be looking at the wrong strip.
+   */
+  await page.selectOption('#path', 'serpentine');
+  await page.waitForTimeout(200);
 }
 
 /* The composer has three places that must agree about what the scene is: the

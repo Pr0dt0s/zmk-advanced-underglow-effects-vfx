@@ -118,14 +118,33 @@ The strip path includes **Underglow then per-key**, which models a board that
 lights the keys and the case from one chain: six downward-facing pixels ahead
 of one per key, drawn as a wash under the board and as lit keycaps
 respectively, with each key mapped to its own LED rather than to whichever is
-nearest. That is the wiring the PandaKB map describes, and the `Underglow and
-keys` preset puts an ambient wash on the first group and ripples on the
-second.
+nearest. That is the wiring the PandaKB map describes, and it is also the one
+board on this page that carries more than one channel: a `glow` channel over
+the underglow pixels and a `keys` channel over the rest, each defaulted to
+its own scene, exactly as `pandakb-lily58.dtsi`'s overlay wires them.
 
-Channels themselves are not modelled: the page renders one scene across the
-strip, so the separate scene, brightness and hue each channel carries at
-runtime have no equivalent here. Zones show the same pixels running different
-effects, which is most of what you want to look at.
+A board with more than one channel gets a row of tabs above the presets, one
+per channel. The Engine panel's brightness, speed and hue sliders, and the
+on/off checkbox beside them, belong to whichever tab is selected rather than
+to the board, and the composer and scene JSON below edit that channel's own
+scene — drop any preset onto any channel and it lights only that channel's
+LEDs, the same clipping a real channel's `range` does at runtime. **Copy as
+devicetree** follows: a one-channel board still exports a plain
+`default-scene`, and a multi-channel one exports a `zmk,vfx-channel` node per
+tab.
+
+Internally this still runs on one wasm instance per physical half rather
+than one per channel — every channel's layers are merged into a single scene
+before it is loaded, each tagged with its own tuning slot (`vfx_sim_tune` /
+`vfx_sim_set_layer_tune`, the same calls behind [adjusting a layer while the
+keyboard runs](#adjusting-a-layer-while-the-keyboard-runs)), which is how
+they end up with independent brightness, speed and hue out of one render
+pass. That is a simulator trick built out of machinery already linked in,
+not what ships: real firmware gives each channel its own render call and
+copies out only the pixels it owns. A `keys`-type zone is the one thing this
+cannot preview correctly if it names a key outside its own channel's window,
+since resolving it happens inside the engine, past where the merge could
+clip it.
 
 ### Building a scene
 
@@ -772,11 +791,6 @@ of the interface already.
 as above. Wants a RAM scene model with bounded layer and config pools, and a
 way to persist what was built. Much larger than tuning, and worth doing only
 once tuning has shown the transport works.
-
-**Channels in the simulator.** The page renders one scene across the strip,
-so the separate scene, brightness and hue each channel carries at runtime
-have no equivalent there. Zones show the same pixels running different
-effects, which covers the look but not the control.
 
 **Caps word.** ZMK exposes neither a state accessor nor an event for it, so
 the indicator cannot be driven. Nothing to do here until that changes

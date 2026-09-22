@@ -33,12 +33,18 @@
   <section class="controls">
     <div class="panel">
       <h2>Engine</h2>
+      <p class="note" id="channel-note" style="margin-top:0; display:none">
+        This board has more than one channel. Brightness, speed and hue below
+        belong to whichever channel is selected in the Scene panel &mdash;
+        each channel carries its own, exactly as it does at runtime.
+      </p>
       <label>Brightness <output id="out-brightness"></output>
         <input type="range" id="brightness" min="0" max="255" value="255"></label>
       <label>Speed <output id="out-speed"></output>
         <input type="range" id="speed" min="1" max="5" value="3"></label>
       <label>Hue shift <output id="out-hue"></output>
         <input type="range" id="hue" min="0" max="359" value="0"></label>
+      <label class="radio"><input type="checkbox" id="chan-on" checked> Channel on</label>
       <label>LEDs per half <output id="out-count"></output>
         <input type="range" id="count" min="6" max="72" value="36"></label>
       <label>Strip path
@@ -123,6 +129,7 @@
 
     <div class="panel wide">
       <h2>Scene</h2>
+      <div class="row" id="channel-tabs"></div>
       <div class="row" id="presets"></div>
 
       <div id="composer">
