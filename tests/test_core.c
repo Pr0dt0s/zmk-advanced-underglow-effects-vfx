@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include <zmk/vfx/engine.h>
+#include <zmk/vfx/hid_protocol.h>
 #include <zmk/vfx/tuning.h>
 #include <zmk/vfx/layers.h>
 #include <zmk/vfx/power.h>
@@ -2600,6 +2601,117 @@ static void test_tuning_does_not_leak_between_layers(void) {
           out[1].g, out[1].b);
 }
 
+/* ---- host control: the raw-hid wire format, with no transport in scope -- */
+
+static void test_hid_ping_decodes_and_pongs(void) {
+    const uint8_t req[] = {VFX_HID_OP_PING};
+    struct vfx_hid_request out;
+
+    CHECK(vfx_hid_decode(req, sizeof(req), &out), "a bare PING is a complete request");
+    CHECK(out.op == VFX_HID_OP_PING, "op must round-trip");
+
+    uint8_t reply[VFX_HID_MAX_REPLY_LEN];
+    const uint8_t len = vfx_hid_encode_pong(VFX_TUNE_SLOTS - 1, reply);
+
+    CHECK(len == 3, "PONG is three bytes, got %d", len);
+    CHECK(reply[0] == VFX_HID_REPLY_PONG, "PONG must be PING's op with the reply bit set");
+    CHECK(reply[0] & VFX_HID_REPLY_BIT, "every reply must carry the reply bit");
+    CHECK(reply[1] == VFX_HID_PROTOCOL_VERSION, "PONG must report the protocol version");
+    CHECK(reply[2] == VFX_TUNE_SLOTS - 1, "PONG must report the highest usable slot");
+}
+
+static void test_hid_set_hue_decodes_a_negative_value(void) {
+    /* -30 as int16 LE: 0xFFE2 -> E2, FF. */
+    const uint8_t req[] = {VFX_HID_OP_SET_HUE, 3, 0xE2, 0xFF};
+    struct vfx_hid_request out;
+
+    CHECK(vfx_hid_decode(req, sizeof(req), &out), "a full SET_HUE report must decode");
+    CHECK(out.op == VFX_HID_OP_SET_HUE, "op must round-trip");
+    CHECK(out.slot == 3, "slot must round-trip, got %d", out.slot);
+    CHECK(out.hue == -30, "hue must round-trip as signed, got %d", out.hue);
+}
+
+static void test_hid_set_level_and_speed_decode(void) {
+    const uint8_t level_req[] = {VFX_HID_OP_SET_LEVEL, 2, 128};
+    struct vfx_hid_request level_out;
+
+    CHECK(vfx_hid_decode(level_req, sizeof(level_req), &level_out), "SET_LEVEL must decode");
+    CHECK(level_out.slot == 2 && level_out.level == 128, "slot and level must round-trip: %d, %d",
+          level_out.slot, level_out.level);
+
+    const uint8_t speed_req[] = {VFX_HID_OP_SET_SPEED, 5, 4};
+    struct vfx_hid_request speed_out;
+
+    CHECK(vfx_hid_decode(speed_req, sizeof(speed_req), &speed_out), "SET_SPEED must decode");
+    CHECK(speed_out.slot == 5 && speed_out.speed == 4, "slot and speed must round-trip: %d, %d",
+          speed_out.slot, speed_out.speed);
+}
+
+static void test_hid_reset_and_get_decode(void) {
+    const uint8_t reset_req[] = {VFX_HID_OP_RESET, 6};
+    struct vfx_hid_request reset_out;
+
+    CHECK(vfx_hid_decode(reset_req, sizeof(reset_req), &reset_out), "RESET must decode");
+    CHECK(reset_out.slot == 6, "slot must round-trip, got %d", reset_out.slot);
+
+    const uint8_t get_req[] = {VFX_HID_OP_GET, 1};
+    struct vfx_hid_request get_out;
+
+    CHECK(vfx_hid_decode(get_req, sizeof(get_req), &get_out), "GET must decode");
+    CHECK(get_out.slot == 1, "slot must round-trip, got %d", get_out.slot);
+
+    const uint8_t get_all_req[] = {VFX_HID_OP_GET_ALL};
+    struct vfx_hid_request get_all_out;
+
+    CHECK(vfx_hid_decode(get_all_req, sizeof(get_all_req), &get_all_out),
+          "GET_ALL has no payload and must still decode");
+}
+
+static void test_hid_decode_rejects_short_reports(void) {
+    /* SET_HUE needs three bytes past the op; two is a truncated report, not
+     * a request with a default hue.
+     */
+    const uint8_t truncated[] = {VFX_HID_OP_SET_HUE, 1, 0x10};
+    struct vfx_hid_request out;
+
+    CHECK(!vfx_hid_decode(truncated, sizeof(truncated), &out),
+          "a report shorter than its op needs must be refused");
+    CHECK(!vfx_hid_decode(truncated, 0, &out), "an empty report must be refused");
+}
+
+static void test_hid_decode_rejects_unknown_op(void) {
+    const uint8_t req[] = {0xEE, 1, 2, 3, 4};
+    struct vfx_hid_request out;
+
+    CHECK(!vfx_hid_decode(req, sizeof(req), &out), "an op outside the enum must be refused");
+}
+
+static void test_hid_ack_carries_the_requests_own_op(void) {
+    uint8_t buf[VFX_HID_MAX_REPLY_LEN];
+    const uint8_t len = vfx_hid_encode_ack(VFX_HID_OP_SET_LEVEL, 4, VFX_HID_STATUS_OK, buf);
+
+    CHECK(len == 3, "an ACK is three bytes, got %d", len);
+    CHECK(buf[0] == (VFX_HID_OP_SET_LEVEL | VFX_HID_REPLY_BIT),
+          "an ACK's op must be the request's own op with the reply bit set");
+    CHECK(buf[1] == 4, "an ACK must echo the slot it was about");
+    CHECK(buf[2] == VFX_HID_STATUS_OK, "status must round-trip");
+}
+
+static void test_hid_state_encodes_a_negative_hue(void) {
+    uint8_t buf[VFX_HID_MAX_REPLY_LEN];
+    const uint8_t len = vfx_hid_encode_state(2, -30, 200, 3, VFX_HID_STATUS_OK, buf);
+
+    CHECK(len == 7, "STATE is seven bytes, got %d", len);
+    CHECK(buf[0] == VFX_HID_REPLY_STATE, "STATE must use GET's op with the reply bit set");
+    CHECK(buf[1] == 2, "slot must round-trip");
+
+    const int16_t hue = (int16_t)((uint16_t)buf[2] | ((uint16_t)buf[3] << 8));
+
+    CHECK(hue == -30, "hue must round-trip through the wire as signed, got %d", hue);
+    CHECK(buf[4] == 200 && buf[5] == 3, "level and speed must round-trip: %d, %d", buf[4], buf[5]);
+    CHECK(buf[6] == VFX_HID_STATUS_OK, "status must round-trip");
+}
+
 int main(void) {
     struct {
         const char *name;
@@ -2692,6 +2804,14 @@ int main(void) {
         {"tuning hue rotates", test_tuning_hue_rotates},
         {"tuning rejects bad slots", test_tuning_rejects_bad_slots},
         {"tuning does not leak between layers", test_tuning_does_not_leak_between_layers},
+        {"hid ping decodes and pongs", test_hid_ping_decodes_and_pongs},
+        {"hid set hue decodes a negative value", test_hid_set_hue_decodes_a_negative_value},
+        {"hid set level and speed decode", test_hid_set_level_and_speed_decode},
+        {"hid reset and get decode", test_hid_reset_and_get_decode},
+        {"hid decode rejects short reports", test_hid_decode_rejects_short_reports},
+        {"hid decode rejects unknown op", test_hid_decode_rejects_unknown_op},
+        {"hid ack carries the request's own op", test_hid_ack_carries_the_requests_own_op},
+        {"hid state encodes a negative hue", test_hid_state_encodes_a_negative_hue},
     };
 
     for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {

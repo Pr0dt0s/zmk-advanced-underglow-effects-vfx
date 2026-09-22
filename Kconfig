@@ -182,6 +182,18 @@ config ZMK_VFX_AUTO_OFF_IDLE
     bool "Turn underglow off when the keyboard goes idle"
     default y
 
+config ZMK_VFX_RAW_HID
+    bool "Drive per-layer tuning from a host over raw HID"
+    depends on RAW_HID
+    help
+      Decodes zzeneg/zmk-raw-hid reports into zmk_vfx_tune_*() calls and
+      replies over the same transport, so a companion app can move a
+      layer's hue, level or speed live rather than only from the keymap.
+
+      RAW_HID is a separate module: add it to west.yml and the
+      raw_hid_adapter shield to your build before turning this on. See the
+      README for the wire format.
+
 module = ZMK_VFX
 module-str = zmk_vfx
 source "subsys/logging/Kconfig.template.log_config"

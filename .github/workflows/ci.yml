@@ -64,6 +64,13 @@ jobs:
           sleep 2
           node tools/verify-sim.mjs
 
+      # There is no real keyboard running the raw-hid transport to test
+      # against, so this drives host.js the same way it would drive a real
+      # one, against a fake HID device that speaks the exact wire format
+      # hid_transport.c does.
+      - name: Check the host control panel against a fake HID device
+        run: node tools/verify-host-hid.mjs
+
       - uses: actions/upload-artifact@v4
         with:
           name: sample-clips
@@ -144,9 +151,11 @@ jobs:
       matrix:
         include:
           - name: split sync
+            shield: lily58_left
             args: -DCONFIG_ZMK_VFX_SPLIT_SYNCED=y -DCONFIG_ZMK_VFX_SPLIT_FREE=n
             prep: "true"
           - name: no power gate
+            shield: lily58_left
             args: -DCONFIG_ZMK_VFX_AUTO_POWER_GATE=n
             prep: "true"
           # Turning the shim off unbinds rgb_ug, and Zephyr resolves
@@ -154,10 +163,20 @@ jobs:
           # with #if. Strip them instead, which is exactly what a user
           # disabling the shim has to do to their own keymap.
           - name: no rgb_ug shim
+            shield: lily58_left
             args: -DCONFIG_ZMK_VFX_RGB_UNDERGLOW_COMPAT=n
             prep: "sed -i -E 's/&rgb_ug [A-Z_]+/\\&trans/g' ws/config/lily58.keymap"
           - name: no indicators
+            shield: lily58_left
             args: -DCONFIG_ZMK_VFX_INDICATORS=n
+            prep: "true"
+          # RAW_HID (from zmk-raw-hid) only builds on the central, same as
+          # CONFIG_ZMK_WPM above -- lily58_left is the central in this
+          # example. The adapter shield brings CONFIG_RAW_HID=y itself; only
+          # this module's own transport needs enabling here.
+          - name: raw hid transport
+            shield: lily58_left raw_hid_adapter
+            args: -DCONFIG_ZMK_VFX_RAW_HID=y
             prep: "true"
     steps:
       - name: Checkout the module
@@ -199,7 +218,7 @@ jobs:
         working-directory: ws
         run: |
           west build -s zmk/app -b "nice_nano//zmk" -- \
-            -DSHIELD=lily58_left \
+            -DSHIELD="${{ matrix.shield }}" \
             -DZMK_CONFIG="${GITHUB_WORKSPACE}/ws/config" \
             -DZMK_EXTRA_MODULES="${GITHUB_WORKSPACE}/module" \
             ${{ matrix.args }}

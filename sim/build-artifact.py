@@ -23,6 +23,7 @@ out = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else root / "docs" / "vfx-s
 html = (src / "index.html").read_text()
 css = (src / "style.css").read_text()
 js = (src / "app.js").read_text()
+host_js = (src / "host.js").read_text()
 keys = json.loads((src / "lily58-keys.json").read_text())
 wasm = base64.b64encode((src / "vfx.wasm").read_bytes()).decode("ascii")
 
@@ -30,6 +31,7 @@ wasm = base64.b64encode((src / "vfx.wasm").read_bytes()).decode("ascii")
 # what goes inside the body.
 body = re.search(r"<body>(.*)</body>", html, re.S).group(1)
 body = re.sub(r'\s*<script type="module" src="app\.js"></script>', "", body)
+body = re.sub(r'\s*<script type="module" src="host\.js"></script>', "", body)
 
 title = re.search(r"<title>(.*?)</title>", html).group(1)
 
@@ -55,6 +57,10 @@ out.write_text(
     f"const LILY58_KEYS = {json.dumps(keys, separators=(',', ':'))};\n"
     f'const VFX_WASM_BASE64 = "{wasm}";\n\n'
     f"{js}</script>\n"
+    # A separate inline module, not concatenated into the one above: both
+    # files declare their own top-level `$`, and only two distinct module
+    # scopes let that not collide.
+    f'<script type="module">\n{host_js}</script>\n'
 )
 
 print(f"wrote {out} ({out.stat().st_size / 1024:.0f} KB, wasm inlined as {len(wasm) / 1024:.0f} KB base64)")

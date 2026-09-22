@@ -42,4 +42,6 @@ if(CONFIG_ZMK_VFX)
                        src/behavior_rgb_compat.c)
   target_sources_ifdef(CONFIG_ZMK_VFX_AUTO_POWER_GATE app PRIVATE src/power.c)
   target_sources_ifdef(CONFIG_ZMK_VFX_SPLIT_SYNCED app PRIVATE src/split_sync.c)
+  target_sources_ifdef(CONFIG_ZMK_VFX_RAW_HID app PRIVATE
+                       src/hid_protocol.c src/hid_transport.c)
 endif()

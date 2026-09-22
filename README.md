@@ -771,26 +771,108 @@ by devicetree at compile time, and reaching them means a different data model
 different transport. The composer in the simulator is the answer to that for
 now — design there, paste the devicetree, flash once.
 
-Nor does anything here talk to a host yet. `zmk_vfx_tune_*()` is the API a
-transport would call; see the roadmap.
+`zmk_vfx_tune_*()` is also the API a host transport calls, which is what the
+next section is about.
+
+## Host control
+
+Tuning is transport-independent on purpose, because the transport is a live
+question — ZMK Studio's RPC supports custom subsystems a module can
+register, which would be the idiomatic route, but that support is not
+upstream: the modules using it pin a forked ZMK at
+`main+custom-studio-protocol`. `zzeneg/zmk-raw-hid` needs no fork and is
+bidirectional over USB and BLE, so it is what `src/hid_transport.c` decodes
+into `zmk_vfx_tune_*()` calls, gated behind `CONFIG_ZMK_VFX_RAW_HID`.
+
+```yaml
+manifest:
+  remotes:
+    - name: zmkfirmware
+      url-base: https://github.com/zmkfirmware
+    - name: pr0dt0s
+      url-base: https://github.com/pr0dt0s
+    - name: zzeneg
+      url-base: https://github.com/zzeneg
+  projects:
+    - name: zmk
+      remote: zmkfirmware
+      revision: main
+      import: app/west.yml
+    - name: zmk-advanced-underglow-effects-vfx
+      remote: pr0dt0s
+      revision: main
+    - name: zmk-raw-hid
+      remote: zzeneg
+      revision: main
+  self:
+    path: config
+```
+
+Add `raw_hid_adapter` as an additional shield in `build.yaml`, same as
+`zmk-raw-hid`'s own README describes, and turn the transport on:
+
+```ini
+CONFIG_ZMK_VFX_RAW_HID=y
+```
+
+RAW_HID only builds on the split's central, same restriction
+`CONFIG_ZMK_WPM` has, so this goes in the central half's `.conf` on a split
+rather than the shared one.
+
+### The wire format
+
+A request is `[op, ...]`; a reply is always `[op | 0x80, ...]`, which is
+what lets a host recognise a reply without inspecting anything past the
+first byte. Every multi-byte field is little-endian. `hid_protocol.h` is the
+source of truth; this table is for a host tool that is not `host.js` below.
+
+| Request | Bytes | Reply | Bytes |
+|---|---|---|---|
+| `PING` (`0x00`) | — | `0x80`: version, max slot | 2 |
+| `SET_HUE` (`0x01`) | slot, hue (`int16`) | `0x81`: slot, status | 2 |
+| `SET_LEVEL` (`0x02`) | slot, level | `0x82`: slot, status | 2 |
+| `SET_SPEED` (`0x03`) | slot, speed | `0x83`: slot, status | 2 |
+| `RESET` (`0x04`) | slot | `0x84`: slot, status | 2 |
+| `GET` (`0x05`) | slot | `0x85`: slot, hue, level, speed, status | 5 |
+| `GET_ALL` (`0x06`) | — | one `0x85` per slot, 1 through the max `PING` reported | 5 each |
+
+`status` is `0` for ok, `1` for a slot outside 1 to `VFX_TUNE_SLOTS - 1`
+(slot 0 means "untuned" and is never itself addressable). `hue` is degrees,
+`level` is 0-255, `speed` is 1-5 or 0 to stop overriding and follow the
+channel again — the same ranges `VFX_TUNE_HUE`/`_LEVEL`/`_SPEED` take from a
+keymap.
+
+### The simulator's own panel
+
+The **Host control** panel at the bottom of the simulator page
+(`sim/web/host.js`) is a small WebHID client speaking the format above. It
+is the one part of that page that is not the compositor: everywhere else,
+what you see is a wasm build of the real C; here, connecting drives an
+actual keyboard over USB or BLE, and the panel is a JavaScript
+reimplementation of the wire format rather than a build of anything that
+defines it — the same relationship `toDevicetree()` has to devicetree
+syntax. Needs Chrome or Edge.
+
+**None of this has been tried against real hardware.** `tests/` proves the
+wire format encodes and decodes correctly with no Zephyr in scope, and
+`tools/verify-host-hid.mjs` proves `host.js` drives that format correctly
+against a fake HID device built to the same spec. Neither touches USB
+descriptors, BLE HID-over-GATT, or a real host OS's HID stack, which is
+where a transport like this actually tends to break. If you try it on a
+board, especially over BLE where `zmk-raw-hid` requires
+`BT_SECURITY_L2`, an issue report is worth more than the code.
 
 ## Roadmap
 
 Honest about what is missing rather than implied by the rest of this file.
 
-**Host control.** The tuning API above is deliberately transport-independent,
-because the transport is a live question. ZMK Studio's RPC supports custom
-subsystems a module can register, which is the idiomatic route, but that
-support is not upstream: the modules using it pin a forked ZMK at
-`main+custom-studio-protocol`. `zzeneg/zmk-raw-hid` needs no fork and is
-bidirectional over USB and BLE, which makes it the pragmatic first target. A
-UI would then drive `zmk_vfx_tune_*()`, and the simulator's composer is most
-of the interface already.
-
 **Runtime scene authoring.** Adding and removing layers on a running board,
-as above. Wants a RAM scene model with bounded layer and config pools, and a
-way to persist what was built. Much larger than tuning, and worth doing only
-once tuning has shown the transport works.
+which is a different and much larger thing than adjusting one that is
+already there. Wants a RAM scene model with bounded layer and config pools,
+and a way to persist what was built. Host control existing now makes this
+worth picking up: the transport (`zzeneg/zmk-raw-hid`, see above) and a
+browser-side client for it are no longer open questions, only what to send
+over it.
 
 **Caps word.** ZMK exposes neither a state accessor nor an event for it, so
 the indicator cannot be driven. Nothing to do here until that changes
