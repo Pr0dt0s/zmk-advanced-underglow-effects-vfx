@@ -179,6 +179,24 @@ static void rebuild_slot(struct vfx_rt_slot *slot) {
         l->state = &slot->state.stateless;
         break;
 
+    case VFX_RT_GRADIENT:
+        /* .stops points into this same slot's own params, not a copy --
+         * safe because params outlives everything rebuild_slot() derives
+         * from it, and because a stop list is only ever appended to
+         * in place (vfx_runtime_gradient_add_stop()), never reallocated.
+         */
+        slot->cfg.gradient = (struct vfx_gradient_cfg){
+            .stops = p->stops,
+            .num_stops = p->num_stops,
+            .scroll_speed = p->args[0],
+            .span = (uint16_t)p->args[1],
+            .axis = axis,
+        };
+        l->api = &vfx_layer_gradient_api;
+        l->config = &slot->cfg.gradient;
+        l->state = &slot->state.gradient;
+        break;
+
     default:
         /* Unreachable: every caller validates the type before getting here.
          * Left blank rather than defaulted to a real generator, so a bug
@@ -379,6 +397,50 @@ bool vfx_runtime_get_order(uint8_t ch, uint8_t *order, uint8_t *count) {
 
     memcpy(order, rc->render_order, rc->count);
     *count = rc->count;
+
+    return true;
+}
+
+static bool valid_gradient_slot(const struct vfx_rt_channel *rc, uint8_t slot) {
+    return valid_slot(rc, slot) && rc->slots[slot].params.type == VFX_RT_GRADIENT;
+}
+
+bool vfx_runtime_gradient_add_stop(uint8_t ch, uint8_t slot, uint16_t hue, uint8_t sat,
+                                   uint8_t bri) {
+    if (!valid_channel(ch) || !valid_gradient_slot(&channels[ch], slot)) {
+        return false;
+    }
+
+    struct vfx_rt_params *p = &channels[ch].slots[slot].params;
+
+    if (p->num_stops >= VFX_RT_GRADIENT_MAX_STOPS) {
+        return false;
+    }
+
+    p->stops[p->num_stops] = VFX_HSB(hue, sat, bri);
+    p->num_stops++;
+    rebuild_slot(&channels[ch].slots[slot]);
+
+    return true;
+}
+
+bool vfx_runtime_gradient_get_stop(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t *hue,
+                                   uint8_t *sat, uint8_t *bri) {
+    if (!valid_channel(ch) || !valid_gradient_slot(&channels[ch], slot)) {
+        return false;
+    }
+
+    const struct vfx_rt_params *p = &channels[ch].slots[slot].params;
+
+    if (idx >= p->num_stops) {
+        return false;
+    }
+
+    const struct vfx_hsb hsb = vfx_hsb_unpack(p->stops[idx]);
+
+    *hue = hsb.h;
+    *sat = hsb.s;
+    *bri = hsb.b;
 
     return true;
 }

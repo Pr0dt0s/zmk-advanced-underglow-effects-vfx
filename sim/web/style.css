@@ -172,6 +172,21 @@ button.tiny {
 .field select { width: 100%; }
 .field input[type="color"] { height: 26px; padding: 1px; }
 
+/* A gradient layer's stop list -- see host.js's renderStops(). Its own
+ * .field label above it names the count, so this is just the swatches and
+ * the add-stop row underneath.
+ */
+.stops { margin-top: 8px; }
+.stops .row { margin-top: 4px; }
+
+.stop-swatch {
+  display: inline-block;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid #262c38;
+}
+
 #json-box summary {
   cursor: pointer;
   color: #9aa6bd;

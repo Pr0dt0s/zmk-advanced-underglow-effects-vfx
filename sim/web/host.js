@@ -36,6 +36,8 @@ const OP = {
   SCENE_GET_INFO: 0x0f,
   SCENE_GET_LAYER: 0x10,
   SCENE_GET_ORDER: 0x11,
+  SCENE_GRADIENT_ADD_STOP: 0x12,
+  SCENE_GET_GRADIENT_STOP: 0x13,
 };
 
 const REPLY_BIT = 0x80;
@@ -44,6 +46,7 @@ const REPLY_STATE = OP.GET | REPLY_BIT;
 const REPLY_SCENE_INFO = OP.SCENE_GET_INFO | REPLY_BIT;
 const REPLY_SCENE_LAYER = OP.SCENE_GET_LAYER | REPLY_BIT;
 const REPLY_SCENE_ORDER = OP.SCENE_GET_ORDER | REPLY_BIT;
+const REPLY_GRADIENT_STOP = OP.SCENE_GET_GRADIENT_STOP | REPLY_BIT;
 
 const STATUS_OK = 0;
 const STATUS_POOL_FULL = 2;
@@ -87,11 +90,24 @@ const RT_TYPES = [
   { name: 'pulse', args: ['decay ms', 'min level', 'hue step'], stack: true },
   { name: 'dart', args: ['speed', 'lifetime ms', 'tail'], axis: true, reverse: true },
   { name: 'static', args: ['period ms', 'density', 'hue spread'] },
+  /* No single colour -- SCENE_SET_COLOR is a harmless no-op on one, so its
+   * own colour picker stays hidden and a stop list is shown instead. Built
+   * with SCENE_GRADIENT_ADD_STOP, one small message per stop, rather than
+   * carried in SCENE_ADD_LAYER itself: see the README's note on this.
+   */
+  { name: 'gradient', args: ['scroll speed', 'span'], stops: true },
 ];
 
 const RT_FLAG_STACK = 0x01;
 const RT_FLAG_REVERSE = 0x02;
 const RT_FLAG_AXIS_SHIFT = 2;
+
+/* VFX_RT_GRADIENT_MAX_STOPS in runtime_scene.h -- how many
+ * SCENE_GRADIENT_ADD_STOP calls a gradient layer's pool actually has room
+ * for, so the panel can stop offering to add more before the device says
+ * POOL_FULL rather than after.
+ */
+const VFX_RT_GRADIENT_MAX_STOPS = 6;
 
 const flagsFor = (typeIdx, { stack, reverse, axis }) => {
   const spec = RT_TYPES[typeIdx];
@@ -176,6 +192,20 @@ const requests = {
   sceneGetInfo: ch => new Uint8Array([OP.SCENE_GET_INFO, ch]),
   sceneGetLayer: (ch, slot) => new Uint8Array([OP.SCENE_GET_LAYER, ch, slot]),
   sceneGetOrder: ch => new Uint8Array([OP.SCENE_GET_ORDER, ch]),
+  sceneGradientAddStop: (ch, slot, hue, sat, bri) => {
+    const b = new Uint8Array(7);
+
+    b[0] = OP.SCENE_GRADIENT_ADD_STOP;
+    b[1] = ch;
+    b[2] = slot;
+    writeI16(b, 3, hue);
+    b[5] = sat;
+    b[6] = bri;
+
+    return b;
+  },
+  sceneGetGradientStop: (ch, slot, idx) =>
+    new Uint8Array([OP.SCENE_GET_GRADIENT_STOP, ch, slot, idx]),
 };
 
 /* `data` is the report body WebHID hands the input-report listener; for a
@@ -237,6 +267,19 @@ function decodeReply(data) {
     for (let i = 0; i < count; i++) order.push(data.getUint8(3 + i));
 
     return { kind: 'sceneOrder', ch: data.getUint8(1), order, status: data.getUint8(3 + count) };
+  }
+
+  if (op === REPLY_GRADIENT_STOP) {
+    return {
+      kind: 'gradientStop',
+      ch: data.getUint8(1),
+      slot: data.getUint8(2),
+      idx: data.getUint8(3),
+      hue: data.getInt16(4, true),
+      sat: data.getUint8(6),
+      bri: data.getUint8(7),
+      status: data.getUint8(8),
+    };
   }
 
   /* Every SET_/SCENE_ or RESET ack shares this shape, op set to the
@@ -525,7 +568,7 @@ export function initHostPanel() {
 
       act(requests.sceneSetColor(activeChannel, slot, h, s, v));
     });
-    field('colour', color);
+    const colorWrap = field('colour', color);
 
     const argWraps = [0, 1, 2, 3].map(i => field(`arg ${i}`, number(v => {
       const l = layerRows.get(slot);
@@ -560,12 +603,67 @@ export function initHostPanel() {
     axisEl.addEventListener('change', () => edit('axis', Number(axisEl.value)));
     const axisWrap = field('axis', axisEl);
 
+    /* Stops are appended, never edited or removed one at a time -- the same
+     * "no partial update" boundary zone/blend already have above, just for
+     * a list instead of a single field. Rebuilding the whole layer (the
+     * card's own ✕ then a fresh add) is how to change one.
+     */
+    const stopsWrap = document.createElement('div');
+
+    stopsWrap.className = 'stops';
+
+    const stopsLabel = document.createElement('div');
+
+    stopsLabel.className = 'field';
+    stopsLabel.textContent = `stops (0/${VFX_RT_GRADIENT_MAX_STOPS})`;
+    stopsWrap.appendChild(stopsLabel);
+
+    const stopsList = document.createElement('div');
+
+    stopsList.className = 'row';
+    stopsWrap.appendChild(stopsList);
+
+    const addStopRow = document.createElement('div');
+
+    addStopRow.className = 'row';
+
+    const addStopColor = document.createElement('input');
+
+    addStopColor.type = 'color';
+    addStopColor.value = '#ff0000';
+
+    const addStopBtn = document.createElement('button');
+
+    addStopBtn.className = 'tiny';
+    addStopBtn.textContent = 'Add stop';
+    addStopBtn.addEventListener('click', async () => {
+      const l = layerRows.get(slot);
+
+      if (!l) return;
+
+      /* No client-side cap check before sending: same as a full layer pool,
+       * the device's own POOL_FULL status is the one source of truth for
+       * "full", not a count this page keeps a second copy of.
+       */
+      const [h, s, v] = hexToHsb(addStopColor.value);
+      const msg = await act(requests.sceneGradientAddStop(activeChannel, slot, h, s, v));
+
+      if (msg.status === STATUS_OK) {
+        l.data.stops.push({ h, s, v });
+        renderStops(l);
+      }
+    });
+    addStopRow.append(addStopColor, addStopBtn);
+    stopsWrap.appendChild(addStopRow);
+    card.appendChild(stopsWrap);
+
     sceneLayersEl.appendChild(card);
 
     const row = {
-      card, head, zoneStartWrap, zoneLenWrap, color, argWraps,
+      card, head, zoneStartWrap, zoneLenWrap, color, colorWrap, argWraps,
       stackWrap, stackEl, reverseWrap, reverseEl, axisWrap, axisEl,
-      data: { args: [0, 0, 0, 0] },
+      stopsWrap, stopsLabel, stopsList,
+      data: { args: [0, 0, 0, 0], stops: [] },
     };
 
     layerRows.set(slot, row);
@@ -573,17 +671,46 @@ export function initHostPanel() {
     return row;
   }
 
-  function rebuildFromScratch(slot, data) {
+  function renderStops(row) {
+    row.stopsList.innerHTML = '';
+
+    for (const { h, s, v } of row.data.stops) {
+      const swatch = document.createElement('span');
+
+      swatch.className = 'stop-swatch';
+      swatch.style.background = hsbToHex(h, s, v);
+      swatch.title = `${h}°, ${s}%, ${v}%`;
+      row.stopsList.appendChild(swatch);
+    }
+
+    row.stopsLabel.textContent =
+      `stops (${row.data.stops.length}/${VFX_RT_GRADIENT_MAX_STOPS})`;
+  }
+
+  async function rebuildFromScratch(slot, data) {
     const flags = flagsFor(data.type, data);
 
-    act(requests.sceneRemoveLayer(activeChannel, slot));
-    act(requests.sceneAddLayer(activeChannel, data.type, data.zoneStart, data.zoneLen,
-                               data.blend, data.opacity, data.hue, data.sat, data.bri,
-                               data.args, flags));
+    await act(requests.sceneRemoveLayer(activeChannel, slot));
 
-    /* The remove/re-add above frees this slot id and may hand out a
-     * different one for the replacement; simplest to just ask the device
-     * what the channel looks like now rather than guess.
+    const added = await act(requests.sceneAddLayer(activeChannel, data.type, data.zoneStart,
+                                                    data.zoneLen, data.blend, data.opacity,
+                                                    data.hue, data.sat, data.bri, data.args,
+                                                    flags));
+
+    /* A gradient's stop list is not part of SCENE_ADD_LAYER (see the
+     * README), so re-sending the layer from scratch loses it unless every
+     * stop is re-sent too, against the slot the device just assigned --
+     * the remove/re-add above frees the old id and may hand out a
+     * different one for the replacement.
+     */
+    if (added.status === STATUS_OK && data.stops?.length) {
+      for (const { h, s, v } of data.stops) {
+        await act(requests.sceneGradientAddStop(activeChannel, added.slot, h, s, v));
+      }
+    }
+
+    /* Simplest to just ask the device what the channel looks like now
+     * rather than guess.
      */
     layerRows.delete(slot);
     const card = sceneLayersEl.querySelector(`[data-slot="${slot}"]`);
@@ -593,7 +720,7 @@ export function initHostPanel() {
     refreshChannel(activeChannel);
   }
 
-  function applyLayer(msg) {
+  function applyLayer(msg, stops) {
     if (msg.status !== STATUS_OK) return;
 
     const type = RT_TYPES[msg.type] ?? RT_TYPES[0];
@@ -617,6 +744,7 @@ export function initHostPanel() {
       stack,
       reverse,
       axis,
+      stops: stops ?? [],
     };
 
     row.zoneStartWrap.querySelector('input').value = msg.zoneStart;
@@ -640,6 +768,10 @@ export function initHostPanel() {
     row.reverseEl.checked = reverse;
     row.axisWrap.style.display = type.axis ? '' : 'none';
     row.axisEl.value = axis;
+
+    row.colorWrap.style.display = type.stops ? 'none' : '';
+    row.stopsWrap.style.display = type.stops ? '' : 'none';
+    if (type.stops) renderStops(row);
 
     sceneLayersEl.appendChild(row.card); // re-insert at the end, in true render order
   }
@@ -669,7 +801,27 @@ export function initHostPanel() {
       if (ch !== activeChannel) return;
 
       if (layer.status === STATUS_OK) {
-        applyLayer(layer);
+        /* A gradient's own reply has no room for its stop list (see the
+         * README) -- only how many there are, in args[2] -- so reading one
+         * back means asking again, once per stop, same as writing one did.
+         */
+        let stops;
+
+        if (RT_TYPES[layer.type]?.stops) {
+          stops = [];
+
+          for (let i = 0; i < layer.args[2]; i++) {
+            const stop = await transact(requests.sceneGetGradientStop(ch, slot, i));
+
+            if (ch !== activeChannel) return;
+
+            if (stop.status === STATUS_OK) {
+              stops.push({ h: stop.hue < 0 ? stop.hue + 360 : stop.hue, s: stop.sat, v: stop.bri });
+            }
+          }
+        }
+
+        applyLayer(layer, stops);
         seen.add(slot);
       }
     }
@@ -745,7 +897,8 @@ export function initHostPanel() {
   function act(bytes) {
     return transact(bytes).then(msg => {
       if (msg.kind === 'ack' && msg.status !== STATUS_OK) {
-        const label = msg.status === STATUS_POOL_FULL ? 'channel is full' : 'refused';
+        const label = msg.status !== STATUS_POOL_FULL ? 'refused'
+          : msg.op === OP.SCENE_GRADIENT_ADD_STOP ? 'stop list is full' : 'channel is full';
 
         setStatus(`op 0x${msg.op.toString(16)} ${label} (byte1 ${msg.slot})`, false);
       }

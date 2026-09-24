@@ -108,6 +108,24 @@ int zmk_vfx_scene_get_layer(uint8_t ch, uint8_t slot, struct vfx_rt_params *out)
  */
 int zmk_vfx_scene_get_order(uint8_t ch, uint8_t *order, uint8_t *count);
 
+/* Appends one stop to a gradient slot's list, in the order stops are sent --
+ * a gradient's stops rarely fit alongside its other fields in one
+ * SCENE_ADD_LAYER, so it is built with an ordinary (type VFX_RT_GRADIENT,
+ * hue/sat/bri ignored) add followed by one of these per stop. -EINVAL for a
+ * channel or slot out of range or a slot that is not a gradient; -ENOSPC
+ * once its list already holds VFX_RT_GRADIENT_MAX_STOPS.
+ */
+int zmk_vfx_scene_gradient_add_stop(uint8_t ch, uint8_t slot, uint16_t hue, uint8_t sat,
+                                    uint8_t bri);
+
+/* The read side, for a host reconstructing a gradient it did not just build
+ * itself -- get_layer's own reply carries how many stops there are (in its
+ * args[2]) but not the stops themselves. -EINVAL for a channel, slot or
+ * index out of range, or a slot that is not a gradient.
+ */
+int zmk_vfx_scene_gradient_get_stop(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t *hue,
+                                    uint8_t *sat, uint8_t *bri);
+
 /* Persist the current state, debounced. */
 int zmk_vfx_save_state(void);
 

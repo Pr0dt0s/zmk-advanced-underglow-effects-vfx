@@ -69,6 +69,22 @@ enum vfx_hid_op {
      * in this order each one holds.
      */
     VFX_HID_OP_SCENE_GET_ORDER = 0x11,
+
+    /* A gradient's stop list rarely fits alongside SCENE_ADD_LAYER's own
+     * fields in one report, so it is built afterwards, one stop per
+     * message, the same way a scene itself already composes from many
+     * small per-layer messages rather than one large one. Build a
+     * gradient with an ordinary SCENE_ADD_LAYER (type VFX_RT_GRADIENT,
+     * hue/sat/bri ignored), then one of these per stop, in order.
+     */
+    VFX_HID_OP_SCENE_GRADIENT_ADD_STOP = 0x12, /* ch, slot, hue (int16 LE), sat, bri -> ACK */
+    /* ch, slot, stop index -> GRADIENT_STOP. The read side of the same
+     * thing, for a host reconstructing a gradient it did not just build
+     * itself -- SCENE_GET_LAYER's own reply carries num_stops (in its
+     * args[2], which rebuild_slot() never reads for this type) but not
+     * the stops themselves, so this is called that many times.
+     */
+    VFX_HID_OP_SCENE_GET_GRADIENT_STOP = 0x13,
 };
 
 #define VFX_HID_REPLY_BIT 0x80
@@ -81,12 +97,14 @@ enum vfx_hid_op {
 #define VFX_HID_REPLY_SCENE_INFO (VFX_HID_OP_SCENE_GET_INFO | VFX_HID_REPLY_BIT)
 #define VFX_HID_REPLY_SCENE_LAYER (VFX_HID_OP_SCENE_GET_LAYER | VFX_HID_REPLY_BIT)
 #define VFX_HID_REPLY_SCENE_ORDER (VFX_HID_OP_SCENE_GET_ORDER | VFX_HID_REPLY_BIT)
+#define VFX_HID_REPLY_GRADIENT_STOP (VFX_HID_OP_SCENE_GET_GRADIENT_STOP | VFX_HID_REPLY_BIT)
 
 /* Longest reply this protocol produces (SCENE_LAYER), so a caller can size
  * one buffer for whichever encode_* it ends up calling. SCENE_ORDER's own
  * length depends on the board's CONFIG_ZMK_VFX_RUNTIME_MAX_LAYERS (op, ch,
  * count, one byte per slot, status), but that option is capped at 16, so
- * SCENE_ORDER can never exceed this either.
+ * SCENE_ORDER can never exceed this either. GRADIENT_STOP is nine bytes,
+ * well under this regardless.
  */
 #define VFX_HID_MAX_REPLY_LEN 22
 
@@ -122,7 +140,7 @@ struct vfx_hid_request {
     uint8_t bri;
     int16_t args[4];
     uint8_t flags;
-    uint8_t arg_idx;
+    uint8_t arg_idx; /* also a gradient stop index for SCENE_GET_GRADIENT_STOP */
     int8_t direction;
 };
 
@@ -152,3 +170,6 @@ uint8_t vfx_hid_encode_scene_layer(uint8_t ch, uint8_t slot, uint8_t type, uint8
  */
 uint8_t vfx_hid_encode_scene_order(uint8_t ch, const uint8_t *order, uint8_t count, uint8_t status,
                                    uint8_t *out);
+
+uint8_t vfx_hid_encode_gradient_stop(uint8_t ch, uint8_t slot, uint8_t idx, int16_t hue,
+                                     uint8_t sat, uint8_t bri, uint8_t status, uint8_t *out);

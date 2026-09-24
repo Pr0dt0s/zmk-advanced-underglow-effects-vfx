@@ -893,17 +893,19 @@ pool at a time; devicetree's compiled scene list stays exactly as it was,
 and a channel switches to showing this instead of it only once something has
 actually been built and activated.
 
-**Only ten generators are buildable this way**: `solid`, `breathe`, `wave`,
-`twinkle`, `plasma`, `ripple`, `keyflash`, `pulse`, `dart`, `static` — every
-one of them "one colour plus up to four small numbers", which is what fits a
-32-byte HID report and keeps every slot in the pool the same small size.
-`trail` and `hold` carry a byte of state per pixel; `gradient` takes a
-variable-length stop list; `water`, `matrix`, `fire`, `comet` and `cross`
-want a second colour and more arguments than four; the indicator layers read
-board state through a config that is itself a pointer. None of those are
-reachable here — devicetree remains the only way to reach them, same as it
-already was for everything else. `runtime_scene.h` has the full reasoning
-next to the generator list itself.
+**Only eleven generators are buildable this way**: `solid`, `breathe`,
+`wave`, `twinkle`, `plasma`, `ripple`, `keyflash`, `pulse`, `dart`, `static`
+and `gradient` — every one of them either "one colour plus up to four small
+numbers", which is what fits a 32-byte HID report and keeps every slot in
+the pool the same small size, or, `gradient` alone, a short list of colours
+composed across several small messages rather than carried in one large one
+(see [Building a gradient](#building-a-gradient) below). `trail` and `hold`
+carry a byte of state per pixel; `water`, `matrix`, `fire`, `comet` and
+`cross` want a second colour and more arguments than four; the indicator
+layers read board state through a config that is itself a pointer. None of
+those are reachable here — devicetree remains the only way to reach them,
+same as it already was for everything else. `runtime_scene.h` has the full
+reasoning next to the generator list itself.
 
 A layer's zone is a plain pixel range (`start`, `len`), the same numbers
 `range = <start len>` takes in devicetree; the `keys` and `pixels` zone
@@ -911,7 +913,7 @@ forms are not reachable from a runtime scene either.
 
 ### The wire format
 
-Ten more ops on the same transport as tuning, all gated behind
+Twelve more ops on the same transport as tuning, all gated behind
 `CONFIG_ZMK_VFX_RUNTIME_SCENES` in addition to `CONFIG_ZMK_VFX_RAW_HID` — a
 board running raw-hid without runtime scenes still answers every one of
 these, with `status` `1` and nothing built, rather than leaving a host
@@ -934,17 +936,41 @@ channel's own pool — a different id space from a tuning slot, assigned by
 | `SCENE_GET_INFO` (`0x0F`) | ch | `0x8F`: ch, count, active, status | 5 |
 | `SCENE_GET_LAYER` (`0x10`) | ch, slot | `0x90`: ch, slot, type, zone start, zone len, blend, opacity, hue, sat, bri, 4 args, flags, status | 22 |
 | `SCENE_GET_ORDER` (`0x11`) | ch | `0x91`: ch, count, `count` slot ids, status | 4 + count |
+| `SCENE_GRADIENT_ADD_STOP` (`0x12`) | ch, slot, hue (`int16`), sat, bri | `0x92`: slot, status | 3 |
+| `SCENE_GET_GRADIENT_STOP` (`0x13`) | ch, slot, stop index | `0x93`: ch, slot, index, hue (`int16`), sat, bri, status | 9 |
 
 `status` is `0` for ok, `1` (`BAD_SLOT`) for a channel, slot, generator type
-or argument index outside range, `2` (`POOL_FULL`) only from
-`SCENE_ADD_LAYER` when the channel's pool already has
-`CONFIG_ZMK_VFX_RUNTIME_MAX_LAYERS` layers in it — broken out from
-`BAD_SLOT` because it is the one rejection a host would react to
-differently, by removing a layer rather than by fixing what it sent.
-`flags` is one byte: bit 0 is `pulse`'s `stack`, bit 1 is `dart`'s
-`reverse`, bits 2-4 are `dart`'s `axis` (`VFX_AXIS_*`, the same values
-`dt-bindings/zmk/vfx.h` defines) — nothing else buildable here reads either
-bit.
+or argument index outside range, `2` (`POOL_FULL`) from `SCENE_ADD_LAYER`
+when the channel's own layer pool is already full, and from
+`SCENE_GRADIENT_ADD_STOP` when that slot's own stop list already holds
+`VFX_RT_GRADIENT_MAX_STOPS` — both broken out from `BAD_SLOT` because they
+are the one rejection a host would react to differently, by removing
+something rather than by fixing what it sent. `flags` is one byte: bit 0 is
+`pulse`'s `stack`, bit 1 is `dart`'s `reverse`, bits 2-4 are `dart`'s `axis`
+(`VFX_AXIS_*`, the same values `dt-bindings/zmk/vfx.h` defines) — nothing
+else buildable here reads either bit.
+
+### Building a gradient
+
+A gradient's stop list is the one thing here that does not fit "one colour
+plus up to four small numbers" — even a modest six-stop gradient is 24
+bytes of colour alone, without anything left over in a 32-byte report for
+which layer it belongs to. Rather than widen every request to fit the
+biggest case, a gradient is built with an ordinary `SCENE_ADD_LAYER` (`type`
+`VFX_RT_GRADIENT`; `hue`/`sat`/`bri` are ignored, since a gradient has no
+one colour; `args[0]` is `scroll_speed`, `args[1]` is `span`, editable
+afterwards with the same `SCENE_SET_ARG` every other type uses) followed by
+one `SCENE_GRADIENT_ADD_STOP` per stop, in order — composing the list across
+several small messages instead of one large one. `SCENE_GET_LAYER`'s own
+reply has nowhere to carry the stops either, so it carries `num_stops`
+instead, in the `args[2]` a gradient itself never uses, and a host reading
+one back calls `SCENE_GET_GRADIENT_STOP` that many times.
+
+There is no edit-one-stop or remove-one-stop op: changing a gradient's
+stops means removing the layer and building it again, the same "no partial
+update" boundary a zone or blend edit already has. `host.js` does this
+itself whenever such an edit touches a gradient — see
+[its own panel](#the-simulators-own-panel) below.
 
 `SCENE_GET_LAYER` answers one slot at a time and says nothing about where
 that slot renders relative to the rest, since add, remove and move never
@@ -978,6 +1004,13 @@ show it instead of the channel's compiled list. Editing a layer's zone,
 blend or opacity has no dedicated wire op, so the panel rebuilds the whole
 layer with `SCENE_ADD_LAYER` under the hood — the same thing devicetree
 would require if you changed a layer's zone there, just without reflashing.
+
+A `gradient` layer shows a row of swatches instead of a single colour
+picker, with an "Add stop" control beside it that sends
+`SCENE_GRADIENT_ADD_STOP`. Because the panel keeps the stop list client-side
+too, a zone or blend edit on a gradient (which rebuilds the whole layer, as
+above) re-sends every stop afterwards against whatever slot the rebuild was
+assigned, rather than silently losing them.
 
 Same caveat as tuning: `tests/` proves the wire format round-trips with no
 Zephyr in scope, and `tools/verify-host-hid.mjs` now drives the Scenes panel

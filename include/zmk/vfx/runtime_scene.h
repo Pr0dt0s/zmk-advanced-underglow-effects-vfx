@@ -21,18 +21,21 @@
  * how scenes already work on this MCU, only the arena is writable RAM here
  * instead of a devicetree-generated ROM section.
  *
- * Only ten generators are buildable this way -- solid, breathe, wave,
- * twinkle, plasma, ripple, keyflash, pulse, dart, static -- all of them
- * "one colour plus up to four small numbers", which is what fits a raw-hid
- * report and keeps every slot's state small. `trail` and `hold` carry a
- * byte per pixel of state (VFX_TRAIL_MAX_PIXELS / VFX_HOLD_MAX_PIXELS, 128
- * each) that would otherwise size every slot in the pool to fit the largest
- * one; `gradient` takes a variable-length stop list; `water`, `matrix`,
- * `fire`, `comet` and `cross` want a second colour and more numbers than
- * fit; the indicator layers read board state through a config that is
- * itself a pointer, not something a generic four-argument wire message can
- * carry. None of those are reachable here. Devicetree remains the only way
- * to reach them, same as it is the only way to reach anything at all today.
+ * Eleven generators are buildable this way -- solid, breathe, wave,
+ * twinkle, plasma, ripple, keyflash, pulse, dart, static, gradient -- every
+ * one of them either "one colour plus up to four small numbers" (which is
+ * what fits a raw-hid report and keeps every slot's state small) or, for
+ * gradient alone, a short list of colours built up one small message at a
+ * time rather than carried in a single oversized one -- see
+ * VFX_RT_GRADIENT_MAX_STOPS below. `trail` and `hold` carry a byte per
+ * pixel of state (VFX_TRAIL_MAX_PIXELS / VFX_HOLD_MAX_PIXELS, 128 each)
+ * that would otherwise size every slot in the pool to fit the largest one;
+ * `water`, `matrix`, `fire`, `comet` and `cross` want a second colour and
+ * more numbers than fit in four; the indicator layers read board state
+ * through a config that is itself a pointer, not something a wire message
+ * can carry at all. None of those are reachable here. Devicetree remains
+ * the only way to reach them, same as it is the only way to reach anything
+ * at all today.
  */
 
 enum vfx_rt_type {
@@ -46,6 +49,7 @@ enum vfx_rt_type {
     VFX_RT_PULSE,
     VFX_RT_DART,
     VFX_RT_STATIC,
+    VFX_RT_GRADIENT,
     VFX_RT_TYPE_COUNT,
 };
 
@@ -76,6 +80,17 @@ enum vfx_rt_type {
 #define VFX_RT_FLAG_AXIS_SHIFT 2
 #define VFX_RT_FLAG_AXIS_MASK (0x7 << VFX_RT_FLAG_AXIS_SHIFT)
 
+/* Gradient's stop list is built by vfx_runtime_gradient_add_stop(), one
+ * stop per call, rather than carried in vfx_rt_params like everything
+ * else's colour -- a stop list rarely fits alongside a layer's other
+ * fields in one 32-byte report the way a single colour does. Six matches
+ * the longest stop list this project's own shipped presets use (rainbow,
+ * pinwheel); more than that has never been needed and would cost every
+ * slot in the pool the RAM whether or not it holds a gradient, the same
+ * tradeoff VFX_RT_MAX_LAYERS already makes for layer count.
+ */
+#define VFX_RT_GRADIENT_MAX_STOPS 6
+
 /* Everything a layer needs, exactly what SCENE_ADD_LAYER carries on the wire
  * and what SET_ARG / SET_COLOR / SET_FLAGS touch afterwards. Kept apart from
  * the built vfx_layer/config/state below: an edit rewrites this and rebuilds
@@ -92,11 +107,25 @@ struct vfx_rt_params {
     uint8_t zone_len;
     uint8_t blend; /* VFX_BLEND_* */
     uint8_t opacity;
-    uint16_t hue; /* 0-359 */
+    uint16_t hue; /* 0-359. Meaningless for gradient, which has no single
+                   * colour -- SCENE_SET_COLOR on one is a harmless no-op.
+                   */
     uint8_t sat;  /* 0-100 */
     uint8_t bri;  /* 0-100 */
-    int16_t args[4];
+    int16_t args[4]; /* gradient: args[0] is scroll_speed, args[1] is span,
+                       * edited the same SCENE_SET_ARG every other type
+                       * already uses -- args[2] and args[3] go unused.
+                       */
     uint8_t flags;
+
+    /* Gradient only, filled in by vfx_runtime_gradient_add_stop() rather
+     * than by SCENE_ADD_LAYER itself, which is why this is here in params
+     * rather than in a cfg union member: params is what persists and what
+     * an edit rewrites, and a stop list has to survive both the same way
+     * every other field here does.
+     */
+    uint32_t stops[VFX_RT_GRADIENT_MAX_STOPS]; /* packed VFX_HSB */
+    uint8_t num_stops;
 };
 
 /* The config/state shapes every buildable generator needs. Sized to the
@@ -114,6 +143,10 @@ union vfx_rt_cfg {
     struct vfx_pulse_cfg pulse;
     struct vfx_dart_cfg dart;
     struct vfx_static_cfg static_cfg;
+    /* .stops points at the owning slot's own params.stops -- see
+     * rebuild_slot() -- never anywhere else, so this never dangles.
+     */
+    struct vfx_gradient_cfg gradient;
 };
 
 union vfx_rt_state {
@@ -123,6 +156,7 @@ union vfx_rt_state {
     struct vfx_keyflash_state keyflash;
     struct vfx_pulse_state pulse;
     struct vfx_dart_state dart;
+    struct vfx_gradient_state gradient;
     /* wave, twinkle, plasma and static read no state of their own; this
      * still gives each of them a real (if unused) pointer of its own,
      * rather than a NULL a generator's api->frame was never written to
@@ -203,6 +237,25 @@ bool vfx_runtime_get_layer(uint8_t ch, uint8_t slot, struct vfx_rt_params *out);
  * at a time and says nothing about where it renders relative to the rest.
  */
 bool vfx_runtime_get_order(uint8_t ch, uint8_t *order, uint8_t *count);
+
+/* Appends one stop to a gradient slot's list and rebuilds it, in the order
+ * stops are sent -- there is no insert-at-index, matching how a devicetree
+ * `stops = <...>` cell is one ordered list too. False if ch or slot is out
+ * of range, the slot is not a gradient, or its list already holds
+ * VFX_RT_GRADIENT_MAX_STOPS stops.
+ */
+bool vfx_runtime_gradient_add_stop(uint8_t ch, uint8_t slot, uint16_t hue, uint8_t sat,
+                                   uint8_t bri);
+
+/* The other half, for a host reading a gradient back one stop at a time --
+ * SCENE_GET_LAYER's own reply has no room for a variable-length list, so
+ * this is what a host calls num_stops times (carried in that reply's own
+ * args[2], the one slot rebuild_slot() never reads for gradient) to
+ * reconstruct it. False if ch, slot or idx is out of range, or the slot is
+ * not a gradient.
+ */
+bool vfx_runtime_gradient_get_stop(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t *hue,
+                                   uint8_t *sat, uint8_t *bri);
 
 /* Everything worth persisting about one channel's runtime scene: which
  * slots are used and what they were built from, the order they render in,

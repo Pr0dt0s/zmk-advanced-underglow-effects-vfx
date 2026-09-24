@@ -44,9 +44,12 @@ await page.addInitScript(() => {
     SCENE_RESET: 7, SCENE_ADD_LAYER: 8, SCENE_SET_ARG: 9, SCENE_SET_COLOR: 10,
     SCENE_REMOVE_LAYER: 11, SCENE_MOVE_LAYER: 12, SCENE_ACTIVATE: 13, SCENE_DEACTIVATE: 14,
     SCENE_GET_INFO: 15, SCENE_GET_LAYER: 16, SCENE_GET_ORDER: 17,
+    SCENE_GRADIENT_ADD_STOP: 18, SCENE_GET_GRADIENT_STOP: 19,
   };
   const REPLY = 0x80;
   const MAX_LAYERS = 3;
+  const MAX_STOPS = 6; // VFX_RT_GRADIENT_MAX_STOPS
+  const GRADIENT_TYPE = 10; // enum vfx_rt_type's VFX_RT_GRADIENT
 
   const readI16 = (b, off) => {
     const u = b[off] | (b[off + 1] << 8);
@@ -125,7 +128,12 @@ await page.addInitScript(() => {
         buf[11] = l.bri;
         writeI16(buf, 12, l.args[0]);
         writeI16(buf, 14, l.args[1]);
-        writeI16(buf, 16, l.args[2]);
+        /* A gradient's own args[2] carries num_stops instead -- the only
+         * place its reply has room to say how many SCENE_GET_GRADIENT_STOP
+         * calls a host needs to make, matching reply_scene_layer() in
+         * hid_transport.c exactly.
+         */
+        writeI16(buf, 16, l.type === GRADIENT_TYPE ? l.stops.length : l.args[2]);
         writeI16(buf, 18, l.args[3]);
         buf[20] = l.flags;
       }
@@ -137,6 +145,25 @@ await page.addInitScript(() => {
 
     sceneOrderBytes(ch, order, status) {
       return [OP.SCENE_GET_ORDER | REPLY, ch, order.length, ...order, status];
+    }
+
+    gradientStopBytes(ch, slot, idx, stop, status) {
+      const buf = new Array(9).fill(0);
+
+      buf[0] = OP.SCENE_GET_GRADIENT_STOP | REPLY;
+      buf[1] = ch;
+      buf[2] = slot;
+      buf[3] = idx;
+
+      if (stop) {
+        writeI16(buf, 4, stop.hue);
+        buf[6] = stop.sat;
+        buf[7] = stop.bri;
+      }
+
+      buf[8] = status;
+
+      return buf;
     }
 
     async sendReport(reportId, data) {
@@ -201,6 +228,7 @@ await page.addInitScript(() => {
               hue: readI16(b, 7), sat: b[9], bri: b[10],
               args: [readI16(b, 11), readI16(b, 13), readI16(b, 15), readI16(b, 17)],
               flags: b[19],
+              stops: [], // gradient only; see SCENE_GRADIENT_ADD_STOP below
             };
             ch.order.push(free);
             this.reply(this.sceneAckBytes(op, free, 0));
@@ -261,6 +289,20 @@ await page.addInitScript(() => {
         const ch = this.channels[slot];
 
         this.reply(this.sceneOrderBytes(slot, ch ? ch.order : [], ch ? 0 : 1));
+      } else if (op === OP.SCENE_GRADIENT_ADD_STOP) {
+        const ch = this.channels[b[1]];
+        const l = ch && ch.slots[b[2]];
+        const ok = l && l.type === GRADIENT_TYPE && l.stops.length < MAX_STOPS;
+
+        if (ok) l.stops.push({ hue: readI16(b, 3), sat: b[5], bri: b[6] });
+        this.reply(this.sceneAckBytes(op, b[2],
+          ok ? 0 : (l && l.type === GRADIENT_TYPE ? 2 : 1))); // POOL_FULL vs BAD_SLOT
+      } else if (op === OP.SCENE_GET_GRADIENT_STOP) {
+        const ch = this.channels[b[1]];
+        const l = ch && ch.slots[b[2]];
+        const stop = l && l.type === GRADIENT_TYPE ? l.stops[b[3]] : undefined;
+
+        this.reply(this.gradientStopBytes(b[1], b[2], b[3], stop, stop ? 0 : 1));
       }
     }
   }
@@ -431,6 +473,93 @@ for (let left = 2; left > 0; left--) {
   await page.waitForFunction(
     n => document.querySelectorAll('#host-scene-layers .layer-card').length === n, left - 1);
 }
+
+/* ------------------------------------------------------- gradient stops */
+
+/* A gradient's stop list is the one thing this protocol composes across
+ * several small messages rather than carrying in a single one (see the
+ * README) -- everything below is specifically about that, not about
+ * anything already covered by the plain-layer checks above.
+ */
+await page.selectOption('#host-add-type', '10'); // gradient
+await page.click('#host-add-layer');
+await page.waitForFunction(
+  () => document.querySelectorAll('#host-scene-layers .layer-card').length === 1);
+
+check('A gradient layer\'s own "stops" field is shown, its colour picker is not',
+      (await page.isHidden('#host-scene-layers .field:has-text("colour")')) &&
+      !(await page.isHidden('#host-scene-layers .stops')));
+
+const addStop = async hex => {
+  await page.fill('#host-scene-layers .stops input[type="color"]', hex);
+  await page.click('#host-scene-layers button:has-text("Add stop")');
+};
+
+await addStop('#ff0000');
+await page.waitForFunction(
+  () => window.__fakeDevice.channels[0].slots.find(s => s)?.stops.length === 1);
+await addStop('#0000ff');
+await page.waitForFunction(
+  () => window.__fakeDevice.channels[0].slots.find(s => s)?.stops.length === 2);
+
+check('Adding a stop sends SCENE_GRADIENT_ADD_STOP and the panel shows a swatch per stop',
+      (await page.$$('#host-scene-layers .stop-swatch')).length === 2);
+
+const gradSlot = await page.evaluate(() => window.__fakeDevice.channels[0].order[0]);
+
+check('The device holds the stops in the order they were sent',
+      (await page.evaluate(
+        slot => window.__fakeDevice.channels[0].slots[slot].stops.map(s => s.hue),
+        gradSlot)).join(',') === '0,240',
+      'red then blue, hue 0 then 240');
+
+/* Two are in already; four more reaches VFX_RT_GRADIENT_MAX_STOPS (6), and
+ * a seventh must be refused with the pool-full status rather than silently
+ * accepted or confused with an ordinary bad-slot refusal.
+ */
+for (let i = 0; i < 4; i++) {
+  await addStop('#00ff00');
+  await page.waitForFunction(
+    n => window.__fakeDevice.channels[0].slots.find(s => s)?.stops.length === n, i + 3);
+}
+
+await addStop('#00ff00');
+await page.waitForFunction(
+  () => document.getElementById('host-status').textContent.includes('stop list is full'));
+
+check('A full stop list is reported distinctly, not as a plain refusal', true);
+
+check('The rejected 7th stop did not grow the device\'s own list past the cap',
+      (await page.evaluate(
+        slot => window.__fakeDevice.channels[0].slots[slot].stops.length, gradSlot)) === 6);
+
+/* Forces a full re-read from the device (the same path a reconnect takes),
+ * proving SCENE_GET_GRADIENT_STOP reconstructs the list rather than the
+ * panel just remembering what it itself sent this session.
+ */
+await page.click('[data-ch="1"]');
+await page.click('[data-ch="0"]');
+await page.waitForFunction(
+  () => document.querySelectorAll('#host-scene-layers .stop-swatch').length === 6);
+
+check('SCENE_GET_GRADIENT_STOP reconstructs the full list after a refresh', true);
+
+/* Editing the zone rebuilds the whole layer from scratch (SCENE_ADD_LAYER
+ * again, a fresh slot, zero stops) -- host.js has to re-send every stop
+ * afterwards or this would silently erase them.
+ */
+await page.fill('#host-scene-layers .field:has-text("zone start") input', '3');
+await page.dispatchEvent('#host-scene-layers .field:has-text("zone start") input', 'change');
+await page.waitForFunction(
+  () => document.querySelectorAll('#host-scene-layers .stop-swatch').length === 6);
+
+check('Stops survive a zone edit, which rebuilds the layer from scratch',
+      (await page.evaluate(() => window.__fakeDevice.channels[0].slots.find(s => s)?.stops
+        .length)) === 6);
+
+await page.click('#host-scene-layers .layer-card button[title="Remove"]');
+await page.waitForFunction(
+  () => document.querySelectorAll('#host-scene-layers .layer-card').length === 0);
 
 await page.click('#host-scene-active');
 await page.waitForFunction(() => window.__fakeDevice.channels[0].active === true);

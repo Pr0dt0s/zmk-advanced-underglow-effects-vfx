@@ -2855,6 +2855,40 @@ static void test_hid_scene_order_encodes(void) {
         "count 0 and the failure status must round-trip");
 }
 
+static void test_hid_gradient_add_stop_decodes(void) {
+    const uint8_t req[] = {VFX_HID_OP_SCENE_GRADIENT_ADD_STOP, 1, 5, 0x2C, 0x01, 90, 60};
+    struct vfx_hid_request out;
+
+    CHECK(vfx_hid_decode(req, sizeof(req), &out), "GRADIENT_ADD_STOP must decode");
+    CHECK(out.ch == 1 && out.slot == 5, "ch and slot must round-trip: %d, %d", out.ch, out.slot);
+    CHECK(out.hue == 300, "hue must decode little-endian, got %d", out.hue);
+    CHECK(out.sat == 90 && out.bri == 60, "sat and bri must round-trip: %d, %d", out.sat, out.bri);
+}
+
+static void test_hid_get_gradient_stop_decodes_and_encodes(void) {
+    const uint8_t req[] = {VFX_HID_OP_SCENE_GET_GRADIENT_STOP, 1, 5, 3};
+    struct vfx_hid_request out;
+
+    CHECK(vfx_hid_decode(req, sizeof(req), &out), "GET_GRADIENT_STOP must decode");
+    CHECK(out.ch == 1 && out.slot == 5 && out.arg_idx == 3,
+        "ch, slot and stop index must round-trip: %d, %d, %d", out.ch, out.slot, out.arg_idx);
+
+    uint8_t buf[VFX_HID_MAX_REPLY_LEN];
+    const uint8_t len =
+        vfx_hid_encode_gradient_stop(1, 5, 3, -30, 80, 40, VFX_HID_STATUS_OK, buf);
+
+    CHECK(len == 9, "ch + slot + idx + hue(2) + sat + bri + status, got %d", len);
+    CHECK(buf[0] == VFX_HID_REPLY_GRADIENT_STOP, "must use GET_GRADIENT_STOP's op with the reply bit");
+    CHECK(buf[1] == 1 && buf[2] == 5 && buf[3] == 3, "ch, slot and idx must round-trip: %d,%d,%d",
+        buf[1], buf[2], buf[3]);
+
+    const int16_t hue = (int16_t)((uint16_t)buf[4] | ((uint16_t)buf[5] << 8));
+
+    CHECK(hue == -30, "a negative hue must round-trip through the wire, got %d", hue);
+    CHECK(buf[6] == 80 && buf[7] == 40, "sat and bri must round-trip: %d, %d", buf[6], buf[7]);
+    CHECK(buf[8] == VFX_HID_STATUS_OK, "status must round-trip");
+}
+
 static void test_hid_scene_add_layer_ack_reports_the_assigned_slot(void) {
     uint8_t buf[VFX_HID_MAX_REPLY_LEN];
     /* SCENE_ADD_LAYER's success reply is an ordinary ACK, with slot set to
@@ -2888,6 +2922,22 @@ static struct vfx_rt_params rt_solid(uint8_t start, uint8_t len, uint16_t hue) {
         .hue = hue,
         .sat = 100,
         .bri = 100,
+    };
+}
+
+/* Stops are not part of this: an empty gradient is what
+ * vfx_runtime_gradient_add_stop() builds up from, the same way
+ * SCENE_ADD_LAYER and SCENE_GRADIENT_ADD_STOP are two separate wire
+ * messages.
+ */
+static struct vfx_rt_params rt_gradient(uint8_t start, uint8_t len, int16_t scroll_speed) {
+    return (struct vfx_rt_params){
+        .type = VFX_RT_GRADIENT,
+        .zone_start = start,
+        .zone_len = len,
+        .blend = VFX_BLEND_NORMAL,
+        .opacity = 255,
+        .args = {scroll_speed, 0, 0, 0},
     };
 }
 
@@ -3169,14 +3219,119 @@ static void test_runtime_get_order_reports_render_order(void) {
     CHECK(!vfx_runtime_get_order(9, order, &count), "an out-of-range channel must be refused");
 }
 
+static void test_runtime_gradient_add_stop_builds_a_renderable_gradient(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params g = rt_gradient(0, NPX, 20);
+    const int slot = vfx_runtime_add_layer(0, &g);
+
+    CHECK(slot >= 0, "the empty gradient layer must be added");
+    CHECK(vfx_runtime_gradient_add_stop(0, (uint8_t)slot, 0, 100, 100), "first stop must be added");
+    CHECK(vfx_runtime_gradient_add_stop(0, (uint8_t)slot, 180, 100, 100),
+        "second stop must be added");
+
+    vfx_runtime_set_active(0, true);
+
+    /* The exact same layer test_gradient_scrolls builds directly, to prove
+     * building one stop by stop at runtime renders identically to building
+     * it all at once in devicetree -- the whole point of this being safe to
+     * split across several small wire messages.
+     */
+    static const uint32_t ref_stops[] = {VFX_HSB(0, 100, 100), VFX_HSB(180, 100, 100)};
+    static const struct vfx_zone ref_zone = {.pixels = NULL, .start = 0, .len = NPX};
+    static const struct vfx_gradient_cfg ref_cfg = {
+        .stops = ref_stops, .num_stops = 2, .scroll_speed = 20, .span = 0};
+    static struct vfx_gradient_state ref_state;
+    static const struct vfx_layer ref_layers[] = {{.api = &vfx_layer_gradient_api,
+                                                    .zone = &ref_zone,
+                                                    .config = &ref_cfg,
+                                                    .state = &ref_state,
+                                                    .blend = VFX_BLEND_NORMAL,
+                                                    .opacity = 255}};
+    static const struct vfx_scene ref_scene = {
+        .name = "ref", .layers = ref_layers, .num_layers = 1};
+
+    struct vfx_rgb runtime_px[NPX], ref_px[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    ctx.time_ms = 750; /* nonzero, so a scrolled frame is actually compared */
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, runtime_px, NULL);
+    vfx_render_frame(&ref_scene, &ctx, ref_px, NULL);
+
+    CHECK(memcmp(runtime_px, ref_px, sizeof(runtime_px)) == 0,
+        "a gradient built stop by stop at runtime must render identically to one built at once");
+}
+
+static void test_runtime_gradient_add_stop_rejects_wrong_type_and_full_list(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params solid = rt_solid(0, NPX, 0);
+    const int solid_slot = vfx_runtime_add_layer(0, &solid);
+
+    CHECK(!vfx_runtime_gradient_add_stop(0, (uint8_t)solid_slot, 0, 100, 100),
+        "adding a stop to a non-gradient slot must be refused");
+
+    struct vfx_rt_params g = rt_gradient(0, NPX, 0);
+    const int slot = vfx_runtime_add_layer(0, &g);
+
+    for (int i = 0; i < VFX_RT_GRADIENT_MAX_STOPS; i++) {
+        CHECK(vfx_runtime_gradient_add_stop(0, (uint8_t)slot, (uint16_t)(i * 10), 100, 100),
+            "stop %d must be accepted, the list is not full yet", i);
+    }
+
+    CHECK(!vfx_runtime_gradient_add_stop(0, (uint8_t)slot, 0, 100, 100),
+        "a full stop list must refuse another stop");
+
+    struct vfx_rt_params out;
+
+    CHECK(vfx_runtime_get_layer(0, (uint8_t)slot, &out) &&
+              out.num_stops == VFX_RT_GRADIENT_MAX_STOPS,
+        "the rejected stop must not have grown the count past the cap, got %d", out.num_stops);
+}
+
+static void test_runtime_gradient_get_stop_reads_back_what_was_added(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params g = rt_gradient(0, NPX, 0);
+    const int slot = vfx_runtime_add_layer(0, &g);
+
+    vfx_runtime_gradient_add_stop(0, (uint8_t)slot, 300, 90, 40);
+    vfx_runtime_gradient_add_stop(0, (uint8_t)slot, 45, 50, 60);
+
+    uint16_t hue;
+    uint8_t sat, bri;
+
+    CHECK(vfx_runtime_gradient_get_stop(0, (uint8_t)slot, 0, &hue, &sat, &bri) && hue == 300 &&
+              sat == 90 && bri == 40,
+        "stop 0 must read back what was added: %d,%d,%d", hue, sat, bri);
+    CHECK(vfx_runtime_gradient_get_stop(0, (uint8_t)slot, 1, &hue, &sat, &bri) && hue == 45 &&
+              sat == 50 && bri == 60,
+        "stop 1 must read back what was added: %d,%d,%d", hue, sat, bri);
+    CHECK(!vfx_runtime_gradient_get_stop(0, (uint8_t)slot, 2, &hue, &sat, &bri),
+        "reading past num_stops must be refused");
+}
+
 static void test_runtime_save_and_restore_round_trips(void) {
     vfx_runtime_init();
 
-    struct vfx_rt_params red = rt_solid(0, NPX / 2, 0);
-    struct vfx_rt_params green = rt_solid(NPX / 2, NPX / 2, 120);
+    struct vfx_rt_params red = rt_solid(0, NPX / 3, 0);
+    struct vfx_rt_params green = rt_solid(NPX / 3, NPX / 3, 120);
+    /* A gradient's stop list lives in params like everything else here (see
+     * runtime_scene.h), so this is what proves it actually rides along
+     * through vfx_runtime_state()/restore_state() rather than only working
+     * because a fresh vfx_runtime_gradient_add_stop() call happened to
+     * still be in scope.
+     */
+    struct vfx_rt_params gradient = rt_gradient(2 * NPX / 3, NPX - 2 * NPX / 3, 0);
 
     vfx_runtime_add_layer(0, &red);
     vfx_runtime_add_layer(0, &green);
+
+    const int gslot = vfx_runtime_add_layer(0, &gradient);
+
+    vfx_runtime_gradient_add_stop(0, (uint8_t)gslot, 30, 80, 70);
+    vfx_runtime_gradient_add_stop(0, (uint8_t)gslot, 210, 60, 50);
+
     vfx_runtime_set_active(0, true);
 
     struct vfx_rgb before[NPX];
@@ -3322,6 +3477,9 @@ int main(void) {
         {"hid scene remove and move decode", test_hid_scene_remove_and_move_decode},
         {"hid scene info and layer encode", test_hid_scene_info_and_layer_encode},
         {"hid scene order encodes", test_hid_scene_order_encodes},
+        {"hid gradient add stop decodes", test_hid_gradient_add_stop_decodes},
+        {"hid get gradient stop decodes and encodes",
+         test_hid_get_gradient_stop_decodes_and_encodes},
         {"hid scene add layer ack reports the assigned slot",
          test_hid_scene_add_layer_ack_reports_the_assigned_slot},
         {"runtime add layer renders", test_runtime_add_layer_renders},
@@ -3340,6 +3498,12 @@ int main(void) {
         {"runtime get info and get layer report the pool",
          test_runtime_get_info_and_get_layer_report_the_pool},
         {"runtime get order reports render order", test_runtime_get_order_reports_render_order},
+        {"runtime gradient add stop builds a renderable gradient",
+         test_runtime_gradient_add_stop_builds_a_renderable_gradient},
+        {"runtime gradient add stop rejects wrong type and full list",
+         test_runtime_gradient_add_stop_rejects_wrong_type_and_full_list},
+        {"runtime gradient get stop reads back what was added",
+         test_runtime_gradient_get_stop_reads_back_what_was_added},
         {"runtime save and restore round trips", test_runtime_save_and_restore_round_trips},
     };
 

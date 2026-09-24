@@ -1081,6 +1081,38 @@ int zmk_vfx_scene_get_order(uint8_t ch, uint8_t *order, uint8_t *count) {
 
     return 0;
 }
+
+int zmk_vfx_scene_gradient_add_stop(uint8_t ch, uint8_t slot, uint16_t hue, uint8_t sat,
+                                    uint8_t bri) {
+    if (ch >= channel_count()) {
+        return -EINVAL;
+    }
+
+    if (!vfx_runtime_gradient_add_stop(ch, slot, hue, sat, bri)) {
+        /* A full stop list is a different problem for a host to react to
+         * (stop adding) than a bad channel, slot or non-gradient type, the
+         * same distinction zmk_vfx_scene_add_layer() already makes for a
+         * full layer pool.
+         */
+        struct vfx_rt_params p;
+
+        return (vfx_runtime_get_layer(ch, slot, &p) && p.type == VFX_RT_GRADIENT &&
+                p.num_stops >= VFX_RT_GRADIENT_MAX_STOPS)
+                 ? -ENOSPC
+                 : -EINVAL;
+    }
+
+    return runtime_result(true);
+}
+
+int zmk_vfx_scene_gradient_get_stop(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t *hue,
+                                    uint8_t *sat, uint8_t *bri) {
+    if (ch >= channel_count() || !vfx_runtime_gradient_get_stop(ch, slot, idx, hue, sat, bri)) {
+        return -EINVAL;
+    }
+
+    return 0;
+}
 #endif /* CONFIG_ZMK_VFX_RUNTIME_SCENES */
 
 uint8_t zmk_vfx_get_brightness(uint8_t ch) { return state.chan[channel_for_read(ch)].brightness; }

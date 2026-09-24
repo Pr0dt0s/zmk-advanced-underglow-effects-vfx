@@ -109,6 +109,16 @@ static void reply_scene_info(uint8_t ch) {
 static void reply_scene_layer(uint8_t ch, uint8_t slot) {
     struct vfx_rt_params p = {0};
     const int rc = zmk_vfx_scene_get_layer(ch, slot, &p);
+
+    /* A gradient's own stop list has nowhere else to announce its length --
+     * args[2] is unused by this type (see runtime_scene.h), so it carries
+     * num_stops here instead: how many SCENE_GET_GRADIENT_STOP calls a host
+     * reconstructing this layer needs to make.
+     */
+    if (p.type == VFX_RT_GRADIENT) {
+        p.args[2] = (int16_t)p.num_stops;
+    }
+
     uint8_t buf[VFX_HID_MAX_REPLY_LEN];
     const uint8_t len = vfx_hid_encode_scene_layer(ch, slot, p.type, p.zone_start, p.zone_len,
                                                    p.blend, p.opacity, (int16_t)p.hue, p.sat,
@@ -124,6 +134,18 @@ static void reply_scene_order(uint8_t ch) {
     uint8_t buf[VFX_HID_MAX_REPLY_LEN];
     const uint8_t len =
         vfx_hid_encode_scene_order(ch, order, rc == 0 ? count : 0, scene_status(rc), buf);
+
+    send(buf, len);
+}
+
+static void reply_gradient_stop(uint8_t ch, uint8_t slot, uint8_t idx) {
+    uint16_t hue = 0;
+    uint8_t sat = 0;
+    uint8_t bri = 0;
+    const int rc = zmk_vfx_scene_gradient_get_stop(ch, slot, idx, &hue, &sat, &bri);
+    uint8_t buf[VFX_HID_MAX_REPLY_LEN];
+    const uint8_t len = vfx_hid_encode_gradient_stop(ch, slot, idx, (int16_t)hue, sat, bri,
+                                                      scene_status(rc), buf);
 
     send(buf, len);
 }
@@ -234,6 +256,16 @@ static void handle(const struct vfx_hid_request *req) {
     case VFX_HID_OP_SCENE_GET_ORDER:
         reply_scene_order(req->ch);
         break;
+
+    case VFX_HID_OP_SCENE_GRADIENT_ADD_STOP:
+        reply_scene_ack(req->op, req->slot,
+                        zmk_vfx_scene_gradient_add_stop(req->ch, req->slot, (uint16_t)req->hue,
+                                                        req->sat, req->bri));
+        break;
+
+    case VFX_HID_OP_SCENE_GET_GRADIENT_STOP:
+        reply_gradient_stop(req->ch, req->slot, req->arg_idx);
+        break;
 #else
     /* CONFIG_ZMK_VFX_RUNTIME_SCENES is off: hid_protocol.c decodes these
      * fine regardless (see payload_len()), but there is nothing here to
@@ -252,6 +284,8 @@ static void handle(const struct vfx_hid_request *req) {
     case VFX_HID_OP_SCENE_GET_INFO:
     case VFX_HID_OP_SCENE_GET_LAYER:
     case VFX_HID_OP_SCENE_GET_ORDER:
+    case VFX_HID_OP_SCENE_GRADIENT_ADD_STOP:
+    case VFX_HID_OP_SCENE_GET_GRADIENT_STOP:
         reply_ack(req->op, req->ch, -EINVAL);
         break;
 #endif

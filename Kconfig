@@ -201,8 +201,8 @@ config ZMK_VFX_RUNTIME_SCENES
       bounded per-channel pool, and switch a channel to showing it instead
       of its compiled list. Persisted the same way tuning is.
 
-      Only ten generators are buildable this way -- see runtime_scene.h for
-      which, and why the rest still need devicetree. Costs RAM on every
+      Only eleven generators are buildable this way -- see runtime_scene.h
+      for which, and why the rest still need devicetree. Costs RAM on every
       board that turns it on, sized by the option below, whether or not
       anything is ever built at runtime.
 

@@ -57,6 +57,10 @@ static uint8_t payload_len(enum vfx_hid_op op) {
          * sat, bri, 4 args x 2 bytes, flags.
          */
         return 19;
+    case VFX_HID_OP_SCENE_GRADIENT_ADD_STOP:
+        return 6; /* ch, slot, hue lo, hue hi, sat, bri */
+    case VFX_HID_OP_SCENE_GET_GRADIENT_STOP:
+        return 3; /* ch, slot, stop index */
 
     default:
         return 0xFF; /* unreachable for a real op; makes an unknown one fail the length check */
@@ -153,6 +157,20 @@ bool vfx_hid_decode(const uint8_t *data, uint8_t len, struct vfx_hid_request *ou
         out->args[3] = read_i16(&data[17]);
         out->flags = data[19];
         break;
+
+    case VFX_HID_OP_SCENE_GRADIENT_ADD_STOP:
+        out->ch = data[1];
+        out->slot = data[2];
+        out->hue = read_i16(&data[3]);
+        out->sat = data[5];
+        out->bri = data[6];
+        break;
+
+    case VFX_HID_OP_SCENE_GET_GRADIENT_STOP:
+        out->ch = data[1];
+        out->slot = data[2];
+        out->arg_idx = data[3];
+        break;
     }
 
     return true;
@@ -235,4 +253,18 @@ uint8_t vfx_hid_encode_scene_order(uint8_t ch, const uint8_t *order, uint8_t cou
     out[3 + count] = status;
 
     return (uint8_t)(4 + count);
+}
+
+uint8_t vfx_hid_encode_gradient_stop(uint8_t ch, uint8_t slot, uint8_t idx, int16_t hue,
+                                     uint8_t sat, uint8_t bri, uint8_t status, uint8_t *out) {
+    out[0] = VFX_HID_REPLY_GRADIENT_STOP;
+    out[1] = ch;
+    out[2] = slot;
+    out[3] = idx;
+    write_i16(&out[4], hue);
+    out[6] = sat;
+    out[7] = bri;
+    out[8] = status;
+
+    return 9;
 }
