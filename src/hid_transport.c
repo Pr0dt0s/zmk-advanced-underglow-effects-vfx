@@ -149,6 +149,31 @@ static void reply_gradient_stop(uint8_t ch, uint8_t slot, uint8_t idx) {
 
     send(buf, len);
 }
+
+/* Whether an op needs relaying to a split peripheral: every SCENE_* op that
+ * changes something, as opposed to one that only reads it back. Relayed
+ * regardless of whether it succeeded locally -- the peripheral runs the
+ * identical zmk_vfx_scene_*() validation on the identical bytes, so it
+ * accepts or rejects the same way the central just did, and threading a
+ * success flag out here just to skip a request the far side would refuse
+ * anyway buys nothing.
+ */
+static bool op_needs_relay(uint8_t op) {
+    switch ((enum vfx_hid_op)op) {
+    case VFX_HID_OP_SCENE_RESET:
+    case VFX_HID_OP_SCENE_ADD_LAYER:
+    case VFX_HID_OP_SCENE_SET_ARG:
+    case VFX_HID_OP_SCENE_SET_COLOR:
+    case VFX_HID_OP_SCENE_REMOVE_LAYER:
+    case VFX_HID_OP_SCENE_MOVE_LAYER:
+    case VFX_HID_OP_SCENE_ACTIVATE:
+    case VFX_HID_OP_SCENE_DEACTIVATE:
+    case VFX_HID_OP_SCENE_GRADIENT_ADD_STOP:
+        return true;
+    default:
+        return false;
+    }
+}
 #endif
 
 static void handle(const struct vfx_hid_request *req) {
@@ -300,6 +325,12 @@ static int raw_hid_received_listener(const zmk_event_t *eh) {
 
         if (vfx_hid_decode(event->data, event->length, &req)) {
             handle(&req);
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
+            if (op_needs_relay(req.op)) {
+                zmk_vfx_scene_relay_send(event->data, vfx_hid_request_len(req.op));
+            }
+#endif
         } else {
             LOG_WRN("Malformed VFX raw-hid report (%d bytes)", event->length);
         }

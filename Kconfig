@@ -207,7 +207,10 @@ config ZMK_VFX_RUNTIME_SCENES
       anything is ever built at runtime.
 
       Nothing drives this by itself: it needs a transport, and
-      CONFIG_ZMK_VFX_RAW_HID is the only one today.
+      CONFIG_ZMK_VFX_RAW_HID is the only one today. That transport is
+      central-only on a split, so turn this on for every half, not just the
+      one running raw-hid -- an edit relays to the others (see the README),
+      and a half without this cannot apply what arrives.
 
 if ZMK_VFX_RUNTIME_SCENES
 

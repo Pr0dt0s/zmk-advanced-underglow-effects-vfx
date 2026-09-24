@@ -268,3 +268,69 @@ uint8_t vfx_hid_encode_gradient_stop(uint8_t ch, uint8_t slot, uint8_t idx, int1
 
     return 9;
 }
+
+uint8_t vfx_hid_request_len(uint8_t op) {
+    const uint8_t need = payload_len((enum vfx_hid_op)op);
+
+    return need == 0xFF ? 0 : (uint8_t)(1 + need);
+}
+
+void vfx_relay_pack(uint8_t cmd, uint8_t chunk_index, uint8_t total_len,
+                    const uint8_t *chunk_bytes, uint8_t chunk_len, uint32_t *param1,
+                    uint32_t *param2, uint32_t *position) {
+    uint32_t p2 = 0;
+    uint32_t pos = 0;
+
+    for (uint8_t i = 0; i < chunk_len && i < 4; i++) {
+        p2 |= (uint32_t)chunk_bytes[i] << (8 * i);
+    }
+    for (uint8_t i = 4; i < chunk_len; i++) {
+        pos |= (uint32_t)chunk_bytes[i] << (8 * (i - 4));
+    }
+
+    *param1 = (uint32_t)cmd | ((uint32_t)chunk_len << 8) | ((uint32_t)chunk_index << 16) |
+             ((uint32_t)total_len << 24);
+    *param2 = p2;
+    *position = pos;
+}
+
+bool vfx_relay_unpack(uint32_t param1, uint32_t param2, uint32_t position, uint8_t *buf,
+                      uint8_t *have, uint8_t *total) {
+    const uint8_t chunk_len = (uint8_t)((param1 >> 8) & 0xFF);
+    const uint8_t chunk_index = (uint8_t)((param1 >> 16) & 0xFF);
+    const uint8_t total_len = (uint8_t)((param1 >> 24) & 0xFF);
+
+    if (chunk_len == 0 || chunk_len > VFX_RELAY_CHUNK_BYTES || total_len == 0 ||
+        total_len > VFX_RELAY_MAX_BYTES) {
+        return false;
+    }
+
+    if (chunk_index == 0) {
+        *have = 0;
+        *total = total_len;
+    }
+
+    if (total_len != *total) {
+        return false; /* an interrupted request's tail, not this one's start */
+    }
+
+    const uint16_t offset = (uint16_t)chunk_index * VFX_RELAY_CHUNK_BYTES;
+
+    if (offset + chunk_len > VFX_RELAY_MAX_BYTES) {
+        return false;
+    }
+
+    uint8_t bytes[VFX_RELAY_CHUNK_BYTES];
+
+    for (uint8_t i = 0; i < chunk_len && i < 4; i++) {
+        bytes[i] = (uint8_t)(param2 >> (8 * i));
+    }
+    for (uint8_t i = 4; i < chunk_len; i++) {
+        bytes[i] = (uint8_t)(position >> (8 * (i - 4)));
+    }
+
+    memcpy(&buf[offset], bytes, chunk_len);
+    *have = (uint8_t)(offset + chunk_len);
+
+    return *have >= *total;
+}

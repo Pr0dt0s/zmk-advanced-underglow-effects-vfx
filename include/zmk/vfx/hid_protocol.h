@@ -173,3 +173,46 @@ uint8_t vfx_hid_encode_scene_order(uint8_t ch, const uint8_t *order, uint8_t cou
 
 uint8_t vfx_hid_encode_gradient_stop(uint8_t ch, uint8_t slot, uint8_t idx, int16_t hue,
                                      uint8_t sat, uint8_t bri, uint8_t status, uint8_t *out);
+
+/* Total wire length (op byte plus payload) of a request naming this op, or 0
+ * if it is not one of the ops above. Lets a caller holding a decoded
+ * request's original bytes -- hid_transport.c, forwarding a scene op to a
+ * split peripheral -- know how many of them actually mattered, without a
+ * second copy of payload_len()'s own table.
+ */
+uint8_t vfx_hid_request_len(uint8_t op);
+
+/* Relaying a request from a split's central to its peripheral, over the &vfx
+ * behavior's own relay rather than this transport a second time -- a
+ * peripheral never runs raw-hid. See scene_relay.c, the only caller of
+ * either of these; this file only packs and unpacks the bytes, the same
+ * separation the rest of it keeps from anything Zephyr-shaped.
+ *
+ * A behavior invocation carries two uint32_t (param1, above the command
+ * byte, and param2) plus a third free one (event.position), eight bytes of
+ * a request's own wire bytes per invocation. VFX_HID_OP_SCENE_ADD_LAYER, the
+ * longest request this decodes, needs three.
+ */
+#define VFX_RELAY_CHUNK_BYTES 8
+#define VFX_RELAY_MAX_BYTES 20
+
+/* Packs one chunk_len-byte chunk (starting at chunk_bytes) of a total_len-
+ * byte request into a behavior invocation's own three payload words, above
+ * cmd in param1's low byte.
+ */
+void vfx_relay_pack(uint8_t cmd, uint8_t chunk_index, uint8_t total_len,
+                    const uint8_t *chunk_bytes, uint8_t chunk_len, uint32_t *param1,
+                    uint32_t *param2, uint32_t *position);
+
+/* Unpacks one chunk into `buf` (which must be VFX_RELAY_MAX_BYTES long),
+ * tracking progress across calls in `*have`/`*total` -- both must be zeroed
+ * before the first one. A chunk_index of 0 (re)starts assembly, so a request
+ * that begins arriving again abandons whatever an earlier, incomplete one
+ * had rather than corrupting it with unrelated bytes. Returns true once
+ * `buf` holds the whole request, ready for vfx_hid_decode(); false for a
+ * chunk that still leaves it incomplete, or one whose header fails a basic
+ * sanity check (a length over the limits above, or a total that disagrees
+ * with the one an assembly already in progress started with).
+ */
+bool vfx_relay_unpack(uint32_t param1, uint32_t param2, uint32_t position, uint8_t *buf,
+                      uint8_t *have, uint8_t *total);

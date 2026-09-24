@@ -111,6 +111,19 @@
 #define VFX_TUNE_SPEED_CMD 20
 #define VFX_TUNE_RESET_CMD 21
 
+/* A runtime-scene edit, relayed from the central to a peripheral the same
+ * way VFX_SYNC_CMD/VFX_KEY_CMD already are. Never typed in a keymap: raw-hid
+ * only builds on the central, so this is the only way an edit built from a
+ * host over the Scenes panel ever reaches the other half.
+ *
+ * What rides here is not one value but another op's own wire bytes (see
+ * hid_protocol.h), so param1 carries a small header above the command byte
+ * -- chunk length, chunk index, total length -- rather than a channel, and
+ * param2 plus event.position (which &vfx's own handler never reads) carry
+ * up to eight of those bytes per invocation. See scene_relay.c.
+ */
+#define VFX_RT_RELAY_CMD 22
+
 #define VFX_TOG VFX_TOG_CMD 0
 #define VFX_ON VFX_ON_CMD 0
 #define VFX_OFF VFX_OFF_CMD 0

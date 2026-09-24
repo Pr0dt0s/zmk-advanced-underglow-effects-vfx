@@ -2903,6 +2903,169 @@ static void test_hid_scene_add_layer_ack_reports_the_assigned_slot(void) {
     CHECK(buf[1] == 4, "byte 1 must carry the newly assigned slot");
 }
 
+/* ---- split relay ---------------------------------------------------------
+ *
+ * vfx_relay_pack()/vfx_relay_unpack() are the pure half of relaying a scene
+ * op's own wire bytes from a split's central to its peripheral (see
+ * scene_relay.c for the Zephyr-shaped half these feed, which cannot be
+ * exercised here). What matters is that a request chunked one way comes
+ * back out the other identically, regardless of how many chunks it took.
+ */
+
+/* Mimics scene_relay.c's own send loop: chunks `len` bytes of `data` into
+ * VFX_RELAY_CHUNK_BYTES pieces and feeds each straight into
+ * vfx_relay_unpack(), as if it had crossed the split link chunk by chunk.
+ */
+static bool relay_round_trip(const uint8_t *data, uint8_t len, uint8_t *buf, uint8_t *have,
+                             uint8_t *total) {
+    uint8_t sent = 0;
+    uint8_t chunk_index = 0;
+    bool done = false;
+
+    while (sent < len) {
+        const uint8_t chunk_len =
+            (uint8_t)((len - sent) < VFX_RELAY_CHUNK_BYTES ? (len - sent) : VFX_RELAY_CHUNK_BYTES);
+        uint32_t param1;
+        uint32_t param2;
+        uint32_t position;
+
+        vfx_relay_pack(0x2A, chunk_index, len, &data[sent], chunk_len, &param1, &param2,
+                       &position);
+        done = vfx_relay_unpack(param1, param2, position, buf, have, total);
+
+        sent = (uint8_t)(sent + chunk_len);
+        chunk_index++;
+    }
+
+    return done;
+}
+
+static void test_relay_round_trips_a_request_that_fits_one_chunk(void) {
+    const uint8_t req[] = {VFX_HID_OP_SCENE_ACTIVATE, 1};
+    uint8_t buf[VFX_RELAY_MAX_BYTES] = {0};
+    uint8_t have = 0;
+    uint8_t total = 0;
+
+    CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_ACTIVATE) == sizeof(req),
+        "SCENE_ACTIVATE's own request length must match what it decodes, got %d",
+        vfx_hid_request_len(VFX_HID_OP_SCENE_ACTIVATE));
+    CHECK(relay_round_trip(req, sizeof(req), buf, &have, &total),
+        "a request under VFX_RELAY_CHUNK_BYTES must complete in its one chunk");
+    CHECK(memcmp(buf, req, sizeof(req)) == 0, "the reassembled bytes must match the original");
+
+    struct vfx_hid_request out;
+
+    CHECK(vfx_hid_decode(buf, total, &out) && out.op == VFX_HID_OP_SCENE_ACTIVATE && out.ch == 1,
+        "the reassembled bytes must still decode to the same request");
+}
+
+static void test_relay_round_trips_the_longest_request_across_three_chunks(void) {
+    /* The same 20-byte SCENE_ADD_LAYER request
+     * test_hid_scene_add_layer_decodes_every_field() already proves decodes
+     * correctly on its own -- what this test is proving is that chunking
+     * and reassembling it changes nothing.
+     */
+    const uint8_t req[] = {
+        VFX_HID_OP_SCENE_ADD_LAYER,
+        2,          /* ch */
+        5,          /* type */
+        10,         /* zone start */
+        20,         /* zone len */
+        1,          /* blend */
+        200,        /* opacity */
+        0x2C, 0x01, /* hue = 300 */
+        80,         /* sat */
+        90,         /* bri */
+        0xE2, 0xFF, /* arg0 = -30 */
+        0x64, 0x00, /* arg1 = 100 */
+        0x00, 0x00, /* arg2 = 0 */
+        0x01, 0x00, /* arg3 = 1 */
+        0x03,       /* flags */
+    };
+    uint8_t buf[VFX_RELAY_MAX_BYTES] = {0};
+    uint8_t have = 0;
+    uint8_t total = 0;
+    uint32_t param1;
+    uint32_t param2;
+    uint32_t position;
+
+    CHECK(sizeof(req) == VFX_RELAY_MAX_BYTES, "this fixture must exercise the actual ceiling");
+
+    /* Fed chunk by chunk with an explicit index, rather than through
+     * relay_round_trip(), which always starts a fresh sequence at chunk 0 --
+     * exactly the restart behaviour the next test is about, so it cannot
+     * also be used to resume one here.
+     */
+    vfx_relay_pack(0x2A, 0, sizeof(req), &req[0], 8, &param1, &param2, &position);
+    CHECK(!vfx_relay_unpack(param1, param2, position, buf, &have, &total) && have == 8,
+        "the first of three chunks must leave the request incomplete");
+
+    vfx_relay_pack(0x2A, 1, sizeof(req), &req[8], 8, &param1, &param2, &position);
+    CHECK(!vfx_relay_unpack(param1, param2, position, buf, &have, &total) && have == 16,
+        "the second of three chunks must still leave it incomplete");
+
+    vfx_relay_pack(0x2A, 2, sizeof(req), &req[16], 4, &param1, &param2, &position);
+    CHECK(vfx_relay_unpack(param1, param2, position, buf, &have, &total),
+        "the third chunk must complete it");
+
+    CHECK(memcmp(buf, req, sizeof(req)) == 0,
+        "twenty bytes reassembled from three chunks must match the original");
+
+    struct vfx_hid_request out;
+
+    CHECK(vfx_hid_decode(buf, total, &out) && out.zone_start == 10 && out.args[3] == 1,
+        "the reassembled longest request must still decode correctly");
+}
+
+static void test_relay_restarting_at_chunk_zero_discards_a_stale_assembly(void) {
+    const uint8_t abandoned[] = {VFX_HID_OP_SCENE_ADD_LAYER, 0, 0, 0, 0, 0, 0, 0};
+    const uint8_t fresh[] = {VFX_HID_OP_SCENE_DEACTIVATE, 1};
+    uint8_t buf[VFX_RELAY_MAX_BYTES] = {0};
+    uint8_t have = 0;
+    uint8_t total = 0;
+    uint32_t param1;
+    uint32_t param2;
+    uint32_t position;
+
+    /* Only the first chunk of a 20-byte request arrives... */
+    vfx_relay_pack(0x2A, 0, 20, abandoned, sizeof(abandoned), &param1, &param2, &position);
+    CHECK(!vfx_relay_unpack(param1, param2, position, buf, &have, &total),
+        "one chunk of three must not report a complete request");
+
+    /* ...then a whole new, unrelated one starts, rather than continuing it. */
+    CHECK(relay_round_trip(fresh, sizeof(fresh), buf, &have, &total),
+        "a fresh chunk 0 must restart assembly rather than append to the abandoned one");
+    CHECK(memcmp(buf, fresh, sizeof(fresh)) == 0,
+        "the abandoned request's bytes must not leak into the fresh one");
+}
+
+static void test_relay_unpack_rejects_a_malformed_header(void) {
+    uint8_t buf[VFX_RELAY_MAX_BYTES] = {0};
+    uint8_t have = 0;
+    uint8_t total = 0;
+    uint32_t param1;
+    uint32_t param2;
+    uint32_t position;
+    const uint8_t one_byte[] = {0x2A};
+
+    vfx_relay_pack(0x2A, 0, 0, one_byte, 0, &param1, &param2, &position);
+    CHECK(!vfx_relay_unpack(param1, param2, position, buf, &have, &total),
+        "a zero total length must be refused");
+
+    vfx_relay_pack(0x2A, 0, VFX_RELAY_MAX_BYTES + 1, one_byte, 1, &param1, &param2, &position);
+    CHECK(!vfx_relay_unpack(param1, param2, position, buf, &have, &total),
+        "a total length over the ceiling must be refused");
+
+    /* A chunk_index of 1 claiming a total that disagrees with what chunk 0
+     * of a still-incomplete assembly already established.
+     */
+    vfx_relay_pack(0x2A, 0, 20, one_byte, 1, &param1, &param2, &position);
+    vfx_relay_unpack(param1, param2, position, buf, &have, &total);
+    vfx_relay_pack(0x2A, 1, 9, one_byte, 1, &param1, &param2, &position);
+    CHECK(!vfx_relay_unpack(param1, param2, position, buf, &have, &total),
+        "a later chunk naming a different total than the one in progress must be refused");
+}
+
 /* ---- runtime scene authoring -------------------------------------------
  *
  * A scene built through vfx_runtime_add_layer() and friends rather than by
@@ -3482,6 +3645,13 @@ int main(void) {
          test_hid_get_gradient_stop_decodes_and_encodes},
         {"hid scene add layer ack reports the assigned slot",
          test_hid_scene_add_layer_ack_reports_the_assigned_slot},
+        {"relay round trips a request that fits one chunk",
+         test_relay_round_trips_a_request_that_fits_one_chunk},
+        {"relay round trips the longest request across three chunks",
+         test_relay_round_trips_the_longest_request_across_three_chunks},
+        {"relay restarting at chunk zero discards a stale assembly",
+         test_relay_restarting_at_chunk_zero_discards_a_stale_assembly},
+        {"relay unpack rejects a malformed header", test_relay_unpack_rejects_a_malformed_header},
         {"runtime add layer renders", test_runtime_add_layer_renders},
         {"runtime empty scene is null", test_runtime_empty_scene_is_null},
         {"runtime channels are independent", test_runtime_channels_are_independent},

@@ -210,6 +210,16 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
     case VFX_KEY_CMD:
         zmk_vfx_inject_key(binding->param2);
         return 0;
+
+    /* Also central-to-peripheral only, but independent of synced mode -- a
+     * runtime scene relays regardless of which animation-clock mode is on.
+     * See scene_relay.c.
+     */
+#if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
+    case VFX_RT_RELAY_CMD:
+        zmk_vfx_scene_relay_receive(binding->param1, binding->param2, event.position);
+        return 0;
+#endif
     }
 
     return -ENOTSUP;

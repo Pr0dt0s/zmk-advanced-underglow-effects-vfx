@@ -995,6 +995,31 @@ each slot's params, the render order, the count and whether the channel is
 active. Loading rebuilds every slot's pointers from those params before a
 frame is ever composited from them.
 
+### Split keyboards
+
+raw-hid only builds on a split's central (see
+[Adjusting a layer while the keyboard runs](#adjusting-a-layer-while-the-keyboard-runs)
+above), so a scene built from a host would only ever show on whichever half
+happens to be plugged in — unless something relays it. It does: once the
+central has applied a scene op locally, `scene_relay.c` forwards the same
+request's own wire bytes to every peripheral over the `&vfx` behavior's
+relay, the mechanism [Split keyboards](#split-keyboards) already describes
+for the sync beacon and key relay, and for the same reason (no GATT service
+of its own). A behavior invocation only carries two `uint32_t` plus a third
+free one, so a request longer than eight bytes — only `SCENE_ADD_LAYER`
+is — goes out in more than one.
+
+This is independent of `CONFIG_ZMK_VFX_SPLIT_SYNCED`: that choice is about
+whether the two halves' animation clocks agree, which has nothing to do
+with whether a runtime-built scene reaches both of them. It relays on a
+free-running board too.
+
+The peripheral needs `CONFIG_ZMK_VFX_RUNTIME_SCENES=y` of its own to do
+anything with what arrives — without it, a relayed edit lands and is
+silently dropped, since there is no pool on that half to apply it to. It
+does not need `CONFIG_ZMK_VFX_RAW_HID`: that transport is what lets a host
+build a scene in the first place, not what lets a half hold one.
+
 ### The simulator's own panel
 
 The **Scenes** part of the Host control panel drives this: pick a channel's

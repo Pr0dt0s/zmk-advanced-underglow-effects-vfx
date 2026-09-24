@@ -141,6 +141,17 @@ void zmk_vfx_apply_sync(uint32_t central_time_ms);
 /* A key position relayed from the other half, for reactive effects. */
 void zmk_vfx_inject_key(uint32_t position);
 
+/* Runtime-scene edits, relayed from the central to a peripheral so a scene
+ * built from a host over raw-hid (central-only) shows on both halves rather
+ * than only the one the host is plugged into. zmk_vfx_scene_relay_send() is
+ * called by hid_transport.c once it has applied a scene op locally; a no-op
+ * unless this half is a split central. zmk_vfx_scene_relay_receive() is
+ * called by behavior_vfx.c for VFX_RT_RELAY_CMD, applying the same op once
+ * every chunk of it (see hid_protocol.h) has arrived.
+ */
+void zmk_vfx_scene_relay_send(const uint8_t *data, uint8_t len);
+void zmk_vfx_scene_relay_receive(uint32_t param1, uint32_t param2, uint32_t position);
+
 /* Ask for a frame now, outside the normal cadence, after something changed
  * that the scene itself cannot observe.
  */
