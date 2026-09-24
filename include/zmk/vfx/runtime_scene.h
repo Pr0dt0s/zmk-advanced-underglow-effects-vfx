@@ -196,6 +196,14 @@ const struct vfx_scene *vfx_runtime_scene(uint8_t ch);
 bool vfx_runtime_get_info(uint8_t ch, uint8_t *count, bool *active);
 bool vfx_runtime_get_layer(uint8_t ch, uint8_t slot, struct vfx_rt_params *out);
 
+/* Slot ids in render order, bottom of the stack first, same sense
+ * render_order[] itself already keeps them in. `order` must have room for
+ * VFX_RT_MAX_LAYERS; `*count` is how many of those it actually filled. This
+ * is the only way to learn that order at all -- get_layer answers one slot
+ * at a time and says nothing about where it renders relative to the rest.
+ */
+bool vfx_runtime_get_order(uint8_t ch, uint8_t *order, uint8_t *count);
+
 /* Everything worth persisting about one channel's runtime scene: which
  * slots are used and what they were built from, the order they render in,
  * the count, and whether the channel is showing this rather than its

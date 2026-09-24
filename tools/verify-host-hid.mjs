@@ -43,7 +43,7 @@ await page.addInitScript(() => {
     PING: 0, SET_HUE: 1, SET_LEVEL: 2, SET_SPEED: 3, RESET: 4, GET: 5, GET_ALL: 6,
     SCENE_RESET: 7, SCENE_ADD_LAYER: 8, SCENE_SET_ARG: 9, SCENE_SET_COLOR: 10,
     SCENE_REMOVE_LAYER: 11, SCENE_MOVE_LAYER: 12, SCENE_ACTIVATE: 13, SCENE_DEACTIVATE: 14,
-    SCENE_GET_INFO: 15, SCENE_GET_LAYER: 16,
+    SCENE_GET_INFO: 15, SCENE_GET_LAYER: 16, SCENE_GET_ORDER: 17,
   };
   const REPLY = 0x80;
   const MAX_LAYERS = 3;
@@ -133,6 +133,10 @@ await page.addInitScript(() => {
       buf[21] = status;
 
       return buf;
+    }
+
+    sceneOrderBytes(ch, order, status) {
+      return [OP.SCENE_GET_ORDER | REPLY, ch, order.length, ...order, status];
     }
 
     async sendReport(reportId, data) {
@@ -253,6 +257,10 @@ await page.addInitScript(() => {
         const l = ch && ch.slots[b[2]];
 
         this.reply(this.sceneLayerBytes(b[1], b[2], l, l ? 0 : 1));
+      } else if (op === OP.SCENE_GET_ORDER) {
+        const ch = this.channels[slot];
+
+        this.reply(this.sceneOrderBytes(slot, ch ? ch.order : [], ch ? 0 : 1));
       }
     }
   }
@@ -374,6 +382,55 @@ await page.waitForFunction(
 check('Removing a layer sends SCENE_REMOVE_LAYER and clears its slot',
       (await page.evaluate(
         slot => window.__fakeDevice.channels[0].slots[slot] === null, deviceSlot)));
+
+/* SCENE_GET_ORDER is the fix for a real gap: before it existed, a channel
+ * re-read from scratch (a reconnect, or just reselecting the tab) had no
+ * way to learn render order and fell back to slot-id probe order, which a
+ * move leaves wrong. Two layers, a move, then forcing a full re-read by
+ * switching channels away and back -- the same path a reconnect takes --
+ * is what proves the fix actually closes that gap rather than only
+ * looking right within one already-open session.
+ */
+await page.selectOption('#host-add-type', '0'); // solid
+await page.click('#host-add-layer');
+await page.waitForFunction(
+  () => document.querySelectorAll('#host-scene-layers .layer-card').length === 1);
+
+await page.selectOption('#host-add-type', '1'); // breathe
+await page.click('#host-add-layer');
+await page.waitForFunction(
+  () => document.querySelectorAll('#host-scene-layers .layer-card').length === 2);
+
+const namesBefore = await page.$$eval('#host-scene-layers .layer-card strong',
+                                       els => els.map(e => e.textContent));
+
+check('Two layers land in the order they were added', true, JSON.stringify(namesBefore));
+
+await page.click('#host-scene-layers .layer-card:nth-of-type(2) button[title="Move earlier"]');
+await page.waitForFunction(
+  () => document.querySelectorAll('#host-scene-layers .layer-card')[0]
+          ?.querySelector('strong')?.textContent === 'breathe');
+
+await page.click('[data-ch="1"]');
+await page.click('[data-ch="0"]');
+await page.waitForFunction(
+  () => document.querySelectorAll('#host-scene-layers .layer-card').length === 2);
+
+const namesAfter = await page.$$eval('#host-scene-layers .layer-card strong',
+                                      els => els.map(e => e.textContent));
+
+check('SCENE_GET_ORDER reproduces render order after a full refresh, not just session memory',
+      JSON.stringify(namesAfter) === '["breathe","solid"]', JSON.stringify(namesAfter));
+
+/* Back to empty, so the rest of this file can keep assuming channel 0
+ * starts with nothing built when it gets to the active-checkbox check
+ * below.
+ */
+for (let left = 2; left > 0; left--) {
+  await page.click('#host-scene-layers .layer-card button[title="Remove"]');
+  await page.waitForFunction(
+    n => document.querySelectorAll('#host-scene-layers .layer-card').length === n, left - 1);
+}
 
 await page.click('#host-scene-active');
 await page.waitForFunction(() => window.__fakeDevice.channels[0].active === true);

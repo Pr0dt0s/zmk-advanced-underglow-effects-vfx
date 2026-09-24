@@ -924,6 +924,7 @@ channel's own pool — a different id space from a tuning slot, assigned by
 | `SCENE_DEACTIVATE` (`0x0E`) | ch | `0x8E`: ch, status | 3 |
 | `SCENE_GET_INFO` (`0x0F`) | ch | `0x8F`: ch, count, active, status | 5 |
 | `SCENE_GET_LAYER` (`0x10`) | ch, slot | `0x90`: ch, slot, type, zone start, zone len, blend, opacity, hue, sat, bri, 4 args, flags, status | 22 |
+| `SCENE_GET_ORDER` (`0x11`) | ch | `0x91`: ch, count, `count` slot ids, status | 4 + count |
 
 `status` is `0` for ok, `1` (`BAD_SLOT`) for a channel, slot, generator type
 or argument index outside range, `2` (`POOL_FULL`) only from
@@ -936,15 +937,16 @@ differently, by removing a layer rather than by fixing what it sent.
 `dt-bindings/zmk/vfx.h` defines) — nothing else buildable here reads either
 bit.
 
-There is no op that lists which slots are in use or their render order, only
-`SCENE_GET_LAYER` for one slot at a time — a host discovers a channel's
-layers by probing slots in turn and keeping whichever answer `0`, which
-tells it *what* is built but not the order it renders in. `host.js` tracks
-order itself for anything built live in the current browser session; a scene
-built earlier and then reconnected to shows its layers, correctly, in
-whatever order probing happened to find them rather than the order they were
-actually added in. Fixing this means a wire op that returns the render order
-directly, which nothing here has needed enough to add yet.
+`SCENE_GET_LAYER` answers one slot at a time and says nothing about where
+that slot renders relative to the rest, since add, remove and move never
+renumber a slot, only its position in render order. `SCENE_GET_ORDER` is
+that position: the channel's own slot ids, bottom of the stack first, the
+same sense `SCENE_MOVE_LAYER`'s direction argument uses. A host discovers a
+channel's layers by reading this once and then `SCENE_GET_LAYER` for each id
+it names, in that order — which is what `host.js` does, so a channel
+selected fresh (including right after a reconnect) always shows the real
+render order, not just whatever order a blind slot probe happened to find
+things in.
 
 ### Persistence
 

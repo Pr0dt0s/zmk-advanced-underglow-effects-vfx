@@ -116,6 +116,17 @@ static void reply_scene_layer(uint8_t ch, uint8_t slot) {
 
     send(buf, len);
 }
+
+static void reply_scene_order(uint8_t ch) {
+    uint8_t order[VFX_RT_MAX_LAYERS] = {0};
+    uint8_t count = 0;
+    const int rc = zmk_vfx_scene_get_order(ch, order, &count);
+    uint8_t buf[VFX_HID_MAX_REPLY_LEN];
+    const uint8_t len =
+        vfx_hid_encode_scene_order(ch, order, rc == 0 ? count : 0, scene_status(rc), buf);
+
+    send(buf, len);
+}
 #endif
 
 static void handle(const struct vfx_hid_request *req) {
@@ -219,6 +230,10 @@ static void handle(const struct vfx_hid_request *req) {
     case VFX_HID_OP_SCENE_GET_LAYER:
         reply_scene_layer(req->ch, req->slot);
         break;
+
+    case VFX_HID_OP_SCENE_GET_ORDER:
+        reply_scene_order(req->ch);
+        break;
 #else
     /* CONFIG_ZMK_VFX_RUNTIME_SCENES is off: hid_protocol.c decodes these
      * fine regardless (see payload_len()), but there is nothing here to
@@ -236,6 +251,7 @@ static void handle(const struct vfx_hid_request *req) {
     case VFX_HID_OP_SCENE_DEACTIVATE:
     case VFX_HID_OP_SCENE_GET_INFO:
     case VFX_HID_OP_SCENE_GET_LAYER:
+    case VFX_HID_OP_SCENE_GET_ORDER:
         reply_ack(req->op, req->ch, -EINVAL);
         break;
 #endif

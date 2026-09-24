@@ -40,6 +40,7 @@ static uint8_t payload_len(enum vfx_hid_op op) {
     case VFX_HID_OP_SCENE_ACTIVATE:
     case VFX_HID_OP_SCENE_DEACTIVATE:
     case VFX_HID_OP_SCENE_GET_INFO:
+    case VFX_HID_OP_SCENE_GET_ORDER:
     case VFX_HID_OP_SCENE_RESET:
         return 1; /* ch */
     case VFX_HID_OP_SCENE_REMOVE_LAYER:
@@ -104,6 +105,7 @@ bool vfx_hid_decode(const uint8_t *data, uint8_t len, struct vfx_hid_request *ou
     case VFX_HID_OP_SCENE_ACTIVATE:
     case VFX_HID_OP_SCENE_DEACTIVATE:
     case VFX_HID_OP_SCENE_GET_INFO:
+    case VFX_HID_OP_SCENE_GET_ORDER:
     case VFX_HID_OP_SCENE_RESET:
         out->ch = data[1];
         break;
@@ -218,4 +220,19 @@ uint8_t vfx_hid_encode_scene_layer(uint8_t ch, uint8_t slot, uint8_t type, uint8
     out[21] = status;
 
     return 22;
+}
+
+uint8_t vfx_hid_encode_scene_order(uint8_t ch, const uint8_t *order, uint8_t count, uint8_t status,
+                                   uint8_t *out) {
+    out[0] = VFX_HID_REPLY_SCENE_ORDER;
+    out[1] = ch;
+    out[2] = count;
+
+    for (uint8_t i = 0; i < count; i++) {
+        out[3 + i] = order[i];
+    }
+
+    out[3 + count] = status;
+
+    return (uint8_t)(4 + count);
 }

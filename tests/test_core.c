@@ -2774,7 +2774,7 @@ static void test_hid_scene_set_arg_and_color_decode(void) {
 }
 
 static void test_hid_scene_channel_only_ops_decode(void) {
-    for (uint8_t op = VFX_HID_OP_SCENE_RESET; op <= VFX_HID_OP_SCENE_GET_INFO; op++) {
+    for (uint8_t op = VFX_HID_OP_SCENE_RESET; op <= VFX_HID_OP_SCENE_GET_ORDER; op++) {
         if (op == VFX_HID_OP_SCENE_ADD_LAYER || op == VFX_HID_OP_SCENE_SET_ARG ||
             op == VFX_HID_OP_SCENE_SET_COLOR || op == VFX_HID_OP_SCENE_REMOVE_LAYER ||
             op == VFX_HID_OP_SCENE_MOVE_LAYER || op == VFX_HID_OP_SCENE_GET_LAYER) {
@@ -2832,6 +2832,27 @@ static void test_hid_scene_info_and_layer_encode(void) {
     CHECK(arg0 == -30, "a negative arg must round-trip through the wire, got %d", arg0);
     CHECK(buf[20] == 3, "flags must round-trip");
     CHECK(buf[21] == VFX_HID_STATUS_OK, "status must round-trip");
+}
+
+static void test_hid_scene_order_encodes(void) {
+    uint8_t buf[VFX_HID_MAX_REPLY_LEN];
+    const uint8_t order[] = {4, 1, 0};
+    uint8_t len = vfx_hid_encode_scene_order(2, order, sizeof(order), VFX_HID_STATUS_OK, buf);
+
+    CHECK(len == 7, "header (3) + 3 slot ids + status, got %d", len);
+    CHECK(buf[0] == VFX_HID_REPLY_SCENE_ORDER, "must use GET_ORDER's op with the reply bit");
+    CHECK(buf[1] == 2 && buf[2] == 3, "ch and count must round-trip: %d, %d", buf[1], buf[2]);
+    CHECK(buf[3] == 4 && buf[4] == 1 && buf[5] == 0,
+        "slot ids must round-trip in order, got %d,%d,%d", buf[3], buf[4], buf[5]);
+    CHECK(buf[6] == VFX_HID_STATUS_OK, "status must follow the last slot id");
+
+    /* A rejected channel carries no order bytes at all -- nothing for a host
+     * to misread as real slot ids.
+     */
+    len = vfx_hid_encode_scene_order(9, order, 0, VFX_HID_STATUS_BAD_SLOT, buf);
+    CHECK(len == 4, "an empty order is just the header and status, got %d", len);
+    CHECK(buf[2] == 0 && buf[3] == VFX_HID_STATUS_BAD_SLOT,
+        "count 0 and the failure status must round-trip");
 }
 
 static void test_hid_scene_add_layer_ack_reports_the_assigned_slot(void) {
@@ -3113,6 +3134,41 @@ static void test_runtime_get_info_and_get_layer_report_the_pool(void) {
         out.zone_len);
 }
 
+static void test_runtime_get_order_reports_render_order(void) {
+    vfx_runtime_init();
+
+    uint8_t order[VFX_RT_MAX_LAYERS];
+    uint8_t count = 99;
+
+    CHECK(vfx_runtime_get_order(0, order, &count) && count == 0,
+        "an untouched channel reports an empty order, got count %d", count);
+
+    struct vfx_rt_params red = rt_solid(0, NPX / 3, 0);
+    struct vfx_rt_params green = rt_solid(NPX / 3, NPX / 3, 120);
+    struct vfx_rt_params blue = rt_solid(2 * NPX / 3, NPX / 3, 240);
+
+    const int a = vfx_runtime_add_layer(0, &red);
+    const int b = vfx_runtime_add_layer(0, &green);
+    const int c = vfx_runtime_add_layer(0, &blue);
+
+    CHECK(vfx_runtime_get_order(0, order, &count) && count == 3,
+        "three added layers must report a count of three, got %d", count);
+    CHECK(order[0] == a && order[1] == b && order[2] == c,
+        "order must match the order layers were added in: %d,%d,%d", order[0], order[1], order[2]);
+
+    /* This is the whole point of the op: a move changes render order, not
+     * slot ids, so get_layer alone (probed slot by slot) cannot tell a host
+     * where each one now renders -- only get_order can.
+     */
+    CHECK(vfx_runtime_move_layer(0, (uint8_t)b, VFX_RT_MOVE_UP), "move must succeed");
+    vfx_runtime_get_order(0, order, &count);
+    CHECK(order[0] == b && order[1] == a && order[2] == c,
+        "order must reflect the move, not the original add sequence: %d,%d,%d", order[0], order[1],
+        order[2]);
+
+    CHECK(!vfx_runtime_get_order(9, order, &count), "an out-of-range channel must be refused");
+}
+
 static void test_runtime_save_and_restore_round_trips(void) {
     vfx_runtime_init();
 
@@ -3265,6 +3321,7 @@ int main(void) {
         {"hid scene channel only ops decode", test_hid_scene_channel_only_ops_decode},
         {"hid scene remove and move decode", test_hid_scene_remove_and_move_decode},
         {"hid scene info and layer encode", test_hid_scene_info_and_layer_encode},
+        {"hid scene order encodes", test_hid_scene_order_encodes},
         {"hid scene add layer ack reports the assigned slot",
          test_hid_scene_add_layer_ack_reports_the_assigned_slot},
         {"runtime add layer renders", test_runtime_add_layer_renders},
@@ -3282,6 +3339,7 @@ int main(void) {
          test_runtime_reset_clears_layers_but_keeps_active},
         {"runtime get info and get layer report the pool",
          test_runtime_get_info_and_get_layer_report_the_pool},
+        {"runtime get order reports render order", test_runtime_get_order_reports_render_order},
         {"runtime save and restore round trips", test_runtime_save_and_restore_round_trips},
     };
 

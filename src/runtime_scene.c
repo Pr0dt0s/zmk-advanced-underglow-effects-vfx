@@ -370,6 +370,19 @@ bool vfx_runtime_get_layer(uint8_t ch, uint8_t slot, struct vfx_rt_params *out) 
     return true;
 }
 
+bool vfx_runtime_get_order(uint8_t ch, uint8_t *order, uint8_t *count) {
+    if (!valid_channel(ch)) {
+        return false;
+    }
+
+    const struct vfx_rt_channel *rc = &channels[ch];
+
+    memcpy(order, rc->render_order, rc->count);
+    *count = rc->count;
+
+    return true;
+}
+
 /* Scratch home for vfx_runtime_state()'s answer. Static rather than a local
  * the caller must size itself, same as vfx_tuning_state() -- the caller
  * only ever wants to hand this straight to settings_save_one() or compare

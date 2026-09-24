@@ -61,6 +61,14 @@ enum vfx_hid_op {
     VFX_HID_OP_SCENE_DEACTIVATE = 0x0E,   /* ch -> ACK */
     VFX_HID_OP_SCENE_GET_INFO = 0x0F,     /* ch -> SCENE_INFO */
     VFX_HID_OP_SCENE_GET_LAYER = 0x10,    /* ch, slot -> SCENE_LAYER */
+    /* ch -> SCENE_ORDER: the channel's own slot ids, in render order --
+     * layer 0 in the reply is the bottom of the stack, same sense
+     * SCENE_MOVE_LAYER's direction argument uses. The only way to learn
+     * that order: nothing else replies with more than one slot's worth of
+     * it, and add/remove/move do not touch slot ids, only which position
+     * in this order each one holds.
+     */
+    VFX_HID_OP_SCENE_GET_ORDER = 0x11,
 };
 
 #define VFX_HID_REPLY_BIT 0x80
@@ -72,9 +80,13 @@ enum vfx_hid_op {
 #define VFX_HID_REPLY_PONG (VFX_HID_OP_PING | VFX_HID_REPLY_BIT)
 #define VFX_HID_REPLY_SCENE_INFO (VFX_HID_OP_SCENE_GET_INFO | VFX_HID_REPLY_BIT)
 #define VFX_HID_REPLY_SCENE_LAYER (VFX_HID_OP_SCENE_GET_LAYER | VFX_HID_REPLY_BIT)
+#define VFX_HID_REPLY_SCENE_ORDER (VFX_HID_OP_SCENE_GET_ORDER | VFX_HID_REPLY_BIT)
 
 /* Longest reply this protocol produces (SCENE_LAYER), so a caller can size
- * one buffer for whichever encode_* it ends up calling.
+ * one buffer for whichever encode_* it ends up calling. SCENE_ORDER's own
+ * length depends on the board's CONFIG_ZMK_VFX_RUNTIME_MAX_LAYERS (op, ch,
+ * count, one byte per slot, status), but that option is capped at 16, so
+ * SCENE_ORDER can never exceed this either.
  */
 #define VFX_HID_MAX_REPLY_LEN 22
 
@@ -133,3 +145,10 @@ uint8_t vfx_hid_encode_scene_layer(uint8_t ch, uint8_t slot, uint8_t type, uint8
                                    uint8_t zone_len, uint8_t blend, uint8_t opacity, int16_t hue,
                                    uint8_t sat, uint8_t bri, const int16_t args[4], uint8_t flags,
                                    uint8_t status, uint8_t *out);
+
+/* `order` is `count` slot ids; the caller (hid_transport.c) owns keeping
+ * count within what CONFIG_ZMK_VFX_RUNTIME_MAX_LAYERS actually allows, the
+ * same trust this file already places in every other fixed-shape caller.
+ */
+uint8_t vfx_hid_encode_scene_order(uint8_t ch, const uint8_t *order, uint8_t count, uint8_t status,
+                                   uint8_t *out);

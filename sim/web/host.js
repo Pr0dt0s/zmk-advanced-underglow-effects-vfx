@@ -35,6 +35,7 @@ const OP = {
   SCENE_DEACTIVATE: 0x0e,
   SCENE_GET_INFO: 0x0f,
   SCENE_GET_LAYER: 0x10,
+  SCENE_GET_ORDER: 0x11,
 };
 
 const REPLY_BIT = 0x80;
@@ -42,18 +43,19 @@ const REPLY_PONG = OP.PING | REPLY_BIT;
 const REPLY_STATE = OP.GET | REPLY_BIT;
 const REPLY_SCENE_INFO = OP.SCENE_GET_INFO | REPLY_BIT;
 const REPLY_SCENE_LAYER = OP.SCENE_GET_LAYER | REPLY_BIT;
+const REPLY_SCENE_ORDER = OP.SCENE_GET_ORDER | REPLY_BIT;
 
 const STATUS_OK = 0;
 const STATUS_POOL_FULL = 2;
 
-/* How many channels and how many layers per channel to probe for on
- * connect. Larger than any real board is expected to declare -- discovery
- * stops at the first channel that answers "out of range" (see
- * discoverChannels()), so this is just an upper bound on how long that
- * search can run, not a number this page needs to get exactly right.
+/* How many channels to probe for on connect. Larger than any real board is
+ * expected to declare -- discovery stops at the first channel that answers
+ * "out of range" (see discoverChannels()), so this is just an upper bound
+ * on how long that search can run, not a number this page needs to get
+ * right. Which slots exist within a channel, and what order they render
+ * in, comes from SCENE_GET_ORDER instead of a similar probe.
  */
 const MAX_CHANNEL_PROBE = 8;
-const MAX_LAYER_PROBE = 16;
 
 /* The board's defaults from zmk-raw-hid's Kconfig. A board that changed
  * RAW_HID_USAGE_PAGE / RAW_HID_USAGE needs the matching filter here, which
@@ -173,6 +175,7 @@ const requests = {
   sceneDeactivate: ch => new Uint8Array([OP.SCENE_DEACTIVATE, ch]),
   sceneGetInfo: ch => new Uint8Array([OP.SCENE_GET_INFO, ch]),
   sceneGetLayer: (ch, slot) => new Uint8Array([OP.SCENE_GET_LAYER, ch, slot]),
+  sceneGetOrder: ch => new Uint8Array([OP.SCENE_GET_ORDER, ch]),
 };
 
 /* `data` is the report body WebHID hands the input-report listener; for a
@@ -225,6 +228,15 @@ function decodeReply(data) {
       flags: data.getUint8(20),
       status: data.getUint8(21),
     };
+  }
+
+  if (op === REPLY_SCENE_ORDER) {
+    const count = data.getUint8(2);
+    const order = [];
+
+    for (let i = 0; i < count; i++) order.push(data.getUint8(3 + i));
+
+    return { kind: 'sceneOrder', ch: data.getUint8(1), order, status: data.getUint8(3 + count) };
   }
 
   /* Every SET_/SCENE_ or RESET ack shares this shape, op set to the
@@ -629,14 +641,14 @@ export function initHostPanel() {
     row.axisWrap.style.display = type.axis ? '' : 'none';
     row.axisEl.value = axis;
 
-    sceneLayersEl.appendChild(row.card); // re-insert at the end, in probed order
+    sceneLayersEl.appendChild(row.card); // re-insert at the end, in true render order
   }
 
-  /* Re-reads everything about a channel from the device: its own info, then
-   * every slot 0..MAX_LAYER_PROBE-1, keeping whichever answer OK. There is
-   * no op that lists which slots are in use or their render order, so this
-   * is what both a fresh channel select and a rebuild after an edit fall
-   * back to -- see the README's note on this being a v1 limitation.
+  /* Re-reads everything about a channel from the device: its own info, its
+   * render order, then each slot named in that order, in that order --
+   * SCENE_GET_ORDER is what makes this exact rather than a guess, so a
+   * channel selected fresh (including after a reconnect) looks the same as
+   * one that has been open and edited the whole time.
    */
   async function refreshChannel(ch) {
     const info = await transact(requests.sceneGetInfo(ch));
@@ -645,9 +657,13 @@ export function initHostPanel() {
 
     sceneActiveEl.checked = info.active;
 
+    const orderMsg = await transact(requests.sceneGetOrder(ch));
+
+    if (ch !== activeChannel) return;
+
     const seen = new Set();
 
-    for (let slot = 0; slot < MAX_LAYER_PROBE && seen.size < info.count; slot++) {
+    for (const slot of orderMsg.order) {
       const layer = await transact(requests.sceneGetLayer(ch, slot));
 
       if (ch !== activeChannel) return;

@@ -1073,6 +1073,14 @@ int zmk_vfx_scene_get_layer(uint8_t ch, uint8_t slot, struct vfx_rt_params *out)
 
     return 0;
 }
+
+int zmk_vfx_scene_get_order(uint8_t ch, uint8_t *order, uint8_t *count) {
+    if (ch >= channel_count() || !vfx_runtime_get_order(ch, order, count)) {
+        return -EINVAL;
+    }
+
+    return 0;
+}
 #endif /* CONFIG_ZMK_VFX_RUNTIME_SCENES */
 
 uint8_t zmk_vfx_get_brightness(uint8_t ch) { return state.chan[channel_for_read(ch)].brightness; }

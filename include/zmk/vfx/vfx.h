@@ -102,6 +102,12 @@ int zmk_vfx_scene_deactivate(uint8_t ch);
 int zmk_vfx_scene_info(uint8_t ch, uint8_t *count, bool *active);
 int zmk_vfx_scene_get_layer(uint8_t ch, uint8_t slot, struct vfx_rt_params *out);
 
+/* Slot ids in render order; `order` must have room for
+ * CONFIG_ZMK_VFX_RUNTIME_MAX_LAYERS. The only way to learn that order --
+ * add, remove and move never renumber a slot, only its position here.
+ */
+int zmk_vfx_scene_get_order(uint8_t ch, uint8_t *order, uint8_t *count);
+
 /* Persist the current state, debounced. */
 int zmk_vfx_save_state(void);
 
