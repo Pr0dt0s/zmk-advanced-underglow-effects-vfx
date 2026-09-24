@@ -37,6 +37,11 @@ LOG_MODULE_DECLARE(zmk_vfx, CONFIG_ZMK_VFX_LOG_LEVEL);
  * the rest of that file is -- this file is just what calls them on each
  * side of the link, and applies what comes out the other end.
  *
+ * Deliberately not using event.position as a third payload word, the way an
+ * earlier version of this file did: ZMK's own split transport narrows it to
+ * a single byte before it ever reaches the peripheral (see
+ * VFX_RELAY_CHUNK_BYTES's own comment), so only param1 and param2 are used.
+ *
  * Independent of CONFIG_ZMK_VFX_SPLIT_SYNCED on purpose: that choice is
  * about whether the two halves' animation clocks agree, which has nothing
  * to do with whether a runtime-built scene reaches both of them. It is
@@ -46,14 +51,13 @@ LOG_MODULE_DECLARE(zmk_vfx, CONFIG_ZMK_VFX_LOG_LEVEL);
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
 
-static void send_chunk(uint32_t param1, uint32_t param2, uint32_t position) {
+static void send_chunk(uint32_t param1, uint32_t param2) {
     struct zmk_behavior_binding binding = {
         .behavior_dev = "vfx",
         .param1 = param1,
         .param2 = param2,
     };
     struct zmk_behavior_binding_event event = {
-        .position = position,
         .timestamp = k_uptime_get(),
     };
 
@@ -74,11 +78,10 @@ void zmk_vfx_scene_relay_send(const uint8_t *data, uint8_t len) {
         const uint8_t chunk_len = MIN(VFX_RELAY_CHUNK_BYTES, (uint8_t)(len - sent));
         uint32_t param1;
         uint32_t param2;
-        uint32_t position;
 
         vfx_relay_pack(VFX_RT_RELAY_CMD, chunk_index, len, &data[sent], chunk_len, &param1,
-                       &param2, &position);
-        send_chunk(param1, param2, position);
+                       &param2);
+        send_chunk(param1, param2);
 
         sent = (uint8_t)(sent + chunk_len);
         chunk_index++;
@@ -162,8 +165,8 @@ static void apply_relayed_request(const struct vfx_hid_request *req) {
     }
 }
 
-void zmk_vfx_scene_relay_receive(uint32_t param1, uint32_t param2, uint32_t position) {
-    if (!vfx_relay_unpack(param1, param2, position, relay_buf, &relay_have, &relay_total)) {
+void zmk_vfx_scene_relay_receive(uint32_t param1, uint32_t param2) {
+    if (!vfx_relay_unpack(param1, param2, relay_buf, &relay_have, &relay_total)) {
         return;
     }
 

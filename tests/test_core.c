@@ -2927,11 +2927,9 @@ static bool relay_round_trip(const uint8_t *data, uint8_t len, uint8_t *buf, uin
             (uint8_t)((len - sent) < VFX_RELAY_CHUNK_BYTES ? (len - sent) : VFX_RELAY_CHUNK_BYTES);
         uint32_t param1;
         uint32_t param2;
-        uint32_t position;
 
-        vfx_relay_pack(0x2A, chunk_index, len, &data[sent], chunk_len, &param1, &param2,
-                       &position);
-        done = vfx_relay_unpack(param1, param2, position, buf, have, total);
+        vfx_relay_pack(0x2A, chunk_index, len, &data[sent], chunk_len, &param1, &param2);
+        done = vfx_relay_unpack(param1, param2, buf, have, total);
 
         sent = (uint8_t)(sent + chunk_len);
         chunk_index++;
@@ -2959,11 +2957,14 @@ static void test_relay_round_trips_a_request_that_fits_one_chunk(void) {
         "the reassembled bytes must still decode to the same request");
 }
 
-static void test_relay_round_trips_the_longest_request_across_three_chunks(void) {
+static void test_relay_round_trips_the_longest_request_across_five_chunks(void) {
     /* The same 20-byte SCENE_ADD_LAYER request
      * test_hid_scene_add_layer_decodes_every_field() already proves decodes
      * correctly on its own -- what this test is proving is that chunking
-     * and reassembling it changes nothing.
+     * and reassembling it changes nothing. Four bytes a chunk (not eight):
+     * param1 carries the header and param2 the payload, since ZMK's own
+     * split transport narrows event.position to a single byte, too little
+     * to trust with a payload word (see VFX_RELAY_CHUNK_BYTES's comment).
      */
     const uint8_t req[] = {
         VFX_HID_OP_SCENE_ADD_LAYER,
@@ -2987,29 +2988,27 @@ static void test_relay_round_trips_the_longest_request_across_three_chunks(void)
     uint8_t total = 0;
     uint32_t param1;
     uint32_t param2;
-    uint32_t position;
 
     CHECK(sizeof(req) == VFX_RELAY_MAX_BYTES, "this fixture must exercise the actual ceiling");
+    CHECK(VFX_RELAY_CHUNK_BYTES == 4, "this test's chunk count assumes four bytes a chunk, got %d",
+        VFX_RELAY_CHUNK_BYTES);
 
     /* Fed chunk by chunk with an explicit index, rather than through
      * relay_round_trip(), which always starts a fresh sequence at chunk 0 --
      * exactly the restart behaviour the next test is about, so it cannot
      * also be used to resume one here.
      */
-    vfx_relay_pack(0x2A, 0, sizeof(req), &req[0], 8, &param1, &param2, &position);
-    CHECK(!vfx_relay_unpack(param1, param2, position, buf, &have, &total) && have == 8,
-        "the first of three chunks must leave the request incomplete");
+    for (uint8_t i = 0; i < 4; i++) {
+        vfx_relay_pack(0x2A, i, sizeof(req), &req[i * 4], 4, &param1, &param2);
+        CHECK(!vfx_relay_unpack(param1, param2, buf, &have, &total) && have == (i + 1) * 4,
+            "chunk %d of five must still leave the request incomplete", i);
+    }
 
-    vfx_relay_pack(0x2A, 1, sizeof(req), &req[8], 8, &param1, &param2, &position);
-    CHECK(!vfx_relay_unpack(param1, param2, position, buf, &have, &total) && have == 16,
-        "the second of three chunks must still leave it incomplete");
-
-    vfx_relay_pack(0x2A, 2, sizeof(req), &req[16], 4, &param1, &param2, &position);
-    CHECK(vfx_relay_unpack(param1, param2, position, buf, &have, &total),
-        "the third chunk must complete it");
+    vfx_relay_pack(0x2A, 4, sizeof(req), &req[16], 4, &param1, &param2);
+    CHECK(vfx_relay_unpack(param1, param2, buf, &have, &total), "the fifth chunk must complete it");
 
     CHECK(memcmp(buf, req, sizeof(req)) == 0,
-        "twenty bytes reassembled from three chunks must match the original");
+        "twenty bytes reassembled from five chunks must match the original");
 
     struct vfx_hid_request out;
 
@@ -3018,19 +3017,18 @@ static void test_relay_round_trips_the_longest_request_across_three_chunks(void)
 }
 
 static void test_relay_restarting_at_chunk_zero_discards_a_stale_assembly(void) {
-    const uint8_t abandoned[] = {VFX_HID_OP_SCENE_ADD_LAYER, 0, 0, 0, 0, 0, 0, 0};
+    const uint8_t abandoned[] = {VFX_HID_OP_SCENE_ADD_LAYER, 0, 0, 0};
     const uint8_t fresh[] = {VFX_HID_OP_SCENE_DEACTIVATE, 1};
     uint8_t buf[VFX_RELAY_MAX_BYTES] = {0};
     uint8_t have = 0;
     uint8_t total = 0;
     uint32_t param1;
     uint32_t param2;
-    uint32_t position;
 
     /* Only the first chunk of a 20-byte request arrives... */
-    vfx_relay_pack(0x2A, 0, 20, abandoned, sizeof(abandoned), &param1, &param2, &position);
-    CHECK(!vfx_relay_unpack(param1, param2, position, buf, &have, &total),
-        "one chunk of three must not report a complete request");
+    vfx_relay_pack(0x2A, 0, 20, abandoned, sizeof(abandoned), &param1, &param2);
+    CHECK(!vfx_relay_unpack(param1, param2, buf, &have, &total),
+        "one chunk of five must not report a complete request");
 
     /* ...then a whole new, unrelated one starts, rather than continuing it. */
     CHECK(relay_round_trip(fresh, sizeof(fresh), buf, &have, &total),
@@ -3045,24 +3043,22 @@ static void test_relay_unpack_rejects_a_malformed_header(void) {
     uint8_t total = 0;
     uint32_t param1;
     uint32_t param2;
-    uint32_t position;
     const uint8_t one_byte[] = {0x2A};
 
-    vfx_relay_pack(0x2A, 0, 0, one_byte, 0, &param1, &param2, &position);
-    CHECK(!vfx_relay_unpack(param1, param2, position, buf, &have, &total),
-        "a zero total length must be refused");
+    vfx_relay_pack(0x2A, 0, 0, one_byte, 0, &param1, &param2);
+    CHECK(!vfx_relay_unpack(param1, param2, buf, &have, &total), "a zero total length must be refused");
 
-    vfx_relay_pack(0x2A, 0, VFX_RELAY_MAX_BYTES + 1, one_byte, 1, &param1, &param2, &position);
-    CHECK(!vfx_relay_unpack(param1, param2, position, buf, &have, &total),
+    vfx_relay_pack(0x2A, 0, VFX_RELAY_MAX_BYTES + 1, one_byte, 1, &param1, &param2);
+    CHECK(!vfx_relay_unpack(param1, param2, buf, &have, &total),
         "a total length over the ceiling must be refused");
 
     /* A chunk_index of 1 claiming a total that disagrees with what chunk 0
      * of a still-incomplete assembly already established.
      */
-    vfx_relay_pack(0x2A, 0, 20, one_byte, 1, &param1, &param2, &position);
-    vfx_relay_unpack(param1, param2, position, buf, &have, &total);
-    vfx_relay_pack(0x2A, 1, 9, one_byte, 1, &param1, &param2, &position);
-    CHECK(!vfx_relay_unpack(param1, param2, position, buf, &have, &total),
+    vfx_relay_pack(0x2A, 0, 20, one_byte, 1, &param1, &param2);
+    vfx_relay_unpack(param1, param2, buf, &have, &total);
+    vfx_relay_pack(0x2A, 1, 9, one_byte, 1, &param1, &param2);
+    CHECK(!vfx_relay_unpack(param1, param2, buf, &have, &total),
         "a later chunk naming a different total than the one in progress must be refused");
 }
 
@@ -3647,8 +3643,8 @@ int main(void) {
          test_hid_scene_add_layer_ack_reports_the_assigned_slot},
         {"relay round trips a request that fits one chunk",
          test_relay_round_trips_a_request_that_fits_one_chunk},
-        {"relay round trips the longest request across three chunks",
-         test_relay_round_trips_the_longest_request_across_three_chunks},
+        {"relay round trips the longest request across five chunks",
+         test_relay_round_trips_the_longest_request_across_five_chunks},
         {"relay restarting at chunk zero discards a stale assembly",
          test_relay_restarting_at_chunk_zero_discards_a_stale_assembly},
         {"relay unpack rejects a malformed header", test_relay_unpack_rejects_a_malformed_header},

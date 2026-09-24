@@ -1005,9 +1005,12 @@ central has applied a scene op locally, `scene_relay.c` forwards the same
 request's own wire bytes to every peripheral over the `&vfx` behavior's
 relay, the mechanism [Split keyboards](#split-keyboards) already describes
 for the sync beacon and key relay, and for the same reason (no GATT service
-of its own). A behavior invocation only carries two `uint32_t` plus a third
-free one, so a request longer than eight bytes — only `SCENE_ADD_LAYER`
-is — goes out in more than one.
+of its own). A behavior invocation carries two `uint32_t` — param1 and
+param2 — not three: ZMK's own split transport narrows a relayed event's
+position to a single byte before it reaches the peripheral, so only param1
+(above a small header) and param2 carry payload, four bytes of a request's
+own wire bytes per invocation. A request longer than that — only
+`SCENE_ADD_LAYER` is — goes out in more than one.
 
 This is independent of `CONFIG_ZMK_VFX_SPLIT_SYNCED`: that choice is about
 whether the two halves' animation clocks agree, which has nothing to do

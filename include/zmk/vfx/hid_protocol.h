@@ -188,21 +188,25 @@ uint8_t vfx_hid_request_len(uint8_t op);
  * either of these; this file only packs and unpacks the bytes, the same
  * separation the rest of it keeps from anything Zephyr-shaped.
  *
- * A behavior invocation carries two uint32_t (param1, above the command
- * byte, and param2) plus a third free one (event.position), eight bytes of
- * a request's own wire bytes per invocation. VFX_HID_OP_SCENE_ADD_LAYER, the
- * longest request this decodes, needs three.
+ * A behavior invocation carries two full uint32_t of payload: param1, above
+ * the command byte in its low byte, and param2. There is no third one --
+ * ZMK's own split transport narrows a relayed event's `position` to a
+ * single byte on the wire (struct zmk_split_run_behavior_data in ZMK's own
+ * split/bluetooth/service.h), so anything packed into it past the low 8
+ * bits never arrives. Four bytes of a request's own wire bytes per
+ * invocation, then, all from param2; VFX_HID_OP_SCENE_ADD_LAYER, the
+ * longest request this decodes, needs five.
  */
-#define VFX_RELAY_CHUNK_BYTES 8
+#define VFX_RELAY_CHUNK_BYTES 4
 #define VFX_RELAY_MAX_BYTES 20
 
 /* Packs one chunk_len-byte chunk (starting at chunk_bytes) of a total_len-
- * byte request into a behavior invocation's own three payload words, above
+ * byte request into a behavior invocation's own two payload words, above
  * cmd in param1's low byte.
  */
 void vfx_relay_pack(uint8_t cmd, uint8_t chunk_index, uint8_t total_len,
                     const uint8_t *chunk_bytes, uint8_t chunk_len, uint32_t *param1,
-                    uint32_t *param2, uint32_t *position);
+                    uint32_t *param2);
 
 /* Unpacks one chunk into `buf` (which must be VFX_RELAY_MAX_BYTES long),
  * tracking progress across calls in `*have`/`*total` -- both must be zeroed
@@ -214,5 +218,5 @@ void vfx_relay_pack(uint8_t cmd, uint8_t chunk_index, uint8_t total_len,
  * sanity check (a length over the limits above, or a total that disagrees
  * with the one an assembly already in progress started with).
  */
-bool vfx_relay_unpack(uint32_t param1, uint32_t param2, uint32_t position, uint8_t *buf,
-                      uint8_t *have, uint8_t *total);
+bool vfx_relay_unpack(uint32_t param1, uint32_t param2, uint8_t *buf, uint8_t *have,
+                      uint8_t *total);

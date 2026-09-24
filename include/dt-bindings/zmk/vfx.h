@@ -119,8 +119,10 @@
  * What rides here is not one value but another op's own wire bytes (see
  * hid_protocol.h), so param1 carries a small header above the command byte
  * -- chunk length, chunk index, total length -- rather than a channel, and
- * param2 plus event.position (which &vfx's own handler never reads) carry
- * up to eight of those bytes per invocation. See scene_relay.c.
+ * param2 carries up to four of those bytes per invocation (not
+ * event.position too: ZMK's own split transport narrows that to a single
+ * byte, so it cannot carry a third payload word reliably). See
+ * scene_relay.c.
  */
 #define VFX_RT_RELAY_CMD 22
 

@@ -277,25 +277,20 @@ uint8_t vfx_hid_request_len(uint8_t op) {
 
 void vfx_relay_pack(uint8_t cmd, uint8_t chunk_index, uint8_t total_len,
                     const uint8_t *chunk_bytes, uint8_t chunk_len, uint32_t *param1,
-                    uint32_t *param2, uint32_t *position) {
+                    uint32_t *param2) {
     uint32_t p2 = 0;
-    uint32_t pos = 0;
 
-    for (uint8_t i = 0; i < chunk_len && i < 4; i++) {
+    for (uint8_t i = 0; i < chunk_len; i++) {
         p2 |= (uint32_t)chunk_bytes[i] << (8 * i);
-    }
-    for (uint8_t i = 4; i < chunk_len; i++) {
-        pos |= (uint32_t)chunk_bytes[i] << (8 * (i - 4));
     }
 
     *param1 = (uint32_t)cmd | ((uint32_t)chunk_len << 8) | ((uint32_t)chunk_index << 16) |
              ((uint32_t)total_len << 24);
     *param2 = p2;
-    *position = pos;
 }
 
-bool vfx_relay_unpack(uint32_t param1, uint32_t param2, uint32_t position, uint8_t *buf,
-                      uint8_t *have, uint8_t *total) {
+bool vfx_relay_unpack(uint32_t param1, uint32_t param2, uint8_t *buf, uint8_t *have,
+                      uint8_t *total) {
     const uint8_t chunk_len = (uint8_t)((param1 >> 8) & 0xFF);
     const uint8_t chunk_index = (uint8_t)((param1 >> 16) & 0xFF);
     const uint8_t total_len = (uint8_t)((param1 >> 24) & 0xFF);
@@ -322,11 +317,8 @@ bool vfx_relay_unpack(uint32_t param1, uint32_t param2, uint32_t position, uint8
 
     uint8_t bytes[VFX_RELAY_CHUNK_BYTES];
 
-    for (uint8_t i = 0; i < chunk_len && i < 4; i++) {
+    for (uint8_t i = 0; i < chunk_len; i++) {
         bytes[i] = (uint8_t)(param2 >> (8 * i));
-    }
-    for (uint8_t i = 4; i < chunk_len; i++) {
-        bytes[i] = (uint8_t)(position >> (8 * (i - 4)));
     }
 
     memcpy(&buf[offset], bytes, chunk_len);

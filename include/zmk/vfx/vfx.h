@@ -150,7 +150,7 @@ void zmk_vfx_inject_key(uint32_t position);
  * every chunk of it (see hid_protocol.h) has arrived.
  */
 void zmk_vfx_scene_relay_send(const uint8_t *data, uint8_t len);
-void zmk_vfx_scene_relay_receive(uint32_t param1, uint32_t param2, uint32_t position);
+void zmk_vfx_scene_relay_receive(uint32_t param1, uint32_t param2);
 
 /* Ask for a frame now, outside the normal cadence, after something changed
  * that the scene itself cannot observe.
