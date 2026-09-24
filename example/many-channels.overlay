@@ -1,0 +1,51 @@
+/*
+ * CI-only: layers six channels onto lily58_left's engine, on top of its own
+ * lily58_left.overlay (via EXTRA_DTC_OVERLAY_FILE), to prove
+ * VFX_MAX_CHANNELS actually scales with what a board declares rather than
+ * silently clamping at some fixed ceiling. Six was picked specifically to
+ * be more than the old fixed VFX_MAX_CHANNELS of 4 -- this build failing to
+ * link, or vfx_channel_count() disagreeing with VFX_MAX_CHANNELS at runtime,
+ * is exactly the regression this variant exists to catch.
+ *
+ * Not a sane real layout: six six-pixel slices of this half's own 36-pixel
+ * chain, each just showing an existing preset.
+ */
+
+&vfx_engine {
+    many_channel_0 {
+        compatible = "zmk,vfx-channel";
+        range = <0 6>;
+        scenes = <&vfx_aurora>;
+    };
+
+    many_channel_1 {
+        compatible = "zmk,vfx-channel";
+        range = <6 6>;
+        scenes = <&vfx_matrix>;
+    };
+
+    many_channel_2 {
+        compatible = "zmk,vfx-channel";
+        range = <12 6>;
+        scenes = <&vfx_aurora>;
+    };
+
+    many_channel_3 {
+        compatible = "zmk,vfx-channel";
+        range = <18 6>;
+        scenes = <&vfx_matrix>;
+    };
+
+    many_channel_4 {
+        compatible = "zmk,vfx-channel";
+        range = <24 6>;
+        scenes = <&vfx_aurora>;
+    };
+
+    many_channel_5 {
+        compatible = "zmk,vfx-channel";
+        range = <30 6>;
+        scenes = <&vfx_matrix>;
+        default-scene = <&vfx_matrix>;
+    };
+};

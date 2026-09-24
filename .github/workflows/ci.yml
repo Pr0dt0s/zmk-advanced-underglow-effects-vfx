@@ -178,6 +178,19 @@ jobs:
             shield: lily58_left raw_hid_adapter
             args: -DCONFIG_ZMK_VFX_RAW_HID=y -DCONFIG_ZMK_VFX_RUNTIME_SCENES=y
             prep: "true"
+          # VFX_MAX_CHANNELS is sized to DT_NUM_INST_STATUS_OKAY(zmk_vfx_channel)
+          # rather than a fixed ceiling (see scenes.h); six is deliberately
+          # more than the old fixed value of 4, so this is what would have
+          # silently clamped, or failed to link, under the old scheme.
+          # Layered on top of lily58_left's own overlay rather than
+          # replacing it, and runtime scenes turned on too so both of the
+          # arrays VFX_MAX_CHANNELS sizes -- engine.c's and
+          # runtime_scene.c's -- build against the real count.
+          - name: many channels
+            shield: lily58_left
+            args: -DCONFIG_ZMK_VFX_RUNTIME_SCENES=y
+              -DEXTRA_DTC_OVERLAY_FILE="${GITHUB_WORKSPACE}/ws/config/many-channels.overlay"
+            prep: "true"
     steps:
       - name: Checkout the module
         uses: actions/checkout@v4
