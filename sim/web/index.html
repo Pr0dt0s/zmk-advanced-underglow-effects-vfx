@@ -187,10 +187,19 @@
       <p class="note" style="margin-top:0">
         Drives <code>zmk_vfx_scene_*()</code> (needs
         <code>CONFIG_ZMK_VFX_RUNTIME_SCENES</code> too): builds a channel's
-        scene on the board itself, live, out of the same ten generators the
-        composer above can also reach. Channels are found by asking each one
-        in turn until the board says there isn't one; a channel found this
-        way but never built on here shows as empty, not as unreachable.
+        scene on the board itself, live, out of 11 of this module's
+        generators. Channels are found by asking each one in turn until the
+        board says there isn't one; a channel found this way but never built
+        on here shows as empty, not as unreachable.
+      </p>
+      <p class="note" style="margin-top:0">
+        Not every generator this module has is on the list below: anything
+        needing a second colour, more than four numbers, or a byte of memory
+        per pixel (<code>water</code>, <code>matrix</code>, <code>fire</code>,
+        <code>comet</code>, <code>cross</code>, <code>trail</code>,
+        <code>hold</code>) — or that reads board state like WPM or battery —
+        cannot fit a single 32-byte report and stays devicetree-only. See the
+        README's "Runtime scene authoring" section for the full reasoning.
       </p>
       <div class="row" id="host-channels"></div>
       <div id="host-scene" hidden>
@@ -204,6 +213,7 @@
           <select id="host-add-type"></select>
           <button id="host-add-layer">Add layer</button>
         </div>
+        <p class="note" id="host-add-hint" style="margin-top:4px"></p>
       </div>
     </div>
   </section>

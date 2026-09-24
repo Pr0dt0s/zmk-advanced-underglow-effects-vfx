@@ -79,23 +79,37 @@ const AXES = ['strip', 'x', 'y', 'radial', 'angle', 'spiral'];
  * `axis` (dart) are the only generators with anything in the flags byte;
  * everything else ignores it.
  */
+/* `defaultArgs` are not arbitrary -- each is a real value from one of this
+ * module's own devicetree presets (dts/vfx/presets.dtsi), so a freshly added
+ * layer already looks like something rather than a guess at what "period ms"
+ * or "scale" ought to be. wave and keyflash have no shipped preset to draw
+ * from, so theirs come from their own dt-binding's documented default
+ * instead. `defaultAxis` only matters for dart, whose own preset picks a
+ * direction (VFX_AXIS_X) rather than leaving it at the generic 'strip'.
+ */
 const RT_TYPES = [
-  { name: 'solid', args: [] },
-  { name: 'breathe', args: ['period ms', 'min level', 'hue swing'] },
-  { name: 'wave', args: ['wavelength', 'period ms', 'depth'] },
-  { name: 'twinkle', args: ['period ms', 'density', 'hue spread'] },
-  { name: 'plasma', args: ['scale', 'period ms', 'hue spread'] },
-  { name: 'ripple', args: ['decay ms', 'speed', 'width'] },
-  { name: 'keyflash', args: ['decay ms', 'spread'] },
-  { name: 'pulse', args: ['decay ms', 'min level', 'hue step'], stack: true },
-  { name: 'dart', args: ['speed', 'lifetime ms', 'tail'], axis: true, reverse: true },
-  { name: 'static', args: ['period ms', 'density', 'hue spread'] },
+  { name: 'solid', args: [], defaultArgs: [] },
+  { name: 'breathe', args: ['period ms', 'min level', 'hue swing'],
+    defaultArgs: [4500, 20, 0] },
+  { name: 'wave', args: ['wavelength', 'period ms', 'depth'], defaultArgs: [20, 2000, 255] },
+  { name: 'twinkle', args: ['period ms', 'density', 'hue spread'],
+    defaultArgs: [1600, 55, 0] },
+  { name: 'plasma', args: ['scale', 'period ms', 'hue spread'],
+    defaultArgs: [14, 7000, 70] },
+  { name: 'ripple', args: ['decay ms', 'speed', 'width'], defaultArgs: [700, 60, 15] },
+  { name: 'keyflash', args: ['decay ms', 'spread'], defaultArgs: [400, 12] },
+  { name: 'pulse', args: ['decay ms', 'min level', 'hue step'], stack: true,
+    defaultArgs: [900, 40, 7] },
+  { name: 'dart', args: ['speed', 'lifetime ms', 'tail'], axis: true, reverse: true,
+    defaultArgs: [110, 1100, 28], defaultAxis: 1 /* VFX_AXIS_X */ },
+  { name: 'static', args: ['period ms', 'density', 'hue spread'],
+    defaultArgs: [70, 45, 40] },
   /* No single colour -- SCENE_SET_COLOR is a harmless no-op on one, so its
    * own colour picker stays hidden and a stop list is shown instead. Built
    * with SCENE_GRADIENT_ADD_STOP, one small message per stop, rather than
    * carried in SCENE_ADD_LAYER itself: see the README's note on this.
    */
-  { name: 'gradient', args: ['scroll speed', 'span'], stops: true },
+  { name: 'gradient', args: ['scroll speed', 'span'], stops: true, defaultArgs: [8, 0] },
 ];
 
 const RT_FLAG_STACK = 0x01;
@@ -108,6 +122,20 @@ const RT_FLAG_AXIS_SHIFT = 2;
  * POOL_FULL rather than after.
  */
 const VFX_RT_GRADIENT_MAX_STOPS = 6;
+
+/* Delays `fn` until `ms` after the last call, so a number field can send its
+ * edit once the user pauses typing instead of only on blur -- 'change' never
+ * fires until the field loses focus, which reads as "nothing happened" for
+ * anyone who did not know to click away.
+ */
+const debounce = (fn, ms) => {
+  let timer;
+
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+};
 
 const flagsFor = (typeIdx, { stack, reverse, axis }) => {
   const spec = RT_TYPES[typeIdx];
@@ -303,6 +331,7 @@ export function initHostPanel() {
   const sceneLayersEl = $('host-scene-layers');
   const addTypeEl = $('host-add-type');
   const addLayerBtn = $('host-add-layer');
+  const addHintEl = $('host-add-hint');
 
   if (!connectBtn) return; // panel not on this page
 
@@ -340,6 +369,22 @@ export function initHostPanel() {
     opt.textContent = t.name;
     addTypeEl.appendChild(opt);
   }
+
+  /* What "Add layer" is about to build, before it is built -- the card that
+   * appears afterwards labels its own arg fields the same way (see
+   * applyLayer()), but there is nothing to label until then, which is the
+   * one moment a new user most wants to know what they are about to get.
+   */
+  const updateAddHint = () => {
+    const spec = RT_TYPES[Number(addTypeEl.value)];
+
+    addHintEl.textContent = spec.args.length
+      ? `Starts with ${spec.args.join(', ')} set to values from one of this module's own presets -- widen its zone and adjust from there.`
+      : 'A flat colour across its zone -- no arguments to set.';
+  };
+
+  addTypeEl.addEventListener('change', updateAddHint);
+  updateAddHint();
 
   /* ---------------------------------------------------------- tuning UI */
 
@@ -522,22 +567,29 @@ export function initHostPanel() {
     grid.className = 'layer-grid';
     card.appendChild(grid);
 
-    const field = (label, el) => {
+    const field = (label, el, title) => {
       const wrap = document.createElement('label');
 
       wrap.className = 'field';
       wrap.textContent = label;
+      if (title) wrap.title = title;
       wrap.appendChild(el);
       grid.appendChild(wrap);
 
       return wrap;
     };
 
+    /* 'change' on a number input only fires on blur or Enter, which reads as
+     * "nothing happened" to anyone who just typed a value and looked at the
+     * strip. Debounced 'input' instead: it applies a moment after you stop
+     * typing (or stop clicking the spinner), without sending a request per
+     * keystroke.
+     */
     const number = onChange => {
       const el = document.createElement('input');
 
       el.type = 'number';
-      el.addEventListener('change', () => onChange(Number(el.value)));
+      el.addEventListener('input', debounce(() => onChange(Number(el.value)), 400));
 
       return el;
     };
@@ -558,17 +610,20 @@ export function initHostPanel() {
       rebuildFromScratch(slot, l.data);
     };
 
-    const zoneStartWrap = field('zone start', number(v => edit('zoneStart', v)));
-    const zoneLenWrap = field('zone len', number(v => edit('zoneLen', v)));
+    const zoneStartWrap = field('zone start', number(v => edit('zoneStart', v)),
+      'First pixel this layer covers, counting from the start of the channel\'s own strip.');
+    const zoneLenWrap = field('zone len', number(v => edit('zoneLen', v)),
+      'How many pixels wide, starting from zone start.');
     const color = document.createElement('input');
 
     color.type = 'color';
-    color.addEventListener('change', () => {
+    color.addEventListener('input', debounce(() => {
       const [h, s, v] = hexToHsb(color.value);
 
       act(requests.sceneSetColor(activeChannel, slot, h, s, v));
-    });
-    const colorWrap = field('colour', color);
+    }, 150));
+    const colorWrap = field('colour', color,
+      'This layer\'s own colour. Ignored for gradient, which uses its stop list below instead.');
 
     const argWraps = [0, 1, 2, 3].map(i => field(`arg ${i}`, number(v => {
       const l = layerRows.get(slot);
@@ -583,13 +638,14 @@ export function initHostPanel() {
 
     stackEl.type = 'checkbox';
     stackEl.addEventListener('change', () => edit('stack', stackEl.checked));
-    const stackWrap = field('stack (each hit adds a new pulse)', stackEl);
+    const stackWrap = field('stack (each hit adds a new pulse)', stackEl,
+      'Off: a new key press restarts the fade. On: it adds another pulse on top of any still fading.');
 
     const reverseEl = document.createElement('input');
 
     reverseEl.type = 'checkbox';
     reverseEl.addEventListener('change', () => edit('reverse', reverseEl.checked));
-    const reverseWrap = field('reverse', reverseEl);
+    const reverseWrap = field('reverse', reverseEl, 'Runs the other way along its axis.');
 
     const axisEl = document.createElement('select');
 
@@ -601,7 +657,8 @@ export function initHostPanel() {
       axisEl.appendChild(opt);
     });
     axisEl.addEventListener('change', () => edit('axis', Number(axisEl.value)));
-    const axisWrap = field('axis', axisEl);
+    const axisWrap = field('axis', axisEl,
+      'Which way this effect travels across the board. Needs pixel positions in devicetree; falls back to \'strip\' (along the wire) on a board with no map.');
 
     /* Stops are appended, never edited or removed one at a time -- the same
      * "no partial update" boundary zone/blend already have above, just for
@@ -868,14 +925,23 @@ export function initHostPanel() {
     if (activeChannel === null) return;
 
     const type = Number(addTypeEl.value);
+    const spec = RT_TYPES[type];
+    const args = [0, 0, 0, 0];
 
-    /* Enough of a starting point to light up and to be visible in the
-     * layer list, same reasoning the main composer's own add-layer default
-     * uses. Flags (stack/reverse/axis) start off and are edited on the
-     * layer's own card afterwards, once it exists.
+    spec.defaultArgs.forEach((v, i) => { args[i] = v; });
+
+    const axis = spec.defaultAxis ?? 0;
+    const flags = flagsFor(type, { stack: false, reverse: false, axis });
+
+    /* zone len 6 is a safe starting width on any channel, even the
+     * smallest one a board declares -- widen it once you know the current
+     * channel's own size. Everything else in defaultArgs (RT_TYPES, above)
+     * is sourced from this module's own devicetree presets, not a guess,
+     * so a freshly added layer already looks like something rather than a
+     * flat colour or a rate too fast or slow to read.
      */
-    await act(requests.sceneAddLayer(activeChannel, type, 0, 6, 0, 255, 200, 90, 100,
-                                     [1000, 0, 0, 0], 0));
+    await act(requests.sceneAddLayer(activeChannel, type, 0, 6, 0, 255, 200, 90, 100, args,
+                                     flags));
 
     refreshChannel(activeChannel);
   });
