@@ -486,6 +486,15 @@ scenes in the same order.** Next and previous are resolved to an absolute
 index on the central and relayed as a number, so a half that knows fewer
 scenes silently clamps what the other half can ever reach.
 
+Every channel-shaped array in this module — the engine's own per-channel
+state, and, with `CONFIG_ZMK_VFX_RUNTIME_SCENES`, each channel's runtime
+scene pool — is sized to exactly how many channels this board declared, not
+to some fixed ceiling: a two-channel board pays RAM for two, a board with
+six pays for six, and there is no upper limit to declare past. That size is
+baked into the saved settings blobs, so changing how many channels a board
+declares changes their layout and resets them to defaults on the next boot,
+the same as any other change that resizes a saved struct already does.
+
 ### A scene per layer, and fading between them
 
 On most keyboards changing layer changes one indicator strip. `layer-scenes`

@@ -8,16 +8,43 @@
 
 #include <stdint.h>
 
+#ifndef VFX_SIM
+#include <zephyr/devicetree.h>
+#endif
+
 #include <zmk/vfx/layer.h>
 
 #define VFX_ENGINE_NODE DT_INST(0, zmk_vfx_engine)
 
-/* Sized for the widest board rather than for this one, so that the saved
- * settings blob has a fixed layout and adding a channel to a keymap does not
- * silently reinterpret the stored bytes. Shared with runtime_scene.c, which
- * needs the same bound to size its own per-channel pool.
+/* Exactly how many channels this board declared -- the same count
+ * vfx_channel_count() reports at runtime, computed here instead so it can
+ * also size state.chan[] in engine.c and the per-channel pools in
+ * runtime_scene.c, neither of which can size an array off a function
+ * result. A board with none declared gets the fallback single channel
+ * scenes.c itself falls back to (the whole strip, every scene).
+ *
+ * Sizing this to the board rather than to some fixed ceiling means a
+ * two-channel board no longer pays RAM for four, and a board that wants
+ * more than four is no longer capped there either. The one cost: the
+ * settings blobs this sizes ("vfx/state" whole, "vfx/rt" per channel)
+ * change layout whenever a board's channel count changes, same as they
+ * already do whenever any other field is added or removed -- the existing
+ * size check on load already treats that as "different build" and falls
+ * back to defaults rather than misreading the bytes, so this is a rebuild
+ * losing saved brightness/speed/hue and any built runtime scenes once, not
+ * a hazard.
+ *
+ * The simulator and the Zephyr-free test suite have no devicetree to ask,
+ * so VFX_SIM keeps this at a fixed 4 there -- enough to exercise
+ * multi-channel behaviour without a real board attached.
  */
+#ifdef VFX_SIM
 #define VFX_MAX_CHANNELS 4
+#elif DT_HAS_COMPAT_STATUS_OKAY(zmk_vfx_channel)
+#define VFX_MAX_CHANNELS DT_NUM_INST_STATUS_OKAY(zmk_vfx_channel)
+#else
+#define VFX_MAX_CHANNELS 1
+#endif
 
 uint8_t vfx_scene_count(void);
 const struct vfx_scene *vfx_scene_get(uint8_t index);
