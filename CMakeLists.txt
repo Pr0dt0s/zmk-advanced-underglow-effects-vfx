@@ -42,8 +42,19 @@ if(CONFIG_ZMK_VFX)
                        src/behavior_rgb_compat.c)
   target_sources_ifdef(CONFIG_ZMK_VFX_AUTO_POWER_GATE app PRIVATE src/power.c)
   target_sources_ifdef(CONFIG_ZMK_VFX_SPLIT_SYNCED app PRIVATE src/split_sync.c)
-  target_sources_ifdef(CONFIG_ZMK_VFX_RAW_HID app PRIVATE
-                       src/hid_protocol.c src/hid_transport.c)
+
+  # hid_protocol.c is the wire format itself -- vfx_hid_decode() and, now,
+  # vfx_relay_pack()/vfx_relay_unpack() -- rather than the raw-hid transport
+  # built over it, so it is needed by CONFIG_ZMK_VFX_RUNTIME_SCENES alone
+  # too: a peripheral runs scene_relay.c to receive a relayed edit without
+  # ever running raw-hid itself (that is central-only). Guarded against
+  # being added twice on a board with both on, which target_sources_ifdef
+  # called for each config separately would not be.
+  if(CONFIG_ZMK_VFX_RAW_HID OR CONFIG_ZMK_VFX_RUNTIME_SCENES)
+    target_sources(app PRIVATE src/hid_protocol.c)
+  endif()
+
+  target_sources_ifdef(CONFIG_ZMK_VFX_RAW_HID app PRIVATE src/hid_transport.c)
   target_sources_ifdef(CONFIG_ZMK_VFX_RUNTIME_SCENES app PRIVATE
                        src/runtime_scene.c src/scene_relay.c)
 endif()
