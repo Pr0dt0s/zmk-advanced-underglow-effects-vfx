@@ -773,12 +773,13 @@ is ever adjusted.
 
 ### What this is not
 
-This is not runtime scene authoring. You cannot add a layer, change a
-generator or repoint a zone on a running keyboard: those live in flash, built
-by devicetree at compile time, and reaching them means a different data model
-(a RAM scene representation, bounded pools, serialisation) rather than a
-different transport. The composer in the simulator is the answer to that for
-now — design there, paste the devicetree, flash once.
+Tuning is not scene authoring. It cannot add a layer, change a generator or
+repoint a zone: those live in flash, built by devicetree at compile time, and
+making them writable means a different data model (a RAM scene
+representation, bounded pools, serialisation) rather than a different
+transport. That model exists, behind its own option, and is
+[Runtime scene authoring](#runtime-scene-authoring) below; this section is
+only about moving what devicetree already built.
 
 `zmk_vfx_tune_*()` is also the API a host transport calls, which is what the
 next section is about.
@@ -893,27 +894,45 @@ pool at a time; devicetree's compiled scene list stays exactly as it was,
 and a channel switches to showing this instead of it only once something has
 actually been built and activated.
 
-**Only eleven generators are buildable this way**: `solid`, `breathe`,
-`wave`, `twinkle`, `plasma`, `ripple`, `keyflash`, `pulse`, `dart`, `static`
-and `gradient` — every one of them either "one colour plus up to four small
-numbers", which is what fits a 32-byte HID report and keeps every slot in
-the pool the same small size, or, `gradient` alone, a short list of colours
-composed across several small messages rather than carried in one large one
-(see [Building a gradient](#building-a-gradient) below). `trail` and `hold`
-carry a byte of state per pixel; `water`, `matrix`, `fire`, `comet` and
-`cross` want a second colour and more arguments than four; the indicator
-layers read board state through a config that is itself a pointer. None of
-those are reachable here — devicetree remains the only way to reach them,
-same as it already was for everything else. `runtime_scene.h` has the full
-reasoning next to the generator list itself.
+**Every generator is buildable this way**, all 24 of them: `solid`,
+`breathe`, `wave`, `twinkle`, `plasma`, `ripple`, `keyflash`, `pulse`, `dart`,
+`static`, `gradient`, `trail`, `hold`, `water`, `matrix`, `fire`, `comet`,
+`cross`, `layer-state`, `battery`, `ble-profile`, `flag`, `wpm` and
+`peripheral-battery`. A 32-byte HID report cannot carry a `water` layer's
+whole configuration (two colours and six numbers), let alone a
+`layer-state`'s colour per keymap layer, so nothing tries to: a layer is
+**assembled from several small messages**, the way a scene itself is
+assembled from many layers. `SCENE_ADD_LAYER` creates it with its first
+colour and first four numbers; further messages set the fifth and sixth
+numbers, the rest of the colour list, the zone and the layer's options. See
+[Building a layer](#building-a-layer) for the recipe and for which colour
+and which number feeds which generator.
 
-A layer's zone is a plain pixel range (`start`, `len`), the same numbers
-`range = <start len>` takes in devicetree; the `keys` and `pixels` zone
-forms are not reachable from a runtime scene either.
+A layer's zone is any of the three forms devicetree has: a plain range
+(`range = <start len>`), an explicit list of strip indices (`pixels = <...>`),
+or a list of key positions (`keys = <...>`, resolved to pixels through the
+same key map a compiled `keys` zone uses). The two lists hold at most
+`CONFIG_ZMK_VFX_RUNTIME_MAX_ZONE_PIXELS` entries and are sent twelve at a
+time.
+
+What a channel can hold at once is bounded by four Kconfig options, each
+sized per channel:
+
+| Option | Default | What it bounds |
+|---|---|---|
+| `CONFIG_ZMK_VFX_RUNTIME_MAX_LAYERS` | 6 (1–16) | Layers in the pool. |
+| `CONFIG_ZMK_VFX_RUNTIME_MAX_COLORS` | 8 (3–16) | Entries in a layer's colour list: a gradient's stops, a layer-state layer's colours, the second colour of the generators that draw with two. At least 3, which is what `peripheral-battery` needs. |
+| `CONFIG_ZMK_VFX_RUNTIME_MAX_ZONE_PIXELS` | 32 (4–128) | Entries in a `pixels` or `keys` zone. |
+| `CONFIG_ZMK_VFX_RUNTIME_HEAVY_STATES` | 2 (1–8) | `trail` and `hold` layers at once. Each keeps a byte of animation state per pixel, which every other layer would waste if each slot carried it, so they draw from this small pool instead. Adding one when it is empty is refused with `POOL_FULL`, the answer a full layer pool gives. |
+
+The colour list, the zone list and the layer count are persisted with every
+layer, so together they size the saved blob (`vfx/rt`), which has to fit one
+flash sector. Raising all of them at once can stop that from fitting; the
+option help in `Kconfig` says the same.
 
 ### The wire format
 
-Twelve more ops on the same transport as tuning, all gated behind
+Eighteen more ops on the same transport as tuning, all gated behind
 `CONFIG_ZMK_VFX_RUNTIME_SCENES` in addition to `CONFIG_ZMK_VFX_RAW_HID` — a
 board running raw-hid without runtime scenes still answers every one of
 these, with `status` `1` and nothing built, rather than leaving a host
@@ -938,50 +957,155 @@ channel's own pool — a different id space from a tuning slot, assigned by
 | `SCENE_GET_ORDER` (`0x11`) | ch | `0x91`: ch, count, `count` slot ids, status | 4 + count |
 | `SCENE_GRADIENT_ADD_STOP` (`0x12`) | ch, slot, hue (`int16`), sat, bri | `0x92`: slot, status | 3 |
 | `SCENE_GET_GRADIENT_STOP` (`0x13`) | ch, slot, stop index | `0x93`: ch, slot, index, hue (`int16`), sat, bri, status | 9 |
+| `SCENE_SET_LIST_COLOR` (`0x14`) | ch, slot, index, hue (`int16`), sat, bri | `0x94`: slot, status | 3 |
+| `SCENE_GET_LIST_COLOR` (`0x15`) | ch, slot, index | `0x95`: ch, slot, index, hue (`int16`), sat, bri, status | 9 |
+| `SCENE_SET_ZONE` (`0x16`) | ch, slot, kind, offset, count, 12 data bytes | `0x96`: slot, status | 3 |
+| `SCENE_GET_ZONE` (`0x17`) | ch, slot, offset | `0x97`: ch, slot, kind, total, offset, n, 12 data bytes, status | 20 |
+| `SCENE_SET_OPTS` (`0x18`) | ch, slot, blend, opacity, opacity source, opacity min, opacity full, tune id | `0x98`: slot, status | 3 |
+| `SCENE_GET_LAYER_EXT` (`0x19`) | ch, slot | `0x99`: ch, slot, zone kind, zone count, colour count, opacity source, opacity min, opacity full, tune id, arg 4 (`int16`), arg 5 (`int16`), status | 15 |
 
-`status` is `0` for ok, `1` (`BAD_SLOT`) for a channel, slot, generator type
-or argument index outside range, `2` (`POOL_FULL`) from `SCENE_ADD_LAYER`
-when the channel's own layer pool is already full, and from
-`SCENE_GRADIENT_ADD_STOP` when that slot's own stop list already holds
-`VFX_RT_GRADIENT_MAX_STOPS` — both broken out from `BAD_SLOT` because they
-are the one rejection a host would react to differently, by removing
-something rather than by fixing what it sent. `flags` is one byte: bit 0 is
-`pulse`'s `stack`, bit 1 is `dart`'s `reverse`, bits 2-4 are `dart`'s `axis`
-(`VFX_AXIS_*`, the same values `dt-bindings/zmk/vfx.h` defines) — nothing
-else buildable here reads either bit.
+`SCENE_SET_LIST_COLOR` and `SCENE_GET_LIST_COLOR` work on any generator's
+colour list; `SCENE_GRADIENT_ADD_STOP` and `SCENE_GET_GRADIENT_STOP` are the
+same two operations from before there was a general list (the first appends
+rather than naming an index) and are still answered, but nothing new needs
+them. `SCENE_SET_ZONE`'s `kind` is `0` for a range, `1` for a pixel list and
+`2` for a key list; a range's data is `start`, `len`, and a list's data is
+up to twelve entries of it, `count` saying how many of the twelve bytes are
+real. `SCENE_GET_ZONE` answers the same way: `total` is the number of entries
+the zone holds (2 for a range, which reads back `start`, `len`), and a host
+reads a list by calling again at `offset + n` until that reaches `total`.
+`SCENE_GET_LAYER_EXT` is everything `SCENE_GET_LAYER` has no room left for:
+the zone's kind and length, how many colours are in the list, the layer's
+options, and the fifth and sixth numbers.
 
-### Building a gradient
+`status` is `0` for ok, `1` (`BAD_SLOT`) for a channel, slot, generator
+type, argument index, colour index, zone kind, blend or opacity source
+outside range (or a zone chunk whose `offset` is not the number of entries
+the list already holds), and `2` (`POOL_FULL`) for anything that ran out of
+room rather than being wrong: `SCENE_ADD_LAYER` when the channel's layer
+pool is full or a `trail` or `hold` cannot get one of its heavy states;
+`SCENE_SET_LIST_COLOR` and `SCENE_GRADIENT_ADD_STOP` when the index is past
+`CONFIG_ZMK_VFX_RUNTIME_MAX_COLORS`; `SCENE_SET_ZONE` when a list would grow
+past `CONFIG_ZMK_VFX_RUNTIME_MAX_ZONE_PIXELS`. `POOL_FULL` is broken out from
+`BAD_SLOT` because it is the one rejection a host would react to differently,
+by removing something rather than by fixing what it sent.
 
-A gradient's stop list is the one thing here that does not fit "one colour
-plus up to four small numbers" — even a modest six-stop gradient is 24
-bytes of colour alone, without anything left over in a 32-byte report for
-which layer it belongs to. Rather than widen every request to fit the
-biggest case, a gradient is built with an ordinary `SCENE_ADD_LAYER` (`type`
-`VFX_RT_GRADIENT`; `hue`/`sat`/`bri` are ignored, since a gradient has no
-one colour; `args[0]` is `scroll_speed`, `args[1]` is `span`, editable
-afterwards with the same `SCENE_SET_ARG` every other type uses) followed by
-one `SCENE_GRADIENT_ADD_STOP` per stop, in order — composing the list across
-several small messages instead of one large one. `SCENE_GET_LAYER`'s own
-reply has nowhere to carry the stops either, so it carries `num_stops`
-instead, in the `args[2]` a gradient itself never uses, and a host reading
-one back calls `SCENE_GET_GRADIENT_STOP` that many times.
+Setting a colour past the end of the list grows it, and any entries skipped
+over are black, which every generator that takes an optional colour already
+reads as "unset". Setting a chunk of a zone at `offset` `0` starts the list
+over, and may change its kind; any later chunk has to continue the same list.
 
-There is no edit-one-stop or remove-one-stop op: changing a gradient's
-stops means removing the layer and building it again, the same "no partial
-update" boundary a zone or blend edit already has. `host.js` does this
-itself whenever such an edit touches a gradient — see
-[its own panel](#the-simulators-own-panel) below.
+`flags` is one byte: bit 0 is `pulse`'s `stack`, bit 1 is `dart`'s `reverse`,
+and bits 2-4 are the `axis` (`VFX_AXIS_*`, the same values
+`dt-bindings/zmk/vfx.h` defines) of every generator that has one — `wave`,
+`dart`, `gradient`, `fire` and `comet`. Only `SCENE_ADD_LAYER` carries it, so
+changing a layer's flags means building it again (see
+[The simulator's own panel](#the-simulators-own-panel)); everything else about
+a layer is edited in place.
+
+### Cycling in the runtime scene
+
+`SCENE_ACTIVATE` / `SCENE_DEACTIVATE` (and `zmk_vfx_runtime_set_active()` for
+an in-firmware caller) are not the only way onto a channel's runtime scene.
+Once it holds at least one layer, `&vfx VFX_NEXT` / `VFX_PREV` — the same
+behavior the keymap already uses to step through the compiled scene list —
+treats it as one more entry, appended after the last compiled scene. Cycling
+forward from the last compiled scene lands on it; cycling again leaves it and
+wraps to the first compiled scene, same as any other step. An empty runtime
+scene (nothing built, or reset back to nothing) is skipped rather than
+cycled into, so NEXT never lands on a frame that renders black.
+
+Picking a compiled scene directly — `zmk_vfx_select_scene()` with an index
+inside the compiled list, which is also what the rest of `&vfx`'s bindings
+resolve to — still gives up the runtime scene explicitly, the same as before:
+a scene picked by name has to actually show, not leave a runtime scene stuck
+on screen underneath it.
+
+### Building a layer
+
+A layer is built in steps, each one message, in this order:
+
+1. **`SCENE_ADD_LAYER`** creates it: `type`, a zone range, blend and opacity,
+   the primary colour (`hue`/`sat`/`bri`), the first four numbers and the
+   flags byte. The reply carries the `slot` every later message names. This
+   is the message that can fail for want of a layer slot or, for `trail` and
+   `hold`, a heavy state.
+2. **`SCENE_SET_ARG`** for the fifth and sixth numbers (index `4` and `5`),
+   for the generators that use them: `water` and `matrix`, six each. It
+   reaches all six, so it is also how any number is edited afterwards.
+3. **`SCENE_SET_LIST_COLOR`**, once per entry of the colour list, in index
+   order, for every generator whose table row below has one. The list grows
+   to whatever index was set last.
+4. **`SCENE_SET_ZONE`**, only when the zone is a pixel or key list rather
+   than the range `SCENE_ADD_LAYER` already set: one message per twelve
+   entries, each at an `offset` equal to the number of entries already sent.
+5. **`SCENE_SET_OPTS`**, only when blend, opacity, the opacity source or the
+   tuning id need to be something other than what step 1 set.
+
+Every step after the first is an edit of a layer that already exists, and
+works exactly the same on one built long ago: nothing has to be removed and
+re-added to change a colour, a number, a list entry, a zone or an option,
+and changing an option does not restart anything that is animating. (An edit
+to a colour, a number or the zone does restart that one layer's own
+animation, since what it was mid-way through was drawn under the old
+configuration.) Only the flags byte has no message of its own.
+
+Which colour and which number feeds which field is fixed per generator, in
+the order `rebuild_slot()` in `runtime_scene.c` reads them. A generator that
+draws with two colours takes the second from the first entry of the list:
+
+| Generator | Primary colour | Colour list | Numbers, `SCENE_SET_ARG` index `0`… | Flags |
+|---|---|---|---|---|
+| `solid` | colour | | | |
+| `breathe` | colour | | period ms, min level, hue swing | |
+| `wave` | colour | | wavelength, period ms, depth | axis |
+| `twinkle` | colour | | period ms, density, hue spread | |
+| `plasma` | colour | | scale, period ms, hue spread | |
+| `ripple` | colour | | decay ms, speed, width | |
+| `keyflash` | colour | | decay ms, spread | |
+| `pulse` | colour | | decay ms, min level, hue step | stack |
+| `dart` | tail colour | `0` head colour | speed, lifetime ms, tail | axis, reverse |
+| `static` | colour | | period ms, density, hue spread | |
+| `gradient` | unused | the stops, in order | scroll speed, span | axis |
+| `trail` | colour | | decay ms, spread | |
+| `hold` | colour | | release ms | |
+| `water` | surface colour | `0` crest colour | wavelength, speed, lifetime ms, drop rate ms, amplitude, damping | |
+| `matrix` | tail colour | `0` head colour | speed, tail, drop rate ms, columns, jitter, head size | |
+| `fire` | base colour | `0` tip colour | period ms, cell, height, flicker | axis |
+| `comet` | tail colour | `0` head colour | period ms, tail, count | axis |
+| `cross` | arm colour | `0` centre colour | decay ms, radius, thickness, axes (`0` both, `1` horizontal, `2` vertical) | |
+| `layer-state` | unused | one colour per keymap layer, layer 0 first | | |
+| `battery` | low colour | `0` high, `1` empty | warn below % | |
+| `ble-profile` | connected colour | `0` disconnected, `1` USB | | |
+| `flag` | colour | | source (`0` locks, `1` modifiers), mask | |
+| `wpm` | idle colour | `0` fast colour | full wpm, mode (`0` colour, `1` bar) | |
+| `peripheral-battery` | low colour | `0` high, `1` empty, `2` unknown | peripheral, warn below % | |
+
+A list entry that was never set is black, which each generator reads as "not
+given". A `layer-state` layer's black entries draw nothing, so the layers
+beneath them show through.
+
+On a channel whose runtime scene is active, a layer is visible from the
+moment `SCENE_ADD_LAYER` is applied, not from the moment the last message
+lands, so a layer with a second colour or a zone list shows briefly
+half-configured — second colour black, or over the range zone
+`SCENE_ADD_LAYER` set — while the rest arrives. Building a scene while it is
+not active, and activating it last, avoids that.
 
 `SCENE_GET_LAYER` answers one slot at a time and says nothing about where
 that slot renders relative to the rest, since add, remove and move never
 renumber a slot, only its position in render order. `SCENE_GET_ORDER` is
 that position: the channel's own slot ids, bottom of the stack first, the
 same sense `SCENE_MOVE_LAYER`'s direction argument uses. A host discovers a
-channel's layers by reading this once and then `SCENE_GET_LAYER` for each id
-it names, in that order — which is what `host.js` does, so a channel
-selected fresh (including right after a reconnect) always shows the real
-render order, not just whatever order a blind slot probe happened to find
-things in.
+channel's layers by reading this once and then, for each id it names,
+`SCENE_GET_LAYER` (type, range zone, blend, opacity, colour, first four
+numbers, flags), `SCENE_GET_LAYER_EXT` (zone kind and length, colour count,
+options, fifth and sixth numbers), `SCENE_GET_LIST_COLOR` once per colour and
+`SCENE_GET_ZONE` in chunks for a list zone — which is what `host.js` does,
+so a channel selected fresh (including right after a reconnect) shows the
+real render order and the whole of every layer, not just whatever a blind
+slot probe happened to find. A gradient's `SCENE_GET_LAYER` still reports its
+stop count in `args[2]`, a number it never otherwise uses.
 
 ### Persistence
 
@@ -1009,8 +1133,30 @@ of its own). A behavior invocation carries two `uint32_t` — param1 and
 param2 — not three: ZMK's own split transport narrows a relayed event's
 position to a single byte before it reaches the peripheral, so only param1
 (above a small header) and param2 carry payload, four bytes of a request's
-own wire bytes per invocation. A request longer than that — only
-`SCENE_ADD_LAYER` is — goes out in more than one.
+own wire bytes per invocation. A request longer than that goes out in more
+than one: `SCENE_ADD_LAYER` (20 bytes) and `SCENE_SET_ZONE` (18) take five
+each, `SCENE_SET_OPTS` (9) three, `SCENE_SET_LIST_COLOR` (8) two. That 20-byte
+ceiling (`VFX_RELAY_MAX_BYTES`) is why a layer is built from several small
+messages to begin with rather than one big one, and why `SCENE_SET_ZONE`
+carries twelve entries and no more: every op that changes a scene has to
+fit, or it could be built on the central and never reach the other half.
+
+The relay is fire-and-forget. The central answers the host as soon as it has
+applied an op itself, and nothing reports back whether the peripheral has
+applied the relayed copy. Building one layer this way is a dozen or so relayed
+invocations (a `water` with a second colour is eleven), and a host that sends
+the next message before the split link has drained the last may find the
+two halves ending up with different scenes. `host.js` therefore waits sixteen
+milliseconds per four-byte chunk before sending the next request after any
+op that mutates a scene. **That figure is a guess, not a measurement**: there
+has been no hardware to measure the link on. If the halves disagree after a
+build, pace more slowly and file an issue with what you saw; the way back to
+a known state is `SCENE_RESET` and building it again, more slowly.
+
+The peripheral applies what it receives to a pool of its own, sized by its own
+`CONFIG_ZMK_VFX_RUNTIME_*` options, so give both halves the same ones. An edit
+that fits the central's `MAX_COLORS` or `MAX_ZONE_PIXELS` but not the
+peripheral's is refused there without anyone being told.
 
 This is independent of `CONFIG_ZMK_VFX_SPLIT_SYNCED`: that choice is about
 whether the two halves' animation clocks agree, which has nothing to do
@@ -1025,20 +1171,34 @@ build a scene in the first place, not what lets a half hold one.
 
 ### The simulator's own panel
 
-The **Scenes** part of the Host control panel drives this: pick a channel's
-tab, add a layer, edit its zone, colour, arguments and (for `pulse` and
-`dart`) their own flag or axis, reorder or remove it, and flip **Active** to
-show it instead of the channel's compiled list. Editing a layer's zone,
-blend or opacity has no dedicated wire op, so the panel rebuilds the whole
-layer with `SCENE_ADD_LAYER` under the hood — the same thing devicetree
-would require if you changed a layer's zone there, just without reflashing.
+The **Scenes** part of the Host control panel drives all of this: pick a
+channel's tab, add a layer of any of the 24 types, reorder or remove it, and
+flip **Active** to show it instead of the channel's compiled list. Each
+layer's card carries what its generator reads — the primary colour, each
+number (a picker where the number is really a choice, like `flag`'s source or
+`cross`'s axes), a colour picker per list entry with an add button where the
+list can grow (a `gradient`'s stops, a `layer-state`'s colours), and, under
+their own headings, the zone (a range, or a pixel or key list typed as
+numbers) and the options (blend, opacity, the opacity source with its minimum
+and full values, the tuning id). A new layer starts from values taken from one
+of the module's own presets, so it looks like something rather than a guess.
 
-A `gradient` layer shows a row of swatches instead of a single colour
-picker, with an "Add stop" control beside it that sends
-`SCENE_GRADIENT_ADD_STOP`. Because the panel keeps the stop list client-side
-too, a zone or blend edit on a gradient (which rebuilds the whole layer, as
-above) re-sends every stop afterwards against whatever slot the rebuild was
-assigned, rather than silently losing them.
+Everything on a card is an edit in place, sent as the message the recipe
+above names for it, **except** `pulse`'s stack, `dart`'s reverse and the axis
+of the generators that have one. Those ride in the flags byte, which only
+`SCENE_ADD_LAYER` carries, so changing one removes the layer, adds it again
+from what the panel holds, and walks it back to its old place in the stack
+with `SCENE_MOVE_LAYER`. The layer is briefly gone while that happens, its
+animation restarts, and its slot id may change.
+
+Adding a layer sends `SCENE_ADD_LAYER` and then the messages for whatever else
+the type needs (see [Building a layer](#building-a-layer)), so a `water` or a
+`layer-state` takes a moment to fill in. Selecting a channel reads every layer
+back with `SCENE_GET_LAYER`, `SCENE_GET_LAYER_EXT`, `SCENE_GET_LIST_COLOR` and
+`SCENE_GET_ZONE`, so what the panel shows is what the board holds, including
+for a scene this page did not build. Adding a `trail` or `hold` to a channel
+whose `CONFIG_ZMK_VFX_RUNTIME_HEAVY_STATES` are all in use is refused by the
+board, and the panel says so.
 
 Same caveat as tuning: `tests/` proves the wire format round-trips with no
 Zephyr in scope, and `tools/verify-host-hid.mjs` now drives the Scenes panel

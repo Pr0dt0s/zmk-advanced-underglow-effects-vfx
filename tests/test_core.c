@@ -3262,7 +3262,7 @@ static void test_runtime_pool_full_rejects_further_adds(void) {
 
     struct vfx_rt_params overflow = rt_solid(0, 1, 0);
 
-    CHECK(vfx_runtime_add_layer(0, &overflow) == -1,
+    CHECK(vfx_runtime_add_layer(0, &overflow) == VFX_RT_ERR_FULL,
         "a pool already at VFX_RT_MAX_LAYERS must refuse one more");
     VFX_UNUSED(last);
 }
@@ -3273,7 +3273,7 @@ static void test_runtime_rejects_bad_slots_and_channels(void) {
     struct vfx_rt_params red = rt_solid(0, NPX, 0);
     const int slot = vfx_runtime_add_layer(0, &red);
 
-    CHECK(vfx_runtime_add_layer(VFX_MAX_CHANNELS, &red) == -1,
+    CHECK(vfx_runtime_add_layer(VFX_MAX_CHANNELS, &red) == VFX_RT_ERR_INVALID,
         "a channel past the end must be refused");
     CHECK(!vfx_runtime_set_arg(0, (uint8_t)(slot + 1), 0, 0),
         "a slot nothing was ever added to must be refused");
@@ -3281,7 +3281,10 @@ static void test_runtime_rejects_bad_slots_and_channels(void) {
         "set_color on an unused slot must be refused");
     CHECK(!vfx_runtime_remove_layer(0, (uint8_t)(slot + 1)),
         "removing an unused slot must be refused");
-    CHECK(!vfx_runtime_set_arg(0, (uint8_t)slot, 4, 0), "an arg index past 0-3 must be refused");
+    CHECK(vfx_runtime_set_arg(0, (uint8_t)slot, VFX_RT_MAX_ARGS - 1, 0),
+        "the last arg index must be accepted");
+    CHECK(!vfx_runtime_set_arg(0, (uint8_t)slot, VFX_RT_MAX_ARGS, 0),
+        "an arg index past the last must be refused");
 }
 
 static void test_runtime_activate_is_independent_of_scene_content(void) {
@@ -3444,8 +3447,8 @@ static void test_runtime_gradient_add_stop_rejects_wrong_type_and_full_list(void
     struct vfx_rt_params out;
 
     CHECK(vfx_runtime_get_layer(0, (uint8_t)slot, &out) &&
-              out.num_stops == VFX_RT_GRADIENT_MAX_STOPS,
-        "the rejected stop must not have grown the count past the cap, got %d", out.num_stops);
+              out.num_colors == VFX_RT_GRADIENT_MAX_STOPS,
+        "the rejected stop must not have grown the count past the cap, got %d", out.num_colors);
 }
 
 static void test_runtime_gradient_get_stop_reads_back_what_was_added(void) {
@@ -3528,6 +3531,1097 @@ static void test_runtime_save_and_restore_round_trips(void) {
 
     CHECK(!vfx_runtime_restore_state(copy, (uint16_t)(len - 1)),
         "a blob of the wrong length must be refused rather than misread");
+}
+
+/* ---- runtime scenes: every generator -------------------------------------
+ *
+ * A runtime layer claims to be the very generator a devicetree layer would
+ * have been, only configured over several small messages instead of one
+ * compile-time struct. So each of these builds a layer at runtime the way a
+ * host would -- SCENE_ADD_LAYER, then SET_ARG for the extra numbers and
+ * SET_LIST_COLOR for the extra colours -- builds the same configuration as a
+ * compiled struct beside it, and requires the two to render the same frames.
+ */
+
+static struct vfx_rt_params rtx_base(uint8_t type, uint16_t hue, uint8_t sat, uint8_t bri) {
+    return (struct vfx_rt_params){
+        .type = type,
+        .zone_start = 0,
+        .zone_len = NPX,
+        .blend = VFX_BLEND_NORMAL,
+        .opacity = 255,
+        .hue = hue,
+        .sat = sat,
+        .bri = bri,
+    };
+}
+
+#define RTX_REF_LAYER(api_ptr, cfg_ptr, state_ptr)                                                 \
+    ((struct vfx_layer){.api = (api_ptr),                                                          \
+                        .zone = &full_zone,                                                        \
+                        .config = (cfg_ptr),                                                       \
+                        .state = (state_ptr),                                                      \
+                        .blend = VFX_BLEND_NORMAL,                                                 \
+                        .opacity = 255})
+
+/* Renders `ref` and channel 0's runtime scene at the same instants, after the
+ * same key press (and release, if release_ms is not negative), and returns how
+ * many frames differed. *lit is set if any pixel anywhere was not black, so a
+ * pair that only agree by both being dark prove nothing.
+ */
+static int rtx_frames_differing(const struct vfx_layer *ref, struct vfx_frame_ctx ctx, int key,
+                                int release_ms, bool *lit) {
+    static const uint32_t times[] = {0, 90, 250, 600, 1100, 1900, 3300};
+    struct vfx_layer layers[1] = {*ref};
+    const struct vfx_scene ref_scene = {.name = "ref", .layers = layers, .num_layers = 1};
+    const struct vfx_scene *rt = vfx_runtime_scene(0);
+    int differing = 0;
+    bool released = false;
+
+    if (key >= 0) {
+        ctx.time_ms = 0;
+        vfx_scene_key_event(&ref_scene, &ctx, (uint32_t)key, true, 0);
+        vfx_scene_key_event(rt, &ctx, (uint32_t)key, true, 0);
+    }
+
+    for (unsigned i = 0; i < sizeof(times) / sizeof(times[0]); i++) {
+        struct vfx_rgb want[NPX];
+        struct vfx_rgb got[NPX];
+
+        ctx.time_ms = times[i];
+
+        if (key >= 0 && release_ms >= 0 && !released && (int)times[i] >= release_ms) {
+            released = true;
+            vfx_scene_key_event(&ref_scene, &ctx, (uint32_t)key, false, times[i]);
+            vfx_scene_key_event(rt, &ctx, (uint32_t)key, false, times[i]);
+        }
+
+        vfx_render_frame(&ref_scene, &ctx, want, NULL);
+        vfx_render_frame(rt, &ctx, got, NULL);
+
+        if (memcmp(want, got, sizeof(want)) != 0) {
+            differing++;
+        }
+
+        for (int p = 0; p < NPX; p++) {
+            if (!rgb_is_black(got[p])) {
+                *lit = true;
+            }
+        }
+    }
+
+    return differing;
+}
+
+static void rtx_expect_match(const char *what, const struct vfx_layer *ref,
+                             const struct vfx_frame_ctx *ctx, int key, int release_ms,
+                             bool expect_lit) {
+    bool lit = false;
+    const int differing = rtx_frames_differing(ref, *ctx, key, release_ms, &lit);
+
+    CHECK(differing == 0, "%s: %d frame(s) differ from the compiled layer", what, differing);
+    CHECK(lit == expect_lit, "%s: lit=%d, expected %d", what, lit, expect_lit);
+}
+
+static void test_runtime_every_generator_type_can_be_added(void) {
+    CHECK(VFX_RT_TYPE_COUNT == 24, "all 24 generators are buildable at runtime, got %d",
+          VFX_RT_TYPE_COUNT);
+
+    for (uint8_t t = 0; t < VFX_RT_TYPE_COUNT; t++) {
+        vfx_runtime_init();
+
+        struct vfx_rt_params p = rtx_base(t, 100, 100, 100);
+
+        CHECK(vfx_runtime_add_layer(0, &p) == 0, "type %d must be buildable", t);
+        CHECK(vfx_runtime_scene(0) != NULL, "type %d must give the channel a scene", t);
+    }
+
+    vfx_runtime_init();
+
+    struct vfx_rt_params bad = rtx_base(VFX_RT_TYPE_COUNT, 0, 0, 0);
+
+    CHECK(vfx_runtime_add_layer(0, &bad) == VFX_RT_ERR_INVALID, "an unknown type must be refused");
+}
+
+static void test_runtime_water_matches_a_compiled_layer(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params p = rtx_base(VFX_RT_WATER, 200, 100, 30);
+
+    p.args[0] = 40;
+    p.args[1] = 60;
+    p.args[2] = 1500;
+    p.args[3] = 1200;
+
+    const int slot = vfx_runtime_add_layer(0, &p);
+
+    CHECK(slot >= 0, "water must be added");
+
+    /* Arguments 4 and 5 and the crest colour do not fit SCENE_ADD_LAYER; they
+     * arrive as follow-up messages, which is the point of this test.
+     */
+    CHECK(vfx_runtime_set_arg(0, (uint8_t)slot, 4, 180), "argument 4 must be accepted");
+    CHECK(vfx_runtime_set_arg(0, (uint8_t)slot, 5, 90), "argument 5 must be accepted");
+    CHECK(vfx_runtime_set_list_color(0, (uint8_t)slot, 0, 40, 50, 100), "the crest colour must be accepted");
+
+    struct vfx_water_cfg cfg = {.color = VFX_HSB(200, 100, 30),
+                                .crest_color = VFX_HSB(40, 50, 100),
+                                .wavelength = 40,
+                                .speed = 60,
+                                .lifetime_ms = 1500,
+                                .drop_rate_ms = 1200,
+                                .amplitude = 180,
+                                .damping = 90};
+    struct vfx_water_state st = {0};
+    const struct vfx_layer ref = RTX_REF_LAYER(&vfx_layer_water_api, &cfg, &st);
+    const struct vfx_frame_ctx ctx = grid_ctx();
+
+    rtx_expect_match("water", &ref, &ctx, 14, -1, true);
+}
+
+static void test_runtime_matrix_matches_a_compiled_layer(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params p = rtx_base(VFX_RT_MATRIX, 120, 100, 60);
+
+    p.args[0] = 150;
+    p.args[1] = 6;
+    p.args[2] = 800;
+    p.args[3] = 6;
+
+    const int slot = vfx_runtime_add_layer(0, &p);
+
+    CHECK(slot >= 0, "matrix must be added");
+    CHECK(vfx_runtime_set_arg(0, (uint8_t)slot, 4, 40), "argument 4 must be accepted");
+    CHECK(vfx_runtime_set_arg(0, (uint8_t)slot, 5, 2), "argument 5 must be accepted");
+    CHECK(vfx_runtime_set_list_color(0, (uint8_t)slot, 0, 120, 20, 100), "the head colour must be accepted");
+
+    struct vfx_matrix_cfg cfg = {.color = VFX_HSB(120, 100, 60),
+                                 .head_color = VFX_HSB(120, 20, 100),
+                                 .speed = 150,
+                                 .tail = 6,
+                                 .drop_rate_ms = 800,
+                                 .columns = 6,
+                                 .jitter = 40,
+                                 .head_size = 2};
+    struct vfx_matrix_state st = {0};
+    const struct vfx_layer ref = RTX_REF_LAYER(&vfx_layer_matrix_api, &cfg, &st);
+    const struct vfx_frame_ctx ctx = grid_ctx();
+
+    rtx_expect_match("matrix", &ref, &ctx, 14, -1, true);
+}
+
+static void test_runtime_fire_matches_a_compiled_layer(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params p = rtx_base(VFX_RT_FIRE, 10, 100, 40);
+
+    p.args[0] = 1800;
+    p.args[1] = 24;
+    p.args[2] = 200;
+    p.args[3] = 128;
+    p.flags = (uint8_t)(VFX_AXIS_Y << VFX_RT_FLAG_AXIS_SHIFT);
+
+    const int slot = vfx_runtime_add_layer(0, &p);
+
+    CHECK(slot >= 0, "fire must be added");
+    CHECK(vfx_runtime_set_list_color(0, (uint8_t)slot, 0, 50, 80, 100), "the tip colour must be accepted");
+
+    struct vfx_fire_cfg cfg = {.base_color = VFX_HSB(10, 100, 40),
+                               .tip_color = VFX_HSB(50, 80, 100),
+                               .period_ms = 1800,
+                               .cell = 24,
+                               .height = 200,
+                               .flicker = 128,
+                               .axis = VFX_AXIS_Y};
+    uint8_t st = 0;
+    const struct vfx_layer ref = RTX_REF_LAYER(&vfx_layer_fire_api, &cfg, &st);
+    const struct vfx_frame_ctx ctx = grid_ctx();
+
+    rtx_expect_match("fire", &ref, &ctx, -1, -1, true);
+}
+
+static void test_runtime_comet_matches_a_compiled_layer(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params p = rtx_base(VFX_RT_COMET, 260, 100, 80);
+
+    p.args[0] = 2000;
+    p.args[1] = 30;
+    p.args[2] = 2;
+    p.flags = (uint8_t)(VFX_AXIS_X << VFX_RT_FLAG_AXIS_SHIFT);
+
+    const int slot = vfx_runtime_add_layer(0, &p);
+
+    CHECK(slot >= 0, "comet must be added");
+    CHECK(vfx_runtime_set_list_color(0, (uint8_t)slot, 0, 300, 40, 100), "the head colour must be accepted");
+
+    struct vfx_comet_cfg cfg = {.color = VFX_HSB(260, 100, 80),
+                                .head_color = VFX_HSB(300, 40, 100),
+                                .period_ms = 2000,
+                                .tail = 30,
+                                .count = 2,
+                                .axis = VFX_AXIS_X};
+    uint8_t st = 0;
+    const struct vfx_layer ref = RTX_REF_LAYER(&vfx_layer_comet_api, &cfg, &st);
+    const struct vfx_frame_ctx ctx = grid_ctx();
+
+    rtx_expect_match("comet", &ref, &ctx, -1, -1, true);
+}
+
+static void test_runtime_cross_matches_a_compiled_layer(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params p = rtx_base(VFX_RT_CROSS, 0, 100, 100);
+
+    p.args[0] = 700;
+    p.args[1] = 0;
+    p.args[2] = 1;
+    p.args[3] = VFX_CROSS_BOTH;
+
+    const int slot = vfx_runtime_add_layer(0, &p);
+
+    CHECK(slot >= 0, "cross must be added");
+    CHECK(vfx_runtime_set_list_color(0, (uint8_t)slot, 0, 0, 0, 100), "the centre colour must be accepted");
+
+    struct vfx_cross_cfg cfg = {.color = VFX_HSB(0, 100, 100),
+                                .centre_color = VFX_HSB(0, 0, 100),
+                                .decay_ms = 700,
+                                .radius = 0,
+                                .thickness = 1,
+                                .axes = VFX_CROSS_BOTH};
+    struct vfx_cross_state st = {0};
+    const struct vfx_layer ref = RTX_REF_LAYER(&vfx_layer_cross_api, &cfg, &st);
+    const struct vfx_frame_ctx ctx = grid_ctx();
+
+    rtx_expect_match("cross", &ref, &ctx, 14, -1, true);
+}
+
+static void test_runtime_trail_matches_a_compiled_layer(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params p = rtx_base(VFX_RT_TRAIL, 30, 100, 100);
+
+    p.args[0] = 800;
+    p.args[1] = 2;
+    CHECK(vfx_runtime_add_layer(0, &p) >= 0, "trail must be added");
+
+    struct vfx_trail_cfg cfg = {.color = VFX_HSB(30, 100, 100), .decay_ms = 800, .spread = 2};
+    struct vfx_trail_state st = {0};
+    const struct vfx_layer ref = RTX_REF_LAYER(&vfx_layer_trail_api, &cfg, &st);
+    const struct vfx_frame_ctx ctx = grid_ctx();
+
+    rtx_expect_match("trail", &ref, &ctx, 14, -1, true);
+}
+
+static void test_runtime_hold_matches_a_compiled_layer(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params p = rtx_base(VFX_RT_HOLD, 280, 100, 100);
+
+    p.args[0] = 400;
+    CHECK(vfx_runtime_add_layer(0, &p) >= 0, "hold must be added");
+
+    struct vfx_hold_cfg cfg = {.color = VFX_HSB(280, 100, 100), .release_ms = 400};
+    struct vfx_hold_state st = {0};
+    const struct vfx_layer ref = RTX_REF_LAYER(&vfx_layer_hold_api, &cfg, &st);
+    const struct vfx_frame_ctx ctx = grid_ctx();
+
+    /* Held for 600 ms and then let go, so the samples cover lit, releasing and
+     * gone -- the one generator whose state depends on the release.
+     */
+    rtx_expect_match("hold", &ref, &ctx, 14, 600, true);
+}
+
+static void test_runtime_indicator_layers_match_compiled_ones(void) {
+    const struct vfx_status saved_status = *vfx_status_get();
+    struct vfx_status *status = vfx_status_mutable();
+    const struct vfx_frame_ctx ctx = test_ctx();
+    uint8_t st = 0;
+    int slot;
+
+    /* battery: low is the primary colour, high and empty the list's first two */
+    vfx_runtime_init();
+    {
+        struct vfx_rt_params p = rtx_base(VFX_RT_BATTERY, 0, 100, 100);
+
+        p.args[0] = 20;
+        slot = vfx_runtime_add_layer(0, &p);
+        CHECK(slot >= 0, "battery must be added");
+        vfx_runtime_set_list_color(0, (uint8_t)slot, 0, 120, 100, 100);
+        vfx_runtime_set_list_color(0, (uint8_t)slot, 1, 0, 0, 10);
+    }
+
+    struct vfx_battery_cfg bat = {.low_color = VFX_HSB(0, 100, 100),
+                                  .high_color = VFX_HSB(120, 100, 100),
+                                  .empty_color = VFX_HSB(0, 0, 10),
+                                  .warn_below = 20};
+    struct vfx_layer ref = RTX_REF_LAYER(&vfx_layer_battery_api, &bat, &st);
+    static const uint8_t levels[] = {100, 60, 15, 1};
+
+    for (unsigned i = 0; i < sizeof(levels); i++) {
+        status->battery_level = levels[i];
+        rtx_expect_match("battery", &ref, &ctx, -1, -1, true);
+    }
+
+    /* ble profile */
+    vfx_runtime_init();
+    {
+        struct vfx_rt_params p = rtx_base(VFX_RT_BLE_PROFILE, 210, 100, 100);
+
+        slot = vfx_runtime_add_layer(0, &p);
+        CHECK(slot >= 0, "ble profile must be added");
+        vfx_runtime_set_list_color(0, (uint8_t)slot, 0, 0, 100, 60);
+        vfx_runtime_set_list_color(0, (uint8_t)slot, 1, 120, 100, 80);
+    }
+
+    struct vfx_ble_profile_cfg ble = {.connected_color = VFX_HSB(210, 100, 100),
+                                      .disconnected_color = VFX_HSB(0, 100, 60),
+                                      .usb_color = VFX_HSB(120, 100, 80)};
+
+    ref = RTX_REF_LAYER(&vfx_layer_ble_profile_api, &ble, &st);
+
+    status->ble_profile = 2;
+    status->ble_connected = true;
+    status->usb_output = false;
+    rtx_expect_match("ble connected", &ref, &ctx, -1, -1, true);
+
+    status->ble_connected = false;
+    rtx_expect_match("ble disconnected", &ref, &ctx, -1, -1, true);
+
+    status->usb_output = true;
+    rtx_expect_match("ble usb", &ref, &ctx, -1, -1, true);
+
+    /* layer state: layer 0 is black on purpose, so it must draw nothing */
+    vfx_runtime_init();
+    {
+        struct vfx_rt_params p = rtx_base(VFX_RT_LAYER_STATE, 0, 0, 0);
+
+        slot = vfx_runtime_add_layer(0, &p);
+        CHECK(slot >= 0, "layer state must be added");
+        vfx_runtime_set_list_color(0, (uint8_t)slot, 0, 0, 0, 0);
+        vfx_runtime_set_list_color(0, (uint8_t)slot, 1, 120, 100, 80);
+        vfx_runtime_set_list_color(0, (uint8_t)slot, 2, 280, 100, 80);
+    }
+
+    static const uint32_t layer_colors[] = {0, VFX_HSB(120, 100, 80), VFX_HSB(280, 100, 80)};
+    struct vfx_layer_state_cfg ls = {.colors = layer_colors, .num_colors = 3};
+
+    ref = RTX_REF_LAYER(&vfx_layer_layer_state_api, &ls, &st);
+
+    status->active_layer = 0;
+    rtx_expect_match("layer state 0", &ref, &ctx, -1, -1, false);
+    status->active_layer = 1;
+    rtx_expect_match("layer state 1", &ref, &ctx, -1, -1, true);
+    status->active_layer = 2;
+    rtx_expect_match("layer state 2", &ref, &ctx, -1, -1, true);
+    status->active_layer = 9;
+    rtx_expect_match("layer state past the list", &ref, &ctx, -1, -1, false);
+
+    /* flag */
+    vfx_runtime_init();
+    {
+        struct vfx_rt_params p = rtx_base(VFX_RT_FLAG, 0, 90, 100);
+
+        p.args[0] = VFX_FLAG_LOCKS;
+        p.args[1] = VFX_LOCK_CAPS;
+        CHECK(vfx_runtime_add_layer(0, &p) >= 0, "flag must be added");
+    }
+
+    struct vfx_flag_cfg flag = {
+        .color = VFX_HSB(0, 90, 100), .source = VFX_FLAG_LOCKS, .mask = VFX_LOCK_CAPS};
+
+    ref = RTX_REF_LAYER(&vfx_layer_flag_api, &flag, &st);
+
+    status->locks = 0;
+    rtx_expect_match("flag off", &ref, &ctx, -1, -1, false);
+    status->locks = VFX_LOCK_CAPS;
+    rtx_expect_match("flag on", &ref, &ctx, -1, -1, true);
+    status->locks = VFX_LOCK_NUM;
+    rtx_expect_match("flag wrong lock", &ref, &ctx, -1, -1, false);
+
+    /* wpm, as a colour and then as a bar */
+    vfx_runtime_init();
+    {
+        struct vfx_rt_params p = rtx_base(VFX_RT_WPM, 210, 90, 40);
+
+        p.args[0] = 80;
+        p.args[1] = 0;
+        slot = vfx_runtime_add_layer(0, &p);
+        CHECK(slot >= 0, "wpm must be added");
+        vfx_runtime_set_list_color(0, (uint8_t)slot, 0, 0, 90, 100);
+    }
+
+    struct vfx_wpm_cfg wpm = {.idle_color = VFX_HSB(210, 90, 40),
+                              .fast_color = VFX_HSB(0, 90, 100),
+                              .full = 80,
+                              .bar = 0};
+
+    ref = RTX_REF_LAYER(&vfx_layer_wpm_api, &wpm, &st);
+
+    static const uint8_t speeds[] = {0, 40, 80, 200};
+
+    for (unsigned i = 0; i < sizeof(speeds); i++) {
+        status->wpm = speeds[i];
+        rtx_expect_match("wpm colour", &ref, &ctx, -1, -1, true);
+    }
+
+    CHECK(vfx_runtime_set_arg(0, (uint8_t)slot, 1, 1), "wpm bar must be switched on");
+    wpm.bar = 1;
+
+    for (unsigned i = 1; i < sizeof(speeds); i++) {
+        status->wpm = speeds[i];
+        rtx_expect_match("wpm bar", &ref, &ctx, -1, -1, true);
+    }
+
+    /* peripheral battery: needs all three list colours */
+    vfx_runtime_init();
+    {
+        struct vfx_rt_params p = rtx_base(VFX_RT_PERIPHERAL_BATTERY, 0, 100, 100);
+
+        p.args[0] = 0;
+        p.args[1] = 20;
+        slot = vfx_runtime_add_layer(0, &p);
+        CHECK(slot >= 0, "peripheral battery must be added");
+        vfx_runtime_set_list_color(0, (uint8_t)slot, 0, 120, 100, 100);
+        vfx_runtime_set_list_color(0, (uint8_t)slot, 1, 0, 0, 10);
+        vfx_runtime_set_list_color(0, (uint8_t)slot, 2, 240, 60, 30);
+    }
+
+    struct vfx_peripheral_battery_cfg pb = {.low_color = VFX_HSB(0, 100, 100),
+                                            .high_color = VFX_HSB(120, 100, 100),
+                                            .empty_color = VFX_HSB(0, 0, 10),
+                                            .unknown_color = VFX_HSB(240, 60, 30),
+                                            .source = 0,
+                                            .warn_below = 20};
+
+    ref = RTX_REF_LAYER(&vfx_layer_peripheral_battery_api, &pb, &st);
+
+    static const uint8_t cells[] = {0, 10, 50, 100};
+
+    for (unsigned i = 0; i < sizeof(cells); i++) {
+        status->peripheral_battery[0] = cells[i];
+        rtx_expect_match("peripheral battery", &ref, &ctx, -1, -1, true);
+    }
+
+    *status = saved_status;
+}
+
+static void test_runtime_trail_and_hold_share_a_bounded_pool(void) {
+    vfx_runtime_init();
+
+    int slots[VFX_RT_HEAVY_STATES];
+
+    for (int i = 0; i < VFX_RT_HEAVY_STATES; i++) {
+        struct vfx_rt_params p = rtx_base(i % 2 ? VFX_RT_HOLD : VFX_RT_TRAIL, 0, 100, 100);
+
+        slots[i] = vfx_runtime_add_layer(0, &p);
+        CHECK(slots[i] >= 0, "heavy layer %d must fit the pool", i);
+    }
+
+    struct vfx_rt_params trail = rtx_base(VFX_RT_TRAIL, 0, 100, 100);
+    uint8_t count;
+    bool active;
+
+    CHECK(vfx_runtime_add_layer(0, &trail) == VFX_RT_ERR_FULL,
+          "one trail or hold too many must be refused as a full pool");
+    vfx_runtime_get_info(0, &count, &active);
+    CHECK(count == VFX_RT_HEAVY_STATES, "a refused add must not leave a layer behind, got %d", count);
+
+    /* Everything else is unaffected by the heavy pool being empty. */
+    struct vfx_rt_params solid = rt_solid(0, NPX, 0);
+
+    CHECK(vfx_runtime_add_layer(0, &solid) >= 0, "a light layer must still fit beside full heavy states");
+
+    /* Editing a heavy layer keeps the state it holds rather than taking another. */
+    CHECK(vfx_runtime_set_arg(0, (uint8_t)slots[0], 0, 300), "editing a trail must succeed");
+    CHECK(vfx_runtime_add_layer(0, &trail) == VFX_RT_ERR_FULL,
+          "an edit must not have released or duplicated the heavy state");
+
+    /* Another channel has a pool of its own. */
+    CHECK(vfx_runtime_add_layer(1, &trail) >= 0, "each channel has its own heavy pool");
+
+    /* Removing frees exactly one. */
+    CHECK(vfx_runtime_remove_layer(0, (uint8_t)slots[0]), "removal must succeed");
+    CHECK(vfx_runtime_add_layer(0, &trail) >= 0, "a removed heavy layer must free its state");
+    CHECK(vfx_runtime_add_layer(0, &trail) == VFX_RT_ERR_FULL, "and only one");
+}
+
+static void test_runtime_colour_list_grows_reads_back_and_is_bounded(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params p = rtx_base(VFX_RT_WPM, 210, 90, 40);
+
+    p.args[0] = 100;
+
+    const int slot = vfx_runtime_add_layer(0, &p);
+    uint16_t hue;
+    uint8_t sat;
+    uint8_t bri;
+    struct vfx_rt_params got;
+
+    CHECK(vfx_runtime_set_list_color(0, (uint8_t)slot, 2, 400, 70, 60),
+          "setting a colour past the end must grow the list");
+    vfx_runtime_get_layer(0, (uint8_t)slot, &got);
+    CHECK(got.num_colors == 3, "the list must have grown to idx+1, got %d", got.num_colors);
+
+    CHECK(vfx_runtime_get_list_color(0, (uint8_t)slot, 2, &hue, &sat, &bri) && hue == 40 &&
+              sat == 70 && bri == 60,
+          "a hue past 359 wraps, and the rest reads back: %d,%d,%d", hue, sat, bri);
+    CHECK(vfx_runtime_get_list_color(0, (uint8_t)slot, 0, &hue, &sat, &bri) && bri == 0,
+          "the entries a growth skipped must be black, got bri %d", bri);
+    CHECK(!vfx_runtime_get_list_color(0, (uint8_t)slot, 3, &hue, &sat, &bri),
+          "reading past the list must be refused");
+    CHECK(!vfx_runtime_set_list_color(0, (uint8_t)slot, VFX_RT_MAX_COLORS, 0, 0, 0),
+          "an index at the cap must be refused");
+    CHECK(vfx_runtime_set_list_color(0, (uint8_t)slot, VFX_RT_MAX_COLORS - 1, 0, 0, 0),
+          "the last index must be accepted");
+    CHECK(!vfx_runtime_set_list_color(0, (uint8_t)(slot + 1), 0, 0, 0, 0),
+          "an unused slot must be refused");
+
+    /* Changing the second colour changes what the layer draws. */
+    vfx_runtime_set_list_color(0, (uint8_t)slot, 0, 0, 100, 100);
+
+    const struct vfx_status saved_status = *vfx_status_get();
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    vfx_status_mutable()->wpm = 200;
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, out, NULL);
+    CHECK(out[0].r > out[0].g, "flat out with a red fast colour must be red");
+
+    vfx_runtime_set_list_color(0, (uint8_t)slot, 0, 120, 100, 100);
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, out, NULL);
+    CHECK(out[0].g > out[0].r, "and green once the colour is changed");
+
+    *vfx_status_mutable() = saved_status;
+}
+
+static bool rtx_lit_exactly(uint8_t ch, const uint8_t *px, int n) {
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    vfx_render_frame(vfx_runtime_scene(ch), &ctx, out, NULL);
+
+    for (int i = 0; i < NPX; i++) {
+        bool want = false;
+
+        for (int k = 0; k < n; k++) {
+            if (px[k] == i) {
+                want = true;
+            }
+        }
+
+        if (!rgb_is_black(out[i]) != want) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static void test_runtime_zone_is_built_from_pieces(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params p = rt_solid(0, NPX, 0);
+    const uint8_t s = (uint8_t)vfx_runtime_add_layer(0, &p);
+
+    const uint8_t first[] = {1, 3, 5};
+    const uint8_t second[] = {7, 9};
+    const uint8_t both[] = {1, 3, 5, 7, 9};
+
+    CHECK(vfx_runtime_set_zone(0, s, VFX_RT_ZONE_PIXELS, 0, first, 3), "the first chunk must land");
+    CHECK(rtx_lit_exactly(0, first, 3), "only the listed pixels light");
+
+    /* A chunk must start exactly where the list ends: a lost or repeated one
+     * is a refusal, not a silently short or scrambled zone.
+     */
+    CHECK(!vfx_runtime_set_zone(0, s, VFX_RT_ZONE_PIXELS, 4, second, 2), "a skipped offset is refused");
+    CHECK(!vfx_runtime_set_zone(0, s, VFX_RT_ZONE_PIXELS, 2, second, 2), "an overlapping offset is refused");
+    CHECK(rtx_lit_exactly(0, first, 3), "a refused chunk must change nothing");
+
+    CHECK(vfx_runtime_set_zone(0, s, VFX_RT_ZONE_PIXELS, 3, second, 2), "the next chunk must append");
+    CHECK(rtx_lit_exactly(0, both, 5), "the list is now both chunks");
+
+    uint8_t big[VFX_RT_MAX_ZONE_PIXELS];
+
+    memset(big, 2, sizeof(big));
+    CHECK(!vfx_runtime_set_zone(0, s, VFX_RT_ZONE_PIXELS, 5, big, VFX_RT_MAX_ZONE_PIXELS),
+          "a list that would outgrow the pool is refused");
+    CHECK(rtx_lit_exactly(0, both, 5), "and leaves the list as it was");
+
+    CHECK(vfx_runtime_set_zone(0, s, VFX_RT_ZONE_PIXELS, 0, big, VFX_RT_MAX_ZONE_PIXELS),
+          "a full-size list starting at 0 must fit");
+
+    const uint8_t two[] = {2};
+
+    CHECK(rtx_lit_exactly(0, two, 1), "offset 0 starts the list over");
+
+    const uint8_t range[] = {4, 3};
+    const uint8_t range_lit[] = {4, 5, 6};
+
+    CHECK(vfx_runtime_set_zone(0, s, VFX_RT_ZONE_RANGE, 0, range, 2), "a range must be accepted");
+    CHECK(rtx_lit_exactly(0, range_lit, 3), "a range lights start..start+len");
+    CHECK(!vfx_runtime_set_zone(0, s, VFX_RT_ZONE_RANGE, 0, range, 1), "a range needs start and length");
+    CHECK(!vfx_runtime_set_zone(0, s, 3, 0, range, 2), "an unknown kind is refused");
+    CHECK(!vfx_runtime_set_zone(0, (uint8_t)(s + 1), VFX_RT_ZONE_RANGE, 0, range, 2), "an unused slot is refused");
+    CHECK(!vfx_runtime_set_zone(VFX_MAX_CHANNELS, s, VFX_RT_ZONE_RANGE, 0, range, 2),
+          "a channel past the end is refused");
+
+    /* Only offset 0 may change what kind of list this is. */
+    CHECK(vfx_runtime_set_zone(0, s, VFX_RT_ZONE_PIXELS, 0, first, 3), "back to a pixel list");
+    CHECK(!vfx_runtime_set_zone(0, s, VFX_RT_ZONE_KEYS, 3, second, 2),
+          "a chunk under another kind, mid-list, is refused");
+    CHECK(vfx_runtime_set_zone(0, s, VFX_RT_ZONE_KEYS, 0, first, 3), "offset 0 may switch to keys");
+}
+
+static void test_runtime_get_zone_reads_back_in_chunks(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params p = rt_solid(0, NPX, 0);
+    const uint8_t s = (uint8_t)vfx_runtime_add_layer(0, &p);
+    uint8_t list[20];
+    uint8_t data[VFX_HID_ZONE_CHUNK];
+    uint8_t kind;
+    uint8_t total;
+    uint8_t n;
+
+    for (uint8_t i = 0; i < sizeof(list); i++) {
+        list[i] = (uint8_t)(i + 1);
+    }
+
+    CHECK(vfx_runtime_set_zone(0, s, VFX_RT_ZONE_PIXELS, 0, list, 12), "first chunk");
+    CHECK(vfx_runtime_set_zone(0, s, VFX_RT_ZONE_PIXELS, 12, &list[12], 8), "second chunk");
+
+    CHECK(vfx_runtime_get_zone(0, s, 0, &kind, &total, data, VFX_HID_ZONE_CHUNK, &n) &&
+              kind == VFX_RT_ZONE_PIXELS && total == 20 && n == 12 && memcmp(data, list, 12) == 0,
+          "the first chunk reads back: kind %d total %d n %d", kind, total, n);
+    CHECK(vfx_runtime_get_zone(0, s, 12, &kind, &total, data, VFX_HID_ZONE_CHUNK, &n) && n == 8 &&
+              memcmp(data, &list[12], 8) == 0,
+          "the tail reads back short: n %d", n);
+    CHECK(vfx_runtime_get_zone(0, s, 20, &kind, &total, data, VFX_HID_ZONE_CHUNK, &n) && n == 0,
+          "an offset at the end is a valid, empty read");
+    CHECK(!vfx_runtime_get_zone(0, s, 21, &kind, &total, data, VFX_HID_ZONE_CHUNK, &n),
+          "an offset past the end is refused");
+    CHECK(vfx_runtime_get_zone(0, s, 0, &kind, &total, data, 5, &n) && n == 5,
+          "a small buffer limits the read, got %d", n);
+
+    const uint8_t range[] = {4, 3};
+
+    vfx_runtime_set_zone(0, s, VFX_RT_ZONE_RANGE, 0, range, 2);
+    CHECK(vfx_runtime_get_zone(0, s, 0, &kind, &total, data, VFX_HID_ZONE_CHUNK, &n) &&
+              kind == VFX_RT_ZONE_RANGE && total == 2 && n == 2 && data[0] == 4 && data[1] == 3,
+          "a range reads back as start then length");
+
+    vfx_runtime_set_zone(0, s, VFX_RT_ZONE_KEYS, 0, list, 4);
+    CHECK(vfx_runtime_get_zone(0, s, 0, &kind, &total, data, VFX_HID_ZONE_CHUNK, &n) &&
+              kind == VFX_RT_ZONE_KEYS && total == 4 && n == 4 && memcmp(data, list, 4) == 0,
+          "a key list reads back too");
+}
+
+static void test_runtime_key_zone_resolves_through_the_key_context(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params p = rt_solid(0, NPX, 0);
+    const uint8_t s = (uint8_t)vfx_runtime_add_layer(0, &p);
+    const uint8_t keys[] = {3, 9, 27};
+    const uint8_t none[] = {0};
+
+    CHECK(vfx_runtime_set_zone(0, s, VFX_RT_ZONE_KEYS, 0, keys, 3), "a key list must be accepted");
+
+    /* Nothing has said where the keys are yet, so the zone is empty rather
+     * than lit at whatever positions happen to equal the key numbers.
+     */
+    CHECK(rtx_lit_exactly(0, none, 0), "before a key context exists a key zone lights nothing");
+
+    struct vfx_frame_ctx ctx = grid_ctx(); /* key n sits on pixel n */
+
+    vfx_runtime_set_key_context(&ctx);
+    CHECK(rtx_lit_exactly(0, keys, 3), "a key zone lights the pixels its keys sit on");
+
+    /* A different key map moves the zone without touching the layer: this is
+     * what lets a scene restored from flash land once the engine has a map.
+     */
+    static uint8_t shifted[NPX];
+
+    for (int i = 0; i < NPX; i++) {
+        shifted[i] = (uint8_t)((i + 1) % NPX);
+    }
+
+    ctx.key_pixels = shifted;
+    vfx_runtime_set_key_context(&ctx);
+
+    const uint8_t moved[] = {4, 10, 28};
+
+    CHECK(rtx_lit_exactly(0, moved, 3), "a new key map must re-resolve every key zone");
+}
+
+static void test_runtime_options_change_how_a_layer_composites(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params red = rt_solid(0, NPX, 0);
+    struct vfx_rt_params green = rt_solid(0, NPX, 120);
+
+    vfx_runtime_add_layer(0, &red);
+
+    const uint8_t g = (uint8_t)vfx_runtime_add_layer(0, &green);
+    struct vfx_rgb out[NPX];
+    struct vfx_frame_ctx ctx = test_ctx();
+
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, out, NULL);
+    CHECK(out[0].r < 10 && out[0].g > 200, "normal blend: green covers red, got %d,%d,%d", out[0].r,
+          out[0].g, out[0].b);
+
+    /* Blend is copied into the scene's own layer array, so this only shows if
+     * the option change rebuilt that copy and not just the slot behind it.
+     */
+    CHECK(vfx_runtime_set_opts(0, g, VFX_BLEND_ADD, 255, VFX_SRC_NONE, 0, 0, 0), "options must be accepted");
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, out, NULL);
+    CHECK(out[0].r > 200 && out[0].g > 200, "additive blend: red and green make yellow, got %d,%d,%d",
+          out[0].r, out[0].g, out[0].b);
+
+    CHECK(vfx_runtime_set_opts(0, g, VFX_BLEND_NORMAL, 0, VFX_SRC_NONE, 0, 0, 0), "options must be accepted");
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, out, NULL);
+    CHECK(out[0].r > 200 && out[0].g < 10, "opacity 0: the red beneath shows, got %d,%d,%d", out[0].r,
+          out[0].g, out[0].b);
+
+    /* An opacity source: full when someone is at the keyboard, the minimum
+     * when not.
+     */
+    const struct vfx_status saved_status = *vfx_status_get();
+
+    CHECK(vfx_runtime_set_opts(0, g, VFX_BLEND_NORMAL, 255, VFX_SRC_ACTIVITY, 0, 0, 7),
+          "an opacity source must be accepted");
+
+    vfx_status_mutable()->active = true;
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, out, NULL);
+    CHECK(out[0].g > 200, "active: the layer is at its own opacity, got %d,%d,%d", out[0].r, out[0].g,
+          out[0].b);
+
+    vfx_status_mutable()->active = false;
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, out, NULL);
+    CHECK(out[0].g < 10, "idle: the layer drops to its minimum, got %d,%d,%d", out[0].r, out[0].g,
+          out[0].b);
+
+    *vfx_status_mutable() = saved_status;
+
+    struct vfx_rt_params read;
+
+    CHECK(vfx_runtime_get_layer(0, g, &read) && read.blend == VFX_BLEND_NORMAL && read.opacity == 255 &&
+              read.opacity_src == VFX_SRC_ACTIVITY && read.opacity_min == 0 && read.tune_id == 7,
+          "the options must read back through get_layer");
+
+    CHECK(!vfx_runtime_set_opts(0, g, VFX_BLEND_MAX + 1, 255, VFX_SRC_NONE, 0, 0, 0),
+          "a blend this build does not know is refused");
+    CHECK(!vfx_runtime_set_opts(0, g, VFX_BLEND_NORMAL, 255, VFX_SRC_ACTIVITY + 1, 0, 0, 0),
+          "an opacity source this build does not know is refused");
+    CHECK(vfx_runtime_get_layer(0, g, &read) && read.opacity_src == VFX_SRC_ACTIVITY,
+          "a refused change must leave the options alone");
+    CHECK(!vfx_runtime_set_opts(0, (uint8_t)(g + 3), VFX_BLEND_NORMAL, 255, VFX_SRC_NONE, 0, 0, 0),
+          "an unused slot is refused");
+}
+
+static void test_runtime_save_and_restore_keeps_everything_a_layer_now_has(void) {
+    vfx_runtime_init();
+
+    struct vfx_frame_ctx ctx = grid_ctx();
+
+    vfx_runtime_set_key_context(&ctx);
+
+    /* Channel 0: a water layer using every new part -- extra arguments, a
+     * crest colour, a pixel zone and options -- and a trail.
+     */
+    struct vfx_rt_params water = rtx_base(VFX_RT_WATER, 200, 100, 30);
+
+    water.args[0] = 40;
+    water.args[1] = 60;
+    water.args[2] = 1500;
+    water.args[3] = 1200;
+
+    const uint8_t w = (uint8_t)vfx_runtime_add_layer(0, &water);
+    uint8_t pixels[VFX_HID_ZONE_CHUNK];
+
+    for (uint8_t i = 0; i < sizeof(pixels); i++) {
+        pixels[i] = (uint8_t)(i * 2);
+    }
+
+    vfx_runtime_set_arg(0, w, 4, 180);
+    vfx_runtime_set_arg(0, w, 5, 90);
+    vfx_runtime_set_list_color(0, w, 0, 40, 50, 100);
+    vfx_runtime_set_zone(0, w, VFX_RT_ZONE_PIXELS, 0, pixels, sizeof(pixels));
+    vfx_runtime_set_opts(0, w, VFX_BLEND_ADD, 200, VFX_SRC_WPM, 20, 90, 3);
+
+    struct vfx_rt_params trail = rtx_base(VFX_RT_TRAIL, 30, 100, 100);
+    const uint8_t t = (uint8_t)vfx_runtime_add_layer(0, &trail);
+
+    /* Channel 1: a layer on keys. */
+    struct vfx_rt_params solid = rt_solid(0, NPX, 60);
+    const uint8_t k = (uint8_t)vfx_runtime_add_layer(1, &solid);
+    const uint8_t keys[] = {3, 9, 27};
+
+    vfx_runtime_set_zone(1, k, VFX_RT_ZONE_KEYS, 0, keys, 3);
+    vfx_runtime_set_active(0, true);
+
+    struct vfx_rgb before[NPX];
+
+    ctx.time_ms = 700;
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, before, NULL);
+
+    uint16_t len;
+    const void *blob = vfx_runtime_state(&len);
+    uint8_t copy[8192];
+
+    CHECK(len <= sizeof(copy), "test buffer must hold the real blob (%u bytes)", len);
+    memcpy(copy, blob, len);
+
+    vfx_runtime_init();
+    CHECK(vfx_runtime_restore_state(copy, len), "restoring the blob must succeed");
+
+    struct vfx_rgb after[NPX];
+
+    vfx_render_frame(vfx_runtime_scene(0), &ctx, after, NULL);
+    CHECK(memcmp(before, after, sizeof(before)) == 0,
+          "the water layer must render the same after restore");
+
+    struct vfx_rt_params got;
+
+    CHECK(vfx_runtime_get_layer(0, w, &got), "the water slot must still be there");
+    CHECK(got.args[4] == 180 && got.args[5] == 90, "arguments 4 and 5 must survive: %d,%d", got.args[4],
+          got.args[5]);
+    CHECK(got.num_colors == 1 && got.colors[0] == VFX_HSB(40, 50, 100), "the crest colour must survive");
+    CHECK(got.zone_kind == VFX_RT_ZONE_PIXELS && got.zone_count == sizeof(pixels) &&
+              memcmp(got.zone_items, pixels, sizeof(pixels)) == 0,
+          "the pixel zone must survive");
+    CHECK(got.blend == VFX_BLEND_ADD && got.opacity == 200 && got.opacity_src == VFX_SRC_WPM &&
+              got.opacity_min == 20 && got.opacity_full == 90 && got.tune_id == 3,
+          "the options must survive");
+    CHECK(vfx_runtime_get_layer(0, t, &got) && got.type == VFX_RT_TRAIL, "the trail must survive");
+
+    /* The trail took a heavy state on restore, same as it did when added. */
+    struct vfx_rt_params more = rtx_base(VFX_RT_HOLD, 0, 100, 100);
+
+    CHECK(vfx_runtime_add_layer(0, &more) >= 0, "one heavy state is left after restoring one trail");
+
+    /* A key zone has nothing to resolve through until the engine says where
+     * the keys are, and then lands where it was.
+     */
+    const uint8_t none[] = {0};
+
+    CHECK(rtx_lit_exactly(1, none, 0), "a restored key zone lights nothing before a key context");
+    vfx_runtime_set_key_context(&ctx);
+    CHECK(rtx_lit_exactly(1, keys, 3), "and lands on its keys once it has one");
+}
+
+static void test_runtime_restore_drops_what_cannot_be_trusted(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params p = rt_solid(0, NPX, 0);
+
+    for (int i = 0; i < 5; i++) {
+        vfx_runtime_add_layer(0, &p);
+    }
+
+    uint16_t len;
+    struct vfx_rt_saved_channel blob[VFX_MAX_CHANNELS];
+
+    memcpy(blob, vfx_runtime_state(&len), sizeof(blob));
+    CHECK(len == sizeof(blob), "the blob is an array of the saved channel type");
+
+    blob[0].slots[0].params.type = VFX_RT_TYPE_COUNT;
+    blob[0].slots[1].params.zone_count = VFX_RT_MAX_ZONE_PIXELS + 1;
+    blob[0].slots[2].params.num_colors = VFX_RT_MAX_COLORS + 1;
+    blob[0].slots[3].params.zone_kind = 9;
+
+    vfx_runtime_init();
+    CHECK(vfx_runtime_restore_state(blob, sizeof(blob)), "a blob of the right length is accepted");
+
+    uint8_t count;
+    bool active;
+    struct vfx_rt_params out;
+
+    vfx_runtime_get_info(0, &count, &active);
+    CHECK(count == 1, "only the one valid layer is kept, got %d", count);
+    CHECK(!vfx_runtime_get_layer(0, 0, &out) && !vfx_runtime_get_layer(0, 1, &out) &&
+              !vfx_runtime_get_layer(0, 2, &out) && !vfx_runtime_get_layer(0, 3, &out),
+          "each layer with a bad type, list length or zone kind is dropped");
+    CHECK(vfx_runtime_get_layer(0, 4, &out), "the valid layer survives");
+
+    /* More trail and hold layers than there are heavy states: the extras have
+     * nothing to draw with and are dropped, not left half built.
+     */
+    memset(blob, 0, sizeof(blob));
+
+    const int wanted = VFX_RT_HEAVY_STATES + 1;
+
+    for (int i = 0; i < wanted && i < VFX_RT_MAX_LAYERS; i++) {
+        blob[0].slots[i].params = rtx_base(VFX_RT_TRAIL, 0, 100, 100);
+        blob[0].slots[i].used = true;
+        blob[0].render_order[i] = (uint8_t)i;
+        blob[0].count = (uint8_t)(i + 1);
+    }
+
+    vfx_runtime_init();
+    CHECK(vfx_runtime_restore_state(blob, sizeof(blob)), "the second blob is accepted");
+    vfx_runtime_get_info(0, &count, &active);
+    CHECK(count == VFX_RT_HEAVY_STATES, "only as many trails as heavy states survive, got %d", count);
+    CHECK(vfx_runtime_get_layer(0, (uint8_t)(VFX_RT_HEAVY_STATES - 1), &out),
+          "the earlier ones are the ones kept");
+    CHECK(!vfx_runtime_get_layer(0, (uint8_t)VFX_RT_HEAVY_STATES, &out), "and the extra one is dropped");
+}
+
+/* ---- host control: the ops added for full generator coverage ------------- */
+
+static void test_hid_new_ops_have_the_lengths_the_relay_needs(void) {
+    CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_SET_LIST_COLOR) == 8, "SET_LIST_COLOR is 8 bytes");
+    CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_GET_LIST_COLOR) == 4, "GET_LIST_COLOR is 4 bytes");
+    CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_SET_ZONE) == 18, "SET_ZONE is 18 bytes");
+    CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_GET_ZONE) == 4, "GET_ZONE is 4 bytes");
+    CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_SET_OPTS) == 9, "SET_OPTS is 9 bytes");
+    CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_GET_LAYER_EXT) == 3, "GET_LAYER_EXT is 3 bytes");
+    CHECK(vfx_hid_request_len(0x1A) == 0, "the first op past the last is unknown");
+
+    /* Every op that changes a scene is relayed to a split's peripheral, which
+     * can carry VFX_RELAY_MAX_BYTES of it.
+     */
+    static const uint8_t mutating[] = {
+        VFX_HID_OP_SCENE_RESET,          VFX_HID_OP_SCENE_ADD_LAYER,
+        VFX_HID_OP_SCENE_SET_ARG,        VFX_HID_OP_SCENE_SET_COLOR,
+        VFX_HID_OP_SCENE_REMOVE_LAYER,   VFX_HID_OP_SCENE_MOVE_LAYER,
+        VFX_HID_OP_SCENE_ACTIVATE,       VFX_HID_OP_SCENE_DEACTIVATE,
+        VFX_HID_OP_SCENE_GRADIENT_ADD_STOP, VFX_HID_OP_SCENE_SET_LIST_COLOR,
+        VFX_HID_OP_SCENE_SET_ZONE,       VFX_HID_OP_SCENE_SET_OPTS,
+    };
+
+    for (unsigned i = 0; i < sizeof(mutating); i++) {
+        const uint8_t len = vfx_hid_request_len(mutating[i]);
+
+        CHECK(len > 0 && len <= VFX_RELAY_MAX_BYTES, "op 0x%02x is %d bytes, over the relay's %d",
+              mutating[i], len, VFX_RELAY_MAX_BYTES);
+    }
+}
+
+static void test_hid_list_color_ops_decode_and_encode(void) {
+    const uint8_t set[] = {VFX_HID_OP_SCENE_SET_LIST_COLOR, 1, 2, 3, 0x2C, 0x01, 50, 60};
+    struct vfx_hid_request out;
+
+    CHECK(vfx_hid_decode(set, sizeof(set), &out), "SET_LIST_COLOR must decode");
+    CHECK(out.ch == 1 && out.slot == 2 && out.arg_idx == 3 && out.hue == 300 && out.sat == 50 &&
+              out.bri == 60,
+          "every field must round-trip: %d,%d,%d,%d,%d,%d", out.ch, out.slot, out.arg_idx, out.hue,
+          out.sat, out.bri);
+    CHECK(!vfx_hid_decode(set, sizeof(set) - 1, &out), "a short SET_LIST_COLOR is refused");
+
+    const uint8_t get[] = {VFX_HID_OP_SCENE_GET_LIST_COLOR, 1, 2, 3};
+
+    CHECK(vfx_hid_decode(get, sizeof(get), &out) && out.ch == 1 && out.slot == 2 && out.arg_idx == 3,
+          "GET_LIST_COLOR must decode");
+
+    uint8_t buf[VFX_HID_MAX_REPLY_LEN];
+    const uint8_t len = vfx_hid_encode_list_color(1, 2, 3, 300, 50, 60, VFX_HID_STATUS_OK, buf);
+
+    CHECK(len == 9, "LIST_COLOR is nine bytes, got %d", len);
+    CHECK(buf[0] == (VFX_HID_OP_SCENE_GET_LIST_COLOR | VFX_HID_REPLY_BIT), "reply op");
+    CHECK(buf[1] == 1 && buf[2] == 2 && buf[3] == 3, "ch, slot and index");
+    CHECK(buf[4] == 0x2C && buf[5] == 0x01 && buf[6] == 50 && buf[7] == 60, "hue, sat and bri");
+    CHECK(buf[8] == VFX_HID_STATUS_OK, "status is last");
+}
+
+static void test_hid_zone_ops_decode_and_encode(void) {
+    uint8_t set[18] = {VFX_HID_OP_SCENE_SET_ZONE, 1, 2, VFX_RT_ZONE_KEYS, 12, 5};
+
+    for (uint8_t i = 0; i < VFX_HID_ZONE_CHUNK; i++) {
+        set[6 + i] = (uint8_t)(10 + i);
+    }
+
+    struct vfx_hid_request out;
+
+    CHECK(vfx_hid_decode(set, sizeof(set), &out), "SET_ZONE must decode");
+    CHECK(out.ch == 1 && out.slot == 2 && out.zone_kind == VFX_RT_ZONE_KEYS && out.zone_offset == 12 &&
+              out.zone_count == 5,
+          "header must round-trip: %d,%d,%d,%d,%d", out.ch, out.slot, out.zone_kind, out.zone_offset,
+          out.zone_count);
+    CHECK(memcmp(out.zone_data, &set[6], VFX_HID_ZONE_CHUNK) == 0, "all twelve data bytes must round-trip");
+    CHECK(!vfx_hid_decode(set, sizeof(set) - 1, &out), "a SET_ZONE short of its data is refused");
+
+    /* A count past the data field would make the consumer read beyond it. */
+    set[5] = VFX_HID_ZONE_CHUNK + 1;
+    CHECK(!vfx_hid_decode(set, sizeof(set), &out), "a SET_ZONE claiming more than a chunk is refused");
+    set[5] = VFX_HID_ZONE_CHUNK;
+    CHECK(vfx_hid_decode(set, sizeof(set), &out), "a full chunk is fine");
+    set[5] = 5;
+
+    const uint8_t get[] = {VFX_HID_OP_SCENE_GET_ZONE, 1, 2, 12};
+
+    CHECK(vfx_hid_decode(get, sizeof(get), &out) && out.slot == 2 && out.zone_offset == 12,
+          "GET_ZONE must decode");
+
+    uint8_t buf[VFX_HID_MAX_REPLY_LEN];
+    const uint8_t data[] = {9, 8, 7, 6, 5, 4, 3, 2};
+    const uint8_t len = vfx_hid_encode_zone(1, 2, VFX_RT_ZONE_PIXELS, 20, 12, data, sizeof(data),
+                                            VFX_HID_STATUS_OK, buf);
+
+    CHECK(len == 20, "ZONE is always twenty bytes, whatever it carries, got %d", len);
+    CHECK(buf[0] == (VFX_HID_OP_SCENE_GET_ZONE | VFX_HID_REPLY_BIT), "reply op");
+    CHECK(buf[1] == 1 && buf[2] == 2 && buf[3] == VFX_RT_ZONE_PIXELS && buf[4] == 20 && buf[5] == 12 &&
+              buf[6] == 8,
+          "header: ch, slot, kind, total, offset, count");
+    CHECK(memcmp(&buf[7], data, sizeof(data)) == 0, "the data follows");
+    CHECK(buf[15] == 0 && buf[18] == 0, "the unused data bytes are zero, not stack garbage");
+    CHECK(buf[19] == VFX_HID_STATUS_OK, "status is last");
+}
+
+static void test_hid_opts_and_layer_ext_decode_and_encode(void) {
+    const uint8_t opts[] = {VFX_HID_OP_SCENE_SET_OPTS, 1, 2, 3, 200, 2, 10, 90, 4};
+    struct vfx_hid_request out;
+
+    CHECK(vfx_hid_decode(opts, sizeof(opts), &out), "SET_OPTS must decode");
+    CHECK(out.ch == 1 && out.slot == 2 && out.blend == 3 && out.opacity == 200 && out.opacity_src == 2 &&
+              out.opacity_min == 10 && out.opacity_full == 90 && out.tune_id == 4,
+          "every option must round-trip");
+    CHECK(!vfx_hid_decode(opts, sizeof(opts) - 1, &out), "a short SET_OPTS is refused");
+
+    const uint8_t ext_req[] = {VFX_HID_OP_SCENE_GET_LAYER_EXT, 1, 2};
+
+    CHECK(vfx_hid_decode(ext_req, sizeof(ext_req), &out) && out.ch == 1 && out.slot == 2,
+          "GET_LAYER_EXT must decode");
+
+    uint8_t buf[VFX_HID_MAX_REPLY_LEN];
+    const uint8_t len = vfx_hid_encode_layer_ext(1, 2, VFX_RT_ZONE_PIXELS, 20, 3, 2, 10, 90, 4, -200,
+                                                 300, VFX_HID_STATUS_OK, buf);
+
+    CHECK(len == 15, "LAYER_EXT is fifteen bytes, got %d", len);
+    CHECK(buf[0] == (VFX_HID_OP_SCENE_GET_LAYER_EXT | VFX_HID_REPLY_BIT), "reply op");
+    CHECK(buf[1] == 1 && buf[2] == 2 && buf[3] == VFX_RT_ZONE_PIXELS && buf[4] == 20 && buf[5] == 3,
+          "ch, slot, zone kind, zone count and colour count");
+    CHECK(buf[6] == 2 && buf[7] == 10 && buf[8] == 90 && buf[9] == 4, "source, min, full and tune id");
+
+    const int16_t arg4 = (int16_t)((uint16_t)buf[10] | ((uint16_t)buf[11] << 8));
+    const int16_t arg5 = (int16_t)((uint16_t)buf[12] | ((uint16_t)buf[13] << 8));
+
+    CHECK(arg4 == -200 && arg5 == 300, "a negative argument survives the wire: %d,%d", arg4, arg5);
+    CHECK(buf[14] == VFX_HID_STATUS_OK, "status is last");
+}
+
+static void test_relay_round_trips_a_zone_chunk_across_five_chunks(void) {
+    uint8_t req[18] = {VFX_HID_OP_SCENE_SET_ZONE, 1, 2, VFX_RT_ZONE_PIXELS, 0, 12};
+
+    for (uint8_t i = 0; i < VFX_HID_ZONE_CHUNK; i++) {
+        req[6 + i] = (uint8_t)(20 + i);
+    }
+
+    uint8_t buf[VFX_RELAY_MAX_BYTES] = {0};
+    uint8_t have = 0;
+    uint8_t total = 0;
+
+    CHECK(relay_round_trip(req, sizeof(req), buf, &have, &total),
+          "eighteen bytes in five chunks (the last of two) must complete");
+    CHECK(total == sizeof(req) && memcmp(buf, req, sizeof(req)) == 0, "the bytes must match");
+
+    struct vfx_hid_request out;
+
+    CHECK(vfx_hid_decode(buf, total, &out) && out.zone_count == 12 &&
+              memcmp(out.zone_data, &req[6], VFX_HID_ZONE_CHUNK) == 0,
+          "the reassembled SET_ZONE must still decode");
 }
 
 int main(void) {
@@ -3671,6 +4765,39 @@ int main(void) {
         {"runtime gradient get stop reads back what was added",
          test_runtime_gradient_get_stop_reads_back_what_was_added},
         {"runtime save and restore round trips", test_runtime_save_and_restore_round_trips},
+        {"runtime every generator type can be added",
+         test_runtime_every_generator_type_can_be_added},
+        {"runtime water matches a compiled layer", test_runtime_water_matches_a_compiled_layer},
+        {"runtime matrix matches a compiled layer", test_runtime_matrix_matches_a_compiled_layer},
+        {"runtime fire matches a compiled layer", test_runtime_fire_matches_a_compiled_layer},
+        {"runtime comet matches a compiled layer", test_runtime_comet_matches_a_compiled_layer},
+        {"runtime cross matches a compiled layer", test_runtime_cross_matches_a_compiled_layer},
+        {"runtime trail matches a compiled layer", test_runtime_trail_matches_a_compiled_layer},
+        {"runtime hold matches a compiled layer", test_runtime_hold_matches_a_compiled_layer},
+        {"runtime indicator layers match compiled ones",
+         test_runtime_indicator_layers_match_compiled_ones},
+        {"runtime trail and hold share a bounded pool",
+         test_runtime_trail_and_hold_share_a_bounded_pool},
+        {"runtime colour list grows, reads back and is bounded",
+         test_runtime_colour_list_grows_reads_back_and_is_bounded},
+        {"runtime zone is built from pieces", test_runtime_zone_is_built_from_pieces},
+        {"runtime get zone reads back in chunks", test_runtime_get_zone_reads_back_in_chunks},
+        {"runtime key zone resolves through the key context",
+         test_runtime_key_zone_resolves_through_the_key_context},
+        {"runtime options change how a layer composites",
+         test_runtime_options_change_how_a_layer_composites},
+        {"runtime save and restore keeps everything a layer now has",
+         test_runtime_save_and_restore_keeps_everything_a_layer_now_has},
+        {"runtime restore drops what cannot be trusted",
+         test_runtime_restore_drops_what_cannot_be_trusted},
+        {"hid new ops have the lengths the relay needs",
+         test_hid_new_ops_have_the_lengths_the_relay_needs},
+        {"hid list colour ops decode and encode", test_hid_list_color_ops_decode_and_encode},
+        {"hid zone ops decode and encode", test_hid_zone_ops_decode_and_encode},
+        {"hid opts and layer ext decode and encode",
+         test_hid_opts_and_layer_ext_decode_and_encode},
+        {"relay round trips a zone chunk across five chunks",
+         test_relay_round_trips_a_zone_chunk_across_five_chunks},
     };
 
     for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {

@@ -126,7 +126,7 @@ static void apply_relayed_request(const struct vfx_hid_request *req) {
         };
         uint8_t slot = VFX_HID_NO_SLOT;
 
-        memcpy(params.args, req->args, sizeof(params.args));
+        memcpy(params.args, req->args, sizeof(req->args));
         zmk_vfx_scene_add_layer(req->ch, &params, &slot);
         break;
     }
@@ -158,6 +158,21 @@ static void apply_relayed_request(const struct vfx_hid_request *req) {
     case VFX_HID_OP_SCENE_GRADIENT_ADD_STOP:
         zmk_vfx_scene_gradient_add_stop(req->ch, req->slot, (uint16_t)req->hue, req->sat,
                                         req->bri);
+        break;
+
+    case VFX_HID_OP_SCENE_SET_LIST_COLOR:
+        zmk_vfx_scene_set_list_color(req->ch, req->slot, req->arg_idx, (uint16_t)req->hue,
+                                     req->sat, req->bri);
+        break;
+
+    case VFX_HID_OP_SCENE_SET_ZONE:
+        zmk_vfx_scene_set_zone(req->ch, req->slot, req->zone_kind, req->zone_offset,
+                               req->zone_data, req->zone_count);
+        break;
+
+    case VFX_HID_OP_SCENE_SET_OPTS:
+        zmk_vfx_scene_set_opts(req->ch, req->slot, req->blend, req->opacity, req->opacity_src,
+                               req->opacity_min, req->opacity_full, req->tune_id);
         break;
 
     default:

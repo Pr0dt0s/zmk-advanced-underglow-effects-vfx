@@ -112,11 +112,13 @@ static void reply_scene_layer(uint8_t ch, uint8_t slot) {
 
     /* A gradient's own stop list has nowhere else to announce its length --
      * args[2] is unused by this type (see runtime_scene.h), so it carries
-     * num_stops here instead: how many SCENE_GET_GRADIENT_STOP calls a host
-     * reconstructing this layer needs to make.
+     * num_colors here instead: how many SCENE_GET_GRADIENT_STOP calls a host
+     * reconstructing this layer needs to make. Every other type's colour list
+     * length, along with the fields this reply has no room for, comes from
+     * SCENE_GET_LAYER_EXT.
      */
     if (p.type == VFX_RT_GRADIENT) {
-        p.args[2] = (int16_t)p.num_stops;
+        p.args[2] = (int16_t)p.num_colors;
     }
 
     uint8_t buf[VFX_HID_MAX_REPLY_LEN];
@@ -150,6 +152,43 @@ static void reply_gradient_stop(uint8_t ch, uint8_t slot, uint8_t idx) {
     send(buf, len);
 }
 
+static void reply_list_color(uint8_t ch, uint8_t slot, uint8_t idx) {
+    uint16_t hue = 0;
+    uint8_t sat = 0;
+    uint8_t bri = 0;
+    const int rc = zmk_vfx_scene_get_list_color(ch, slot, idx, &hue, &sat, &bri);
+    uint8_t buf[VFX_HID_MAX_REPLY_LEN];
+    const uint8_t len = vfx_hid_encode_list_color(ch, slot, idx, (int16_t)hue, sat, bri,
+                                                  scene_status(rc), buf);
+
+    send(buf, len);
+}
+
+static void reply_zone(uint8_t ch, uint8_t slot, uint8_t offset) {
+    uint8_t data[VFX_HID_ZONE_CHUNK] = {0};
+    uint8_t kind = 0;
+    uint8_t total = 0;
+    uint8_t n = 0;
+    const int rc = zmk_vfx_scene_get_zone(ch, slot, offset, &kind, &total, data,
+                                          VFX_HID_ZONE_CHUNK, &n);
+    uint8_t buf[VFX_HID_MAX_REPLY_LEN];
+    const uint8_t len =
+        vfx_hid_encode_zone(ch, slot, kind, total, offset, data, n, scene_status(rc), buf);
+
+    send(buf, len);
+}
+
+static void reply_layer_ext(uint8_t ch, uint8_t slot) {
+    struct vfx_rt_params p = {0};
+    const int rc = zmk_vfx_scene_get_layer(ch, slot, &p);
+    uint8_t buf[VFX_HID_MAX_REPLY_LEN];
+    const uint8_t len = vfx_hid_encode_layer_ext(
+        ch, slot, p.zone_kind, p.zone_count, p.num_colors, p.opacity_src, p.opacity_min,
+        p.opacity_full, p.tune_id, p.args[4], p.args[5], scene_status(rc), buf);
+
+    send(buf, len);
+}
+
 /* Whether an op needs relaying to a split peripheral: every SCENE_* op that
  * changes something, as opposed to one that only reads it back. Relayed
  * regardless of whether it succeeded locally -- the peripheral runs the
@@ -169,6 +208,9 @@ static bool op_needs_relay(uint8_t op) {
     case VFX_HID_OP_SCENE_ACTIVATE:
     case VFX_HID_OP_SCENE_DEACTIVATE:
     case VFX_HID_OP_SCENE_GRADIENT_ADD_STOP:
+    case VFX_HID_OP_SCENE_SET_LIST_COLOR:
+    case VFX_HID_OP_SCENE_SET_ZONE:
+    case VFX_HID_OP_SCENE_SET_OPTS:
         return true;
     default:
         return false;
@@ -233,7 +275,10 @@ static void handle(const struct vfx_hid_request *req) {
             .flags = req->flags,
         };
 
-        memcpy(params.args, req->args, sizeof(params.args));
+        /* Only the first four arguments fit alongside the rest of a layer in
+         * one report; 4 and 5 go in afterwards with SCENE_SET_ARG.
+         */
+        memcpy(params.args, req->args, sizeof(req->args));
 
         uint8_t slot = VFX_HID_NO_SLOT;
         const int rc = zmk_vfx_scene_add_layer(req->ch, &params, &slot);
@@ -291,6 +336,38 @@ static void handle(const struct vfx_hid_request *req) {
     case VFX_HID_OP_SCENE_GET_GRADIENT_STOP:
         reply_gradient_stop(req->ch, req->slot, req->arg_idx);
         break;
+
+    case VFX_HID_OP_SCENE_SET_LIST_COLOR:
+        reply_scene_ack(req->op, req->slot,
+                        zmk_vfx_scene_set_list_color(req->ch, req->slot, req->arg_idx,
+                                                     (uint16_t)req->hue, req->sat, req->bri));
+        break;
+
+    case VFX_HID_OP_SCENE_GET_LIST_COLOR:
+        reply_list_color(req->ch, req->slot, req->arg_idx);
+        break;
+
+    case VFX_HID_OP_SCENE_SET_ZONE:
+        reply_scene_ack(req->op, req->slot,
+                        zmk_vfx_scene_set_zone(req->ch, req->slot, req->zone_kind,
+                                               req->zone_offset, req->zone_data,
+                                               req->zone_count));
+        break;
+
+    case VFX_HID_OP_SCENE_GET_ZONE:
+        reply_zone(req->ch, req->slot, req->zone_offset);
+        break;
+
+    case VFX_HID_OP_SCENE_SET_OPTS:
+        reply_scene_ack(req->op, req->slot,
+                        zmk_vfx_scene_set_opts(req->ch, req->slot, req->blend, req->opacity,
+                                               req->opacity_src, req->opacity_min,
+                                               req->opacity_full, req->tune_id));
+        break;
+
+    case VFX_HID_OP_SCENE_GET_LAYER_EXT:
+        reply_layer_ext(req->ch, req->slot);
+        break;
 #else
     /* CONFIG_ZMK_VFX_RUNTIME_SCENES is off: hid_protocol.c decodes these
      * fine regardless (see payload_len()), but there is nothing here to
@@ -311,6 +388,12 @@ static void handle(const struct vfx_hid_request *req) {
     case VFX_HID_OP_SCENE_GET_ORDER:
     case VFX_HID_OP_SCENE_GRADIENT_ADD_STOP:
     case VFX_HID_OP_SCENE_GET_GRADIENT_STOP:
+    case VFX_HID_OP_SCENE_SET_LIST_COLOR:
+    case VFX_HID_OP_SCENE_GET_LIST_COLOR:
+    case VFX_HID_OP_SCENE_SET_ZONE:
+    case VFX_HID_OP_SCENE_GET_ZONE:
+    case VFX_HID_OP_SCENE_SET_OPTS:
+    case VFX_HID_OP_SCENE_GET_LAYER_EXT:
         reply_ack(req->op, req->ch, -EINVAL);
         break;
 #endif

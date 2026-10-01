@@ -1049,12 +1049,7 @@ int zmk_vfx_scene_add_layer(uint8_t ch, const struct vfx_rt_params *params, uint
          * (an unusable type, say), so this is the one write worth telling
          * apart from -EINVAL rather than collapsing both into it.
          */
-        uint8_t count;
-        bool active;
-
-        return (vfx_runtime_get_info(ch, &count, &active) && count >= VFX_RT_MAX_LAYERS)
-                 ? -ENOSPC
-                 : -EINVAL;
+        return slot == VFX_RT_ERR_FULL ? -ENOSPC : -EINVAL;
     }
 
     if (slot_out) {
@@ -1163,7 +1158,7 @@ int zmk_vfx_scene_gradient_add_stop(uint8_t ch, uint8_t slot, uint16_t hue, uint
         struct vfx_rt_params p;
 
         return (vfx_runtime_get_layer(ch, slot, &p) && p.type == VFX_RT_GRADIENT &&
-                p.num_stops >= VFX_RT_GRADIENT_MAX_STOPS)
+                p.num_colors >= VFX_RT_GRADIENT_MAX_STOPS)
                  ? -ENOSPC
                  : -EINVAL;
     }
@@ -1178,6 +1173,62 @@ int zmk_vfx_scene_gradient_get_stop(uint8_t ch, uint8_t slot, uint8_t idx, uint1
     }
 
     return 0;
+}
+
+int zmk_vfx_scene_set_list_color(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t hue, uint8_t sat,
+                                 uint8_t bri) {
+    if (ch >= channel_count()) {
+        return -EINVAL;
+    }
+
+    if (idx >= VFX_RT_MAX_COLORS) {
+        return -ENOSPC;
+    }
+
+    return runtime_result(vfx_runtime_set_list_color(ch, slot, idx, hue, sat, bri));
+}
+
+int zmk_vfx_scene_get_list_color(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t *hue,
+                                 uint8_t *sat, uint8_t *bri) {
+    if (ch >= channel_count() || !vfx_runtime_get_list_color(ch, slot, idx, hue, sat, bri)) {
+        return -EINVAL;
+    }
+
+    return 0;
+}
+
+int zmk_vfx_scene_set_zone(uint8_t ch, uint8_t slot, uint8_t kind, uint8_t offset,
+                           const uint8_t *data, uint8_t count) {
+    if (ch >= channel_count()) {
+        return -EINVAL;
+    }
+
+    if (kind != VFX_RT_ZONE_RANGE && (uint16_t)offset + count > VFX_RT_MAX_ZONE_PIXELS) {
+        return -ENOSPC;
+    }
+
+    return runtime_result(vfx_runtime_set_zone(ch, slot, kind, offset, data, count));
+}
+
+int zmk_vfx_scene_get_zone(uint8_t ch, uint8_t slot, uint8_t offset, uint8_t *kind,
+                           uint8_t *total, uint8_t *data, uint8_t max, uint8_t *n) {
+    if (ch >= channel_count() ||
+        !vfx_runtime_get_zone(ch, slot, offset, kind, total, data, max, n)) {
+        return -EINVAL;
+    }
+
+    return 0;
+}
+
+int zmk_vfx_scene_set_opts(uint8_t ch, uint8_t slot, uint8_t blend, uint8_t opacity,
+                           uint8_t opacity_src, uint8_t opacity_min, uint8_t opacity_full,
+                           uint8_t tune_id) {
+    if (ch >= channel_count()) {
+        return -EINVAL;
+    }
+
+    return runtime_result(vfx_runtime_set_opts(ch, slot, blend, opacity, opacity_src, opacity_min,
+                                               opacity_full, tune_id));
 }
 #endif /* CONFIG_ZMK_VFX_RUNTIME_SCENES */
 
@@ -1437,6 +1488,10 @@ static int zmk_vfx_init(void) {
         const struct vfx_frame_ctx ctx = build_ctx(0);
 
         vfx_resolve_key_zones(&ctx);
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
+        vfx_runtime_set_key_context(&ctx);
+#endif
     }
 
 #if IS_ENABLED(CONFIG_SETTINGS)

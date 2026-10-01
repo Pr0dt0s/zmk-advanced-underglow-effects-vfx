@@ -62,6 +62,19 @@ static uint8_t payload_len(enum vfx_hid_op op) {
     case VFX_HID_OP_SCENE_GET_GRADIENT_STOP:
         return 3; /* ch, slot, stop index */
 
+    case VFX_HID_OP_SCENE_SET_LIST_COLOR:
+        return 7; /* ch, slot, index, hue lo, hue hi, sat, bri */
+    case VFX_HID_OP_SCENE_GET_LIST_COLOR:
+        return 3; /* ch, slot, index */
+    case VFX_HID_OP_SCENE_SET_ZONE:
+        return (uint8_t)(5 + VFX_HID_ZONE_CHUNK); /* ch, slot, kind, offset, count, data */
+    case VFX_HID_OP_SCENE_GET_ZONE:
+        return 3; /* ch, slot, offset */
+    case VFX_HID_OP_SCENE_SET_OPTS:
+        return 8; /* ch, slot, blend, opacity, src, min, full, tune id */
+    case VFX_HID_OP_SCENE_GET_LAYER_EXT:
+        return 2; /* ch, slot */
+
     default:
         return 0xFF; /* unreachable for a real op; makes an unknown one fail the length check */
     }
@@ -76,6 +89,13 @@ bool vfx_hid_decode(const uint8_t *data, uint8_t len, struct vfx_hid_request *ou
     const uint8_t need = payload_len(op);
 
     if (need == 0xFF || len < (uint8_t)(1 + need)) {
+        return false;
+    }
+
+    /* `count` is how much of the fixed-size data field is real; more than the
+     * field holds would make the consumer read past it.
+     */
+    if (op == VFX_HID_OP_SCENE_SET_ZONE && data[5] > VFX_HID_ZONE_CHUNK) {
         return false;
     }
 
@@ -167,9 +187,50 @@ bool vfx_hid_decode(const uint8_t *data, uint8_t len, struct vfx_hid_request *ou
         break;
 
     case VFX_HID_OP_SCENE_GET_GRADIENT_STOP:
+    case VFX_HID_OP_SCENE_GET_LIST_COLOR:
         out->ch = data[1];
         out->slot = data[2];
         out->arg_idx = data[3];
+        break;
+
+    case VFX_HID_OP_SCENE_SET_LIST_COLOR:
+        out->ch = data[1];
+        out->slot = data[2];
+        out->arg_idx = data[3];
+        out->hue = read_i16(&data[4]);
+        out->sat = data[6];
+        out->bri = data[7];
+        break;
+
+    case VFX_HID_OP_SCENE_SET_ZONE:
+        out->ch = data[1];
+        out->slot = data[2];
+        out->zone_kind = data[3];
+        out->zone_offset = data[4];
+        out->zone_count = data[5];
+        memcpy(out->zone_data, &data[6], VFX_HID_ZONE_CHUNK);
+        break;
+
+    case VFX_HID_OP_SCENE_GET_ZONE:
+        out->ch = data[1];
+        out->slot = data[2];
+        out->zone_offset = data[3];
+        break;
+
+    case VFX_HID_OP_SCENE_SET_OPTS:
+        out->ch = data[1];
+        out->slot = data[2];
+        out->blend = data[3];
+        out->opacity = data[4];
+        out->opacity_src = data[5];
+        out->opacity_min = data[6];
+        out->opacity_full = data[7];
+        out->tune_id = data[8];
+        break;
+
+    case VFX_HID_OP_SCENE_GET_LAYER_EXT:
+        out->ch = data[1];
+        out->slot = data[2];
         break;
     }
 
@@ -267,6 +328,60 @@ uint8_t vfx_hid_encode_gradient_stop(uint8_t ch, uint8_t slot, uint8_t idx, int1
     out[8] = status;
 
     return 9;
+}
+
+uint8_t vfx_hid_encode_list_color(uint8_t ch, uint8_t slot, uint8_t idx, int16_t hue, uint8_t sat,
+                                  uint8_t bri, uint8_t status, uint8_t *out) {
+    out[0] = VFX_HID_REPLY_LIST_COLOR;
+    out[1] = ch;
+    out[2] = slot;
+    out[3] = idx;
+    write_i16(&out[4], hue);
+    out[6] = sat;
+    out[7] = bri;
+    out[8] = status;
+
+    return 9;
+}
+
+uint8_t vfx_hid_encode_zone(uint8_t ch, uint8_t slot, uint8_t kind, uint8_t total, uint8_t offset,
+                            const uint8_t *data, uint8_t n, uint8_t status, uint8_t *out) {
+    out[0] = VFX_HID_REPLY_ZONE;
+    out[1] = ch;
+    out[2] = slot;
+    out[3] = kind;
+    out[4] = total;
+    out[5] = offset;
+    out[6] = n;
+
+    for (uint8_t i = 0; i < VFX_HID_ZONE_CHUNK; i++) {
+        out[7 + i] = i < n ? data[i] : 0;
+    }
+
+    out[7 + VFX_HID_ZONE_CHUNK] = status;
+
+    return (uint8_t)(8 + VFX_HID_ZONE_CHUNK);
+}
+
+uint8_t vfx_hid_encode_layer_ext(uint8_t ch, uint8_t slot, uint8_t zone_kind, uint8_t zone_count,
+                                 uint8_t num_colors, uint8_t opacity_src, uint8_t opacity_min,
+                                 uint8_t opacity_full, uint8_t tune_id, int16_t arg4,
+                                 int16_t arg5, uint8_t status, uint8_t *out) {
+    out[0] = VFX_HID_REPLY_LAYER_EXT;
+    out[1] = ch;
+    out[2] = slot;
+    out[3] = zone_kind;
+    out[4] = zone_count;
+    out[5] = num_colors;
+    out[6] = opacity_src;
+    out[7] = opacity_min;
+    out[8] = opacity_full;
+    out[9] = tune_id;
+    write_i16(&out[10], arg4);
+    write_i16(&out[12], arg5);
+    out[14] = status;
+
+    return 15;
 }
 
 uint8_t vfx_hid_request_len(uint8_t op) {

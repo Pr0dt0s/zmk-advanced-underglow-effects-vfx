@@ -75,8 +75,15 @@ int zmk_vfx_tune_reset(uint8_t slot);
  * `ch` is a channel index, never ZMK_VFX_CH_ALL: a runtime scene belongs to
  * one channel, unlike a tuning slot which can belong to layers on several.
  * -EINVAL for a channel out of range, an unusable generator type, an
- * argument index outside 0-3, or a slot nothing was added to; -ENOSPC if
- * the channel's pool is already full.
+ * argument index outside 0-5, or a slot nothing was added to; -ENOSPC if
+ * the channel's pool is already full (or, for a trail or hold, if every
+ * heavy state is taken).
+ *
+ * Every generator can be built this way. What does not fit in one
+ * SCENE_ADD_LAYER is added by follow-up calls on the slot it returns:
+ * set_arg for arguments 4 and 5, set_list_color for a second and later
+ * colour, set_zone for a pixel or key zone, set_opts for blend, opacity and
+ * the tuning slot.
  */
 struct vfx_rt_params;
 
@@ -125,6 +132,36 @@ int zmk_vfx_scene_gradient_add_stop(uint8_t ch, uint8_t slot, uint16_t hue, uint
  */
 int zmk_vfx_scene_gradient_get_stop(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t *hue,
                                     uint8_t *sat, uint8_t *bri);
+
+/* Entry `idx` of a slot's colour list, for any generator type: what a
+ * generator's second and later colours are (see runtime_scene.h for which
+ * generator reads which entry). Growing the list past its length fills the
+ * skipped entries with black, which every generator treats as "unset".
+ * -EINVAL for a channel or slot out of range; -ENOSPC for an index at or past
+ * VFX_RT_MAX_COLORS. The getter is -EINVAL past the list's current length.
+ */
+int zmk_vfx_scene_set_list_color(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t hue, uint8_t sat,
+                                 uint8_t bri);
+int zmk_vfx_scene_get_list_color(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t *hue,
+                                 uint8_t *sat, uint8_t *bri);
+
+/* A slot's zone, in pieces: a range (data is start then length), or a list of
+ * strip indices or key positions built strictly in order across as many calls
+ * as it takes (see vfx_runtime_set_zone()). -ENOSPC when a list would outgrow
+ * VFX_RT_MAX_ZONE_PIXELS, -EINVAL for anything else refused, including a chunk
+ * whose offset is not where the list currently ends.
+ */
+int zmk_vfx_scene_set_zone(uint8_t ch, uint8_t slot, uint8_t kind, uint8_t offset,
+                           const uint8_t *data, uint8_t count);
+int zmk_vfx_scene_get_zone(uint8_t ch, uint8_t slot, uint8_t offset, uint8_t *kind,
+                           uint8_t *total, uint8_t *data, uint8_t max, uint8_t *n);
+
+/* blend, opacity, the source driving it and the tuning slot, all at once.
+ * -EINVAL for a blend or source this build does not know.
+ */
+int zmk_vfx_scene_set_opts(uint8_t ch, uint8_t slot, uint8_t blend, uint8_t opacity,
+                           uint8_t opacity_src, uint8_t opacity_min, uint8_t opacity_full,
+                           uint8_t tune_id);
 
 /* Persist the current state, debounced. */
 int zmk_vfx_save_state(void);

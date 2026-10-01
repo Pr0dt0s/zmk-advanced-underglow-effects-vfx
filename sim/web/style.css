@@ -172,20 +172,28 @@ button.tiny {
 .field select { width: 100%; }
 .field input[type="color"] { height: 26px; padding: 1px; }
 
-/* A gradient layer's stop list -- see host.js's renderStops(). Its own
- * .field label above it names the count, so this is just the swatches and
- * the add-stop row underneath.
+/* A layer's colour list (gradient stops, layer-state colours, a fire's
+ * palette...) -- see host.js's renderList(). Its heading names the count; the
+ * entries are colour pickers side by side, with an Add button beneath when
+ * the type's list can grow.
  */
 .stops { margin-top: 8px; }
-.stops .row { margin-top: 4px; }
+.stops .row { margin-top: 4px; flex-wrap: wrap; }
+.stops .field { width: 92px; }
 
-.stop-swatch {
-  display: inline-block;
-  width: 22px;
-  height: 22px;
-  border-radius: 4px;
-  border: 1px solid #262c38;
+/* The zone and options blocks under a layer's own controls. */
+.layer-section { margin-top: 8px; }
+
+details.layer-section summary,
+#json-box summary {
+  cursor: pointer;
+  color: #9aa6bd;
+  font-size: 13px;
+  margin: 6px 0;
 }
+
+.layer-section textarea,
+.layer-section input[type="text"] { width: 100%; }
 
 #json-box summary {
   cursor: pointer;

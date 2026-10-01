@@ -201,10 +201,13 @@ config ZMK_VFX_RUNTIME_SCENES
       bounded per-channel pool, and switch a channel to showing it instead
       of its compiled list. Persisted the same way tuning is.
 
-      Only eleven generators are buildable this way -- see runtime_scene.h
-      for which, and why the rest still need devicetree. Costs RAM on every
-      board that turns it on, sized by the option below, whether or not
-      anything is ever built at runtime.
+      Every generator is buildable this way. A layer too big for one
+      message is assembled from several: the generator and its first colour
+      and four arguments in one, then more arguments, more colours, the zone
+      and the layer's options each in a message of their own -- see
+      runtime_scene.h and the README. Costs RAM on every board that turns it
+      on, sized by the options below, whether or not anything is ever built
+      at runtime.
 
       Nothing drives this by itself: it needs a transport, and
       CONFIG_ZMK_VFX_RAW_HID is the only one today. That transport is
@@ -221,6 +224,37 @@ config ZMK_VFX_RUNTIME_MAX_LAYERS
     help
       Sized per channel, not shared across them: a board with two channels
       each turning this on costs twice this many layers' worth of RAM.
+
+config ZMK_VFX_RUNTIME_MAX_COLORS
+    int "Colours in a runtime layer's colour list"
+    range 3 16
+    default 8
+    help
+      The colour list holds a gradient's stops, the second colour of the
+      generators that draw with two, and a layer-state layer's colour per
+      keymap layer. At least 3, which is what peripheral-battery needs.
+
+      Persisted with every layer, so it also sizes the saved blob: it has to
+      fit one flash sector, which raising this, the layer count or the zone
+      size too far will stop it doing.
+
+config ZMK_VFX_RUNTIME_MAX_ZONE_PIXELS
+    int "Entries in a runtime layer's pixel or key list"
+    range 4 128
+    default 32
+    help
+      How many strip indices or key positions one layer's zone can list,
+      when it is not a plain range. Sized per layer and persisted with it.
+
+config ZMK_VFX_RUNTIME_HEAVY_STATES
+    int "Trail and hold layers a channel's runtime scene can hold at once"
+    range 1 8
+    default 2
+    help
+      Trail and hold keep a byte of animation state for every pixel, which
+      would be wasted on every other layer if each slot carried it. They
+      draw from this pool instead, per channel; adding one when it is empty
+      is refused with the same POOL_FULL a full layer pool gives.
 
 endif # ZMK_VFX_RUNTIME_SCENES
 
