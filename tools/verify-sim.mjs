@@ -299,6 +299,57 @@ for (const name of ['Pulse', 'Darts']) {
   check('Layers remove', removed.layers.length === 1 && removed.layers[0].type === 'solid');
 }
 
+/* The board's runtime scenes, built the way a host builds them: raw wire
+ * requests, decoded by hid_protocol.c and applied by runtime_scene.c, both
+ * compiled into the simulator. A staged layer must stay dark until its commit
+ * makes it live in one step.
+ */
+{
+  const rt = await page.evaluate(([h]) => {
+    const e = window.vfxDebug.halves[h].e;
+    const count = window.vfxDebug.halves[h].count;
+    const send = bytes => {
+      new Uint8Array(e.memory.buffer).set(bytes, e.vfx_sim_scratch());
+      return e.vfx_sim_rt_apply(bytes.length);
+    };
+    const out = {};
+
+    out.reset = send([0x07, 0]);
+    out.add = send([0x08, 0, 0 /* solid */, 0, count, 0, 255, 0, 0, 255, 255,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0x20 /* staged */]);
+    out.slot = e.vfx_sim_rt_last_slot();
+    out.countStaged = e.vfx_sim_rt_count(0);
+
+    e.vfx_sim_rt_show(0);
+    window.vfxDebug.renderAt(120000);
+    out.dark = window.vfxDebug.pixels(h).reduce((a, v) => a + v, 0);
+
+    out.commit = send([0x1b, 0, out.slot, 0xff]);
+    out.countLive = e.vfx_sim_rt_count(0);
+    out.hash = e.vfx_sim_rt_hash(0) >>> 0;
+    window.vfxDebug.renderAt(120000);
+    out.px = window.vfxDebug.pixels(h).slice(0, 3);
+
+    out.activate = send([0x0d, 0]);
+    out.active = e.vfx_sim_rt_active_scene(0);
+    out.junk = send([0xee, 0]);
+
+    e.vfx_sim_rt_show(-1);
+
+    return out;
+  }, [half]);
+
+  check('A staged runtime layer is invisible until committed',
+        rt.add === 0 && rt.countStaged === 0 && rt.dark === 0,
+        `add=${rt.add} count=${rt.countStaged} lit=${rt.dark}`);
+  check('Committing a runtime layer draws it, through the real runtime_scene.c',
+        rt.commit === 0 && rt.countLive === 1 && rt.px[0] > 0 && rt.px[1] === 0 && rt.px[2] === 0,
+        `commit=${rt.commit} px=${rt.px.join(',')}`);
+  check('A committed scene has a hash and can be activated',
+        rt.hash !== 0 && rt.activate === 0 && rt.active === 0, `hash=${rt.hash.toString(16)}`);
+  check('Bytes that are not a runtime request are refused', rt.junk === 255, `${rt.junk}`);
+}
+
 if (errors.length) console.log(`\npage errors:\n  ${errors.join('\n  ')}`);
 
 await browser.close();

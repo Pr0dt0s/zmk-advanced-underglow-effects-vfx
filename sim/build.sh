@@ -29,9 +29,11 @@ exports=(
   vfx_sim_add_pulse vfx_sim_add_hold vfx_sim_add_dart vfx_sim_add_static
   vfx_sim_set_layer_source vfx_sim_set_active
   vfx_sim_set_layer_tune vfx_sim_tune vfx_sim_tune_reset_all
+  vfx_sim_rt_apply vfx_sim_rt_last_slot vfx_sim_rt_show vfx_sim_rt_hash vfx_sim_rt_count
+  vfx_sim_rt_active_scene vfx_sim_rt_channels vfx_sim_rt_scenes
 )
 
-args=(--target=wasm32 -nostdlib -O2 -flto -DVFX_SIM -I"$root/include"
+args=(--target=wasm32 -nostdlib -O2 -flto -DVFX_SIM -I"$root/include" -isystem "$here/include"
       -Wall -Wextra -Werror
       -Wl,--no-entry -Wl,--export-memory -Wl,--lto-O2 -Wl,--strip-all)
 
@@ -43,7 +45,7 @@ clang "${args[@]}" \
   "$here/vfx_sim.c" \
   "$root/src/color.c" "$root/src/zone.c" "$root/src/render.c" \
   "$root/src/power_policy.c" "$root/src/mathtab.c" "$root/src/status.c" \
-  "$root/src/tuning.c" \
+  "$root/src/tuning.c" "$root/src/runtime_scene.c" "$root/src/hid_protocol.c" \
   "$root/src/sync_policy.c" \
   "$root/src/layers/solid.c" "$root/src/layers/gradient.c" \
   "$root/src/layers/ambient.c" "$root/src/layers/reactive.c" \

@@ -18,8 +18,10 @@
 #include <stdint.h>
 
 #include <zmk/vfx/engine.h>
+#include <zmk/vfx/hid_protocol.h>
 #include <zmk/vfx/layers.h>
 #include <zmk/vfx/power.h>
+#include <zmk/vfx/runtime_scene.h>
 #include <zmk/vfx/status.h>
 #include <zmk/vfx/tuning.h>
 #include <zmk/vfx/sync.h>
@@ -951,6 +953,169 @@ EXPORT void vfx_sim_set_positions(int count) {
     ctx.board = vfx_board_bounds(&ctx);
 }
 
+/* ------------------------------------------------------------- runtime scenes */
+
+/* What is drawn: the compiled scene above, or one of the runtime scenes the
+ * board's own runtime_scene.c holds. The page picks it, standing in for the
+ * channel's active scene.
+ */
+static int rt_shown = -1;
+static int rt_inited;
+static uint8_t rt_last_slot = VFX_HID_NO_SLOT;
+
+static const struct vfx_scene *shown_scene(void) {
+    return rt_shown < 0 ? &scene : vfx_runtime_scene((uint8_t)rt_shown);
+}
+
+static void rt_ensure(void) {
+    if (!rt_inited) {
+        vfx_runtime_init();
+        rt_inited = 1;
+    }
+
+    vfx_runtime_set_key_context(&ctx);
+}
+
+/* Applies one wire request staged in scratch, the very bytes a host sends the
+ * board over raw HID, through the same vfx_runtime_* calls the firmware makes.
+ * Returns a VFX_HID_STATUS_* code, or 255 for bytes that do not decode.
+ */
+EXPORT int vfx_sim_rt_apply(int len) {
+    struct vfx_hid_request r;
+
+    rt_ensure();
+    rt_last_slot = VFX_HID_NO_SLOT;
+
+    if (len < 1 || len > VFX_HID_MAX_REQUEST_LEN || !vfx_hid_decode(scratch, (uint8_t)len, &r)) {
+        return 255;
+    }
+
+    bool ok = true;
+
+    switch ((enum vfx_hid_op)r.op) {
+    case VFX_HID_OP_SCENE_RESET:
+        vfx_runtime_reset(r.ch);
+        break;
+
+    case VFX_HID_OP_SCENE_ADD_LAYER: {
+        struct vfx_rt_params p = {
+            .type = r.type,
+            .zone_start = r.zone_start,
+            .zone_len = r.zone_len,
+            .blend = r.blend,
+            .opacity = r.opacity,
+            .hue = (uint16_t)r.hue,
+            .sat = r.sat,
+            .bri = r.bri,
+            .flags = r.flags,
+        };
+
+        for (int i = 0; i < 4; i++) {
+            p.args[i] = r.args[i];
+        }
+
+        const int slot = r.staged ? vfx_runtime_add_layer_staged(r.ch, &p)
+                                  : vfx_runtime_add_layer(r.ch, &p);
+
+        if (slot < 0) {
+            return slot == VFX_RT_ERR_FULL ? VFX_HID_STATUS_POOL_FULL : VFX_HID_STATUS_BAD_SLOT;
+        }
+
+        rt_last_slot = (uint8_t)slot;
+        break;
+    }
+
+    case VFX_HID_OP_SCENE_SET_ARG:
+        ok = vfx_runtime_set_arg(r.ch, r.slot, r.arg_idx, r.args[0]);
+        break;
+
+    case VFX_HID_OP_SCENE_SET_COLOR:
+        ok = vfx_runtime_set_color(r.ch, r.slot, (uint16_t)r.hue, r.sat, r.bri);
+        break;
+
+    case VFX_HID_OP_SCENE_REMOVE_LAYER:
+        ok = vfx_runtime_remove_layer(r.ch, r.slot);
+        break;
+
+    case VFX_HID_OP_SCENE_MOVE_LAYER:
+        ok = vfx_runtime_move_layer(r.ch, r.slot, r.direction);
+        break;
+
+    case VFX_HID_OP_SCENE_ACTIVATE:
+        ok = vfx_runtime_set_active(r.ch, true);
+        break;
+
+    case VFX_HID_OP_SCENE_DEACTIVATE:
+        ok = vfx_runtime_set_active(r.ch, false);
+        break;
+
+    case VFX_HID_OP_SCENE_GRADIENT_ADD_STOP:
+        ok = vfx_runtime_gradient_add_stop(r.ch, r.slot, (uint16_t)r.hue, r.sat, r.bri);
+        break;
+
+    case VFX_HID_OP_SCENE_SET_LIST_COLOR:
+        ok = vfx_runtime_set_list_color(r.ch, r.slot, r.arg_idx, (uint16_t)r.hue, r.sat, r.bri);
+        break;
+
+    case VFX_HID_OP_SCENE_SET_ZONE:
+        ok = vfx_runtime_set_zone(r.ch, r.slot, r.zone_kind, r.zone_offset, r.zone_data,
+                                  r.zone_count);
+        break;
+
+    case VFX_HID_OP_SCENE_SET_OPTS:
+        ok = vfx_runtime_set_opts(r.ch, r.slot, r.blend, r.opacity, r.opacity_src,
+                                  r.opacity_min, r.opacity_full, r.tune_id);
+        break;
+
+    case VFX_HID_OP_SCENE_SET_FLAGS:
+        ok = vfx_runtime_set_flags(r.ch, r.slot, r.flags);
+        break;
+
+    case VFX_HID_OP_SCENE_COMMIT_LAYER:
+        ok = vfx_runtime_commit_layer(r.ch, r.slot, r.position);
+        break;
+
+    default:
+        return 255; /* a read, or a sync op: not something the page applies */
+    }
+
+    return ok ? VFX_HID_STATUS_OK : VFX_HID_STATUS_BAD_SLOT;
+}
+
+/* The slot the last SCENE_ADD_LAYER got, or 255. */
+EXPORT int vfx_sim_rt_last_slot(void) { return rt_last_slot; }
+
+/* -1 draws the compiled scene; otherwise a target (scene << 4 | channel). */
+EXPORT void vfx_sim_rt_show(int target) {
+    rt_ensure();
+    rt_shown = target;
+}
+
+EXPORT int vfx_sim_rt_hash(int target) {
+    rt_ensure();
+
+    return (int)vfx_runtime_hash((uint8_t)target);
+}
+
+EXPORT int vfx_sim_rt_count(int target) {
+    uint8_t count = 0;
+    bool active = false;
+
+    rt_ensure();
+
+    return vfx_runtime_get_info((uint8_t)target, &count, &active) ? count : -1;
+}
+
+EXPORT int vfx_sim_rt_active_scene(int ch) {
+    rt_ensure();
+
+    return vfx_runtime_active_scene((uint8_t)ch);
+}
+
+/* The channel count and per-channel scene count this build was made with. */
+EXPORT int vfx_sim_rt_channels(void) { return VFX_MAX_CHANNELS; }
+EXPORT int vfx_sim_rt_scenes(void) { return VFX_RT_SCENES_PER_CHANNEL; }
+
 EXPORT const uint8_t *vfx_sim_render(uint32_t time_ms) {
     /* Frames arrive at whatever rate the browser paints, so feed the gate the
      * real elapsed time rather than a nominal frame interval.
@@ -963,7 +1128,7 @@ EXPORT const uint8_t *vfx_sim_render(uint32_t time_ms) {
 
     ctx.time_ms = time_ms;
 
-    vfx_render_frame(&scene, &ctx, frame, &last_lit);
+    vfx_render_frame(shown_scene(), &ctx, frame, &last_lit);
 
     last_action = (int)vfx_power_step(&power_ctl, &power_policy, last_lit, (uint16_t)elapsed);
 
@@ -987,7 +1152,11 @@ EXPORT int vfx_sim_num_pixels(void) { return ctx.num_pixels; }
 
 EXPORT int vfx_sim_any_lit(void) { return last_lit ? 1 : 0; }
 
-EXPORT int vfx_sim_is_animating(void) { return vfx_scene_is_animating(&scene, &ctx) ? 1 : 0; }
+EXPORT int vfx_sim_is_animating(void) {
+    const struct vfx_scene *s = shown_scene();
+
+    return s && vfx_scene_is_animating(s, &ctx) ? 1 : 0;
+}
 
 /* The same slew the firmware applies to a synchronisation beacon, so the
  * page shows convergence rather than a snap.
@@ -999,5 +1168,9 @@ EXPORT int vfx_sim_sync_step(int current_offset, int desired_offset) {
 EXPORT int vfx_sim_sync_max_slew(void) { return VFX_SYNC_MAX_SLEW_MS; }
 
 EXPORT void vfx_sim_key_event(int position, int pressed) {
-    vfx_scene_key_event(&scene, &ctx, (uint32_t)position, pressed != 0, ctx.time_ms);
+    const struct vfx_scene *s = shown_scene();
+
+    if (s) {
+        vfx_scene_key_event(s, &ctx, (uint32_t)position, pressed != 0, ctx.time_ms);
+    }
 }
