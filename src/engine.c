@@ -271,8 +271,8 @@ static const struct vfx_scene *channel_scene(uint8_t ch, uint8_t index) {
  */
 static const struct vfx_scene *current_channel_scene(uint8_t ch) {
 #if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
-    if (vfx_runtime_is_active(ch)) {
-        return vfx_runtime_scene(ch);
+    if (vfx_runtime_active_scene(ch) != VFX_RT_NONE) {
+        return vfx_runtime_current(ch);
     }
 #endif
 
@@ -494,6 +494,22 @@ static void vfx_timer_handler(struct k_timer *timer) {
 #if IS_ENABLED(CONFIG_SETTINGS)
 static struct k_work_delayable save_work;
 
+#if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
+static bool rt_legacy_blob;
+static struct vfx_rt_saved_channel rt_load;
+
+/* "<channel>_<scene>" as written by the save work above. */
+static bool parse_rt_key(const char *s, uint8_t *target) {
+    if (!s || s[0] < '0' || s[0] > '9' || s[1] != '_' || s[2] < '0' || s[2] > '9' || s[3]) {
+        return false;
+    }
+
+    *target = VFX_RT_TARGET((uint8_t)(s[0] - '0'), (uint8_t)(s[2] - '0'));
+
+    return true;
+}
+#endif
+
 static void vfx_save_work_handler(struct k_work *work) {
     ARG_UNUSED(work);
 
@@ -509,10 +525,28 @@ static void vfx_save_work_handler(struct k_work *work) {
     settings_save_one("vfx/tune", tune, tune_len);
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
-    uint16_t rt_len;
-    const void *rt = vfx_runtime_state(&rt_len);
+    /* One entry per scene, and only the ones that changed: a tweak to one
+     * layer rewrites one record rather than the whole pool.
+     */
+    uint8_t target;
 
-    settings_save_one("vfx/rt", rt, rt_len);
+    while (vfx_runtime_take_dirty(&target)) {
+        uint16_t rt_len;
+        const void *rt = vfx_runtime_state(target, &rt_len);
+        char key[16];
+
+        snprintk(key, sizeof(key), "vfx/rt/%u_%u", VFX_RT_TARGET_CH(target),
+                 VFX_RT_TARGET_SCENE(target));
+        settings_save_one(key, rt, rt_len);
+    }
+
+    if (rt_legacy_blob) {
+        /* The single combined blob an earlier layout wrote; its scenes are now
+         * entries of their own, so it only wastes flash.
+         */
+        rt_legacy_blob = false;
+        settings_delete("vfx/rt");
+    }
 #endif
 }
 
@@ -542,29 +576,33 @@ static int vfx_settings_set(const char *name, size_t len, settings_read_cb read_
     }
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
-    if (settings_name_steq(name, "rt", &next) && !next) {
-        uint16_t rt_len;
-        /* vfx_runtime_state()'s scratch buffer doubles as the landing spot
-         * for the loaded bytes: read_cb fills it directly, same as "tune"
-         * above does with its own scratch. vfx_runtime_restore_state()
-         * then copies it right back into itself, a harmless no-op on the
-         * way to the one thing this path actually needs -- rebuilding
-         * every channel's zone/config/state/layer pointers from what was
-         * just loaded, which persisting the blob alone cannot do.
-         */
-        void *rt = (void *)vfx_runtime_state(&rt_len);
+    if (settings_name_steq(name, "rt", &next)) {
+        uint8_t target;
 
-        if (len != rt_len) {
+        if (!next) {
+            /* Not read, only noticed: its scenes were never trustworthy enough
+             * to migrate (it only existed in unreleased builds), and the next
+             * save deletes it.
+             */
+            rt_legacy_blob = true;
+
+            return 0;
+        }
+
+        if (!parse_rt_key(next, &target) || len != sizeof(rt_load)) {
             return -EINVAL;
         }
 
-        const int rc = read_cb(cb_arg, rt, rt_len);
+        const int rc = read_cb(cb_arg, &rt_load, sizeof(rt_load));
 
         if (rc < 0) {
             return rc;
         }
 
-        if (!vfx_runtime_restore_state(rt, rt_len)) {
+        /* Rebuilds the zone/config/state/layer pointers from what was just
+         * loaded, which persisting the params alone cannot do.
+         */
+        if (!vfx_runtime_restore_one(target, &rt_load, sizeof(rt_load))) {
             return -EINVAL;
         }
 
@@ -764,15 +802,16 @@ static void start_scene(uint8_t ch, uint8_t index) {
 }
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
-/* Whether a channel's runtime scene is worth cycling into. An inactive,
- * empty pool would otherwise show up as a phantom last entry that renders
- * black and looks like NEXT did nothing.
+/* Whether a channel's runtime scene k is worth cycling into. An empty one
+ * would otherwise show up as a phantom entry that renders black and looks
+ * like NEXT did nothing.
  */
-static bool channel_runtime_cyclable(uint8_t ch) {
+static bool channel_runtime_cyclable(uint8_t ch, uint8_t k) {
     uint8_t count;
     bool active;
 
-    return vfx_runtime_get_info(ch, &count, &active) && count > 0;
+    return k < VFX_RT_SCENES_PER_CHANNEL &&
+           vfx_runtime_get_info(VFX_RT_TARGET(ch, k), &count, &active) && count > 0;
 }
 #endif
 
@@ -791,19 +830,21 @@ int zmk_vfx_select_scene(uint8_t ch, uint8_t index) {
         }
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
-        /* index == chan->num_scenes is the virtual slot one past the
-         * compiled list, standing in for this channel's runtime scene.
-         * Landing on it activates the runtime scene instead of starting a
-         * compiled one; landing anywhere else has to give up the runtime
+        /* Indices from chan->num_scenes up are virtual slots past the
+         * compiled list, one per runtime scene, so the index means the same
+         * scene on both halves even when one of them has an empty scene the
+         * other lacks. Landing on one activates it instead of starting a
+         * compiled scene; landing anywhere else has to give up the runtime
          * scene, or NEXT/PREV on the keymap would appear to do nothing
          * while it stayed stuck on screen.
          */
-        if (index == chan->num_scenes && channel_runtime_cyclable(i)) {
-            vfx_runtime_set_active(i, true);
+        if (index >= chan->num_scenes &&
+            channel_runtime_cyclable(i, (uint8_t)(index - chan->num_scenes))) {
+            vfx_runtime_set_active(VFX_RT_TARGET(i, index - chan->num_scenes), true);
             continue;
         }
 
-        vfx_runtime_set_active(i, false);
+        vfx_runtime_deactivate(i);
 #endif
 
         /* Channels carry lists of their own length, so one index cannot fit
@@ -840,11 +881,13 @@ uint8_t zmk_vfx_current_scene(uint8_t ch) {
     const uint8_t i = channel_for_read(ch);
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
-    if (vfx_runtime_is_active(i)) {
+    const uint8_t active = vfx_runtime_active_scene(i);
+
+    if (active != VFX_RT_NONE) {
         const struct vfx_channel *chan = vfx_channel_get(i);
 
         if (chan) {
-            return chan->num_scenes;
+            return (uint8_t)(chan->num_scenes + active);
         }
     }
 #endif
@@ -863,8 +906,14 @@ const char *zmk_vfx_scene_name(uint8_t ch, uint8_t index) {
 #if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
     const struct vfx_channel *chan = vfx_channel_get(i);
 
-    if (chan && index == chan->num_scenes && channel_runtime_cyclable(i)) {
-        return "Runtime";
+    if (chan && index >= chan->num_scenes) {
+        static const char *const names[] = {"Runtime 1", "Runtime 2", "Runtime 3", "Runtime 4",
+                                            "Runtime 5", "Runtime 6", "Runtime 7", "Runtime 8"};
+        const uint8_t k = (uint8_t)(index - chan->num_scenes);
+
+        if (channel_runtime_cyclable(i, k)) {
+            return VFX_RT_SCENES_PER_CHANNEL == 1 ? "Runtime" : names[k];
+        }
     }
 #endif
 
@@ -882,25 +931,43 @@ uint8_t zmk_vfx_calc_scene(uint8_t ch, int direction) {
         return 0;
     }
 
-    /* The runtime scene, when there is one worth showing, rides along as one
-     * extra position past the compiled list -- index == num_scenes -- so
-     * NEXT/PREV walks into and out of it the same way it walks between
-     * compiled scenes, instead of it only being reachable by activating it
-     * out of band.
+    /* Each runtime scene worth showing rides along as one extra position
+     * past the compiled list, so NEXT/PREV walks into and out of them the
+     * same way it walks between compiled scenes, instead of them only being
+     * reachable by activating one out of band.
      */
     int total = chan->num_scenes;
-    bool at_runtime = false;
+    int current = state.chan[i].scene;
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
-    if (channel_runtime_cyclable(i)) {
-        total++;
-        at_runtime = vfx_runtime_is_active(i);
+    const uint8_t active = vfx_runtime_active_scene(i);
+
+    for (uint8_t k = 0; k < VFX_RT_SCENES_PER_CHANNEL; k++) {
+        if (k == active) {
+            current = total;
+        }
+
+        if (channel_runtime_cyclable(i, k)) {
+            total++;
+        }
     }
-#endif
 
-    const int current = at_runtime ? chan->num_scenes : (int)state.chan[i].scene;
+    const int position = (current + total + direction) % total;
 
+    if (position >= chan->num_scenes) {
+        int n = position - chan->num_scenes;
+
+        for (uint8_t k = 0; k < VFX_RT_SCENES_PER_CHANNEL; k++) {
+            if (channel_runtime_cyclable(i, k) && n-- == 0) {
+                return (uint8_t)(chan->num_scenes + k);
+            }
+        }
+    }
+
+    return (uint8_t)position;
+#else
     return (uint8_t)((current + total + direction) % total);
+#endif
 }
 
 uint8_t zmk_vfx_calc_brightness(uint8_t ch, int direction) {
@@ -1026,24 +1093,30 @@ static int runtime_result(bool ok) {
     return zmk_vfx_save_state();
 }
 
-int zmk_vfx_scene_reset(uint8_t ch) {
-    if (ch >= channel_count()) {
+/* Channel in the low nibble, which of its runtime scenes in the high one. */
+static bool valid_rt_target(uint8_t target) {
+    return VFX_RT_TARGET_CH(target) < channel_count() &&
+           VFX_RT_TARGET_SCENE(target) < VFX_RT_SCENES_PER_CHANNEL;
+}
+
+int zmk_vfx_scene_reset(uint8_t target) {
+    if (!valid_rt_target(target)) {
         return -EINVAL;
     }
 
-    vfx_runtime_reset(ch);
+    vfx_runtime_reset(target);
 
     return runtime_result(true);
 }
 
-static int add_layer(uint8_t ch, const struct vfx_rt_params *params, bool staged,
+static int add_layer(uint8_t target, const struct vfx_rt_params *params, bool staged,
                      uint8_t *slot_out) {
-    if (ch >= channel_count()) {
+    if (!valid_rt_target(target)) {
         return -EINVAL;
     }
 
-    const int slot = staged ? vfx_runtime_add_layer_staged(ch, params)
-                            : vfx_runtime_add_layer(ch, params);
+    const int slot = staged ? vfx_runtime_add_layer_staged(target, params)
+                            : vfx_runtime_add_layer(target, params);
 
     if (slot < 0) {
         /* A pool that is merely full is a different problem for a host to
@@ -1061,65 +1134,65 @@ static int add_layer(uint8_t ch, const struct vfx_rt_params *params, bool staged
     return runtime_result(true);
 }
 
-int zmk_vfx_scene_add_layer(uint8_t ch, const struct vfx_rt_params *params, uint8_t *slot_out) {
-    return add_layer(ch, params, false, slot_out);
+int zmk_vfx_scene_add_layer(uint8_t target, const struct vfx_rt_params *params, uint8_t *slot_out) {
+    return add_layer(target, params, false, slot_out);
 }
 
-int zmk_vfx_scene_add_layer_staged(uint8_t ch, const struct vfx_rt_params *params,
+int zmk_vfx_scene_add_layer_staged(uint8_t target, const struct vfx_rt_params *params,
                                    uint8_t *slot_out) {
-    return add_layer(ch, params, true, slot_out);
+    return add_layer(target, params, true, slot_out);
 }
 
-int zmk_vfx_scene_commit_layer(uint8_t ch, uint8_t slot, uint8_t position) {
-    if (ch >= channel_count()) {
+int zmk_vfx_scene_commit_layer(uint8_t target, uint8_t slot, uint8_t position) {
+    if (!valid_rt_target(target)) {
         return -EINVAL;
     }
 
-    return runtime_result(vfx_runtime_commit_layer(ch, slot, position));
+    return runtime_result(vfx_runtime_commit_layer(target, slot, position));
 }
 
-int zmk_vfx_scene_set_flags(uint8_t ch, uint8_t slot, uint8_t flags) {
-    if (ch >= channel_count()) {
+int zmk_vfx_scene_set_flags(uint8_t target, uint8_t slot, uint8_t flags) {
+    if (!valid_rt_target(target)) {
         return -EINVAL;
     }
 
-    return runtime_result(vfx_runtime_set_flags(ch, slot, flags));
+    return runtime_result(vfx_runtime_set_flags(target, slot, flags));
 }
 
-int zmk_vfx_scene_set_arg(uint8_t ch, uint8_t slot, uint8_t idx, int16_t value) {
-    if (ch >= channel_count()) {
+int zmk_vfx_scene_set_arg(uint8_t target, uint8_t slot, uint8_t idx, int16_t value) {
+    if (!valid_rt_target(target)) {
         return -EINVAL;
     }
 
-    return runtime_result(vfx_runtime_set_arg(ch, slot, idx, value));
+    return runtime_result(vfx_runtime_set_arg(target, slot, idx, value));
 }
 
-int zmk_vfx_scene_set_color(uint8_t ch, uint8_t slot, uint16_t hue, uint8_t sat, uint8_t bri) {
-    if (ch >= channel_count()) {
+int zmk_vfx_scene_set_color(uint8_t target, uint8_t slot, uint16_t hue, uint8_t sat, uint8_t bri) {
+    if (!valid_rt_target(target)) {
         return -EINVAL;
     }
 
-    return runtime_result(vfx_runtime_set_color(ch, slot, hue, sat, bri));
+    return runtime_result(vfx_runtime_set_color(target, slot, hue, sat, bri));
 }
 
-int zmk_vfx_scene_remove_layer(uint8_t ch, uint8_t slot) {
-    if (ch >= channel_count()) {
+int zmk_vfx_scene_remove_layer(uint8_t target, uint8_t slot) {
+    if (!valid_rt_target(target)) {
         return -EINVAL;
     }
 
-    return runtime_result(vfx_runtime_remove_layer(ch, slot));
+    return runtime_result(vfx_runtime_remove_layer(target, slot));
 }
 
-int zmk_vfx_scene_move_layer(uint8_t ch, uint8_t slot, int8_t direction) {
-    if (ch >= channel_count()) {
+int zmk_vfx_scene_move_layer(uint8_t target, uint8_t slot, int8_t direction) {
+    if (!valid_rt_target(target)) {
         return -EINVAL;
     }
 
-    return runtime_result(vfx_runtime_move_layer(ch, slot, direction));
+    return runtime_result(vfx_runtime_move_layer(target, slot, direction));
 }
 
-int zmk_vfx_scene_activate(uint8_t ch) {
-    if (ch >= channel_count()) {
+int zmk_vfx_scene_activate(uint8_t target) {
+    if (!valid_rt_target(target)) {
         return -EINVAL;
     }
 
@@ -1131,11 +1204,11 @@ int zmk_vfx_scene_activate(uint8_t ch) {
     vfx_power_reset(&power_ctl);
 #endif
 
-    return runtime_result(vfx_runtime_set_active(ch, true));
+    return runtime_result(vfx_runtime_set_active(target, true));
 }
 
-int zmk_vfx_scene_deactivate(uint8_t ch) {
-    if (ch >= channel_count()) {
+int zmk_vfx_scene_deactivate(uint8_t target) {
+    if (!valid_rt_target(target)) {
         return -EINVAL;
     }
 
@@ -1143,40 +1216,44 @@ int zmk_vfx_scene_deactivate(uint8_t ch) {
     vfx_power_reset(&power_ctl);
 #endif
 
-    return runtime_result(vfx_runtime_set_active(ch, false));
+    return runtime_result(vfx_runtime_set_active(target, false));
 }
 
-int zmk_vfx_scene_info(uint8_t ch, uint8_t *count, bool *active) {
-    if (ch >= channel_count() || !vfx_runtime_get_info(ch, count, active)) {
+int zmk_vfx_scene_info(uint8_t target, uint8_t *count, bool *active, uint8_t *active_scene,
+                       uint32_t *hash) {
+    if (!valid_rt_target(target) || !vfx_runtime_get_info(target, count, active)) {
+        return -EINVAL;
+    }
+
+    *active_scene = vfx_runtime_active_scene(VFX_RT_TARGET_CH(target));
+    *hash = vfx_runtime_hash(target);
+
+    return 0;
+}
+
+int zmk_vfx_scene_get_layer(uint8_t target, uint8_t slot, struct vfx_rt_params *out) {
+    if (!valid_rt_target(target) || !vfx_runtime_get_layer(target, slot, out)) {
         return -EINVAL;
     }
 
     return 0;
 }
 
-int zmk_vfx_scene_get_layer(uint8_t ch, uint8_t slot, struct vfx_rt_params *out) {
-    if (ch >= channel_count() || !vfx_runtime_get_layer(ch, slot, out)) {
+int zmk_vfx_scene_get_order(uint8_t target, uint8_t *order, uint8_t *count) {
+    if (!valid_rt_target(target) || !vfx_runtime_get_order(target, order, count)) {
         return -EINVAL;
     }
 
     return 0;
 }
 
-int zmk_vfx_scene_get_order(uint8_t ch, uint8_t *order, uint8_t *count) {
-    if (ch >= channel_count() || !vfx_runtime_get_order(ch, order, count)) {
-        return -EINVAL;
-    }
-
-    return 0;
-}
-
-int zmk_vfx_scene_gradient_add_stop(uint8_t ch, uint8_t slot, uint16_t hue, uint8_t sat,
+int zmk_vfx_scene_gradient_add_stop(uint8_t target, uint8_t slot, uint16_t hue, uint8_t sat,
                                     uint8_t bri) {
-    if (ch >= channel_count()) {
+    if (!valid_rt_target(target)) {
         return -EINVAL;
     }
 
-    if (!vfx_runtime_gradient_add_stop(ch, slot, hue, sat, bri)) {
+    if (!vfx_runtime_gradient_add_stop(target, slot, hue, sat, bri)) {
         /* A full stop list is a different problem for a host to react to
          * (stop adding) than a bad channel, slot or non-gradient type, the
          * same distinction zmk_vfx_scene_add_layer() already makes for a
@@ -1184,7 +1261,7 @@ int zmk_vfx_scene_gradient_add_stop(uint8_t ch, uint8_t slot, uint16_t hue, uint
          */
         struct vfx_rt_params p;
 
-        return (vfx_runtime_get_layer(ch, slot, &p) && p.type == VFX_RT_GRADIENT &&
+        return (vfx_runtime_get_layer(target, slot, &p) && p.type == VFX_RT_GRADIENT &&
                 p.num_colors >= VFX_RT_GRADIENT_MAX_STOPS)
                  ? -ENOSPC
                  : -EINVAL;
@@ -1193,18 +1270,18 @@ int zmk_vfx_scene_gradient_add_stop(uint8_t ch, uint8_t slot, uint16_t hue, uint
     return runtime_result(true);
 }
 
-int zmk_vfx_scene_gradient_get_stop(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t *hue,
+int zmk_vfx_scene_gradient_get_stop(uint8_t target, uint8_t slot, uint8_t idx, uint16_t *hue,
                                     uint8_t *sat, uint8_t *bri) {
-    if (ch >= channel_count() || !vfx_runtime_gradient_get_stop(ch, slot, idx, hue, sat, bri)) {
+    if (!valid_rt_target(target) || !vfx_runtime_gradient_get_stop(target, slot, idx, hue, sat, bri)) {
         return -EINVAL;
     }
 
     return 0;
 }
 
-int zmk_vfx_scene_set_list_color(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t hue, uint8_t sat,
+int zmk_vfx_scene_set_list_color(uint8_t target, uint8_t slot, uint8_t idx, uint16_t hue, uint8_t sat,
                                  uint8_t bri) {
-    if (ch >= channel_count()) {
+    if (!valid_rt_target(target)) {
         return -EINVAL;
     }
 
@@ -1212,21 +1289,21 @@ int zmk_vfx_scene_set_list_color(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t
         return -ENOSPC;
     }
 
-    return runtime_result(vfx_runtime_set_list_color(ch, slot, idx, hue, sat, bri));
+    return runtime_result(vfx_runtime_set_list_color(target, slot, idx, hue, sat, bri));
 }
 
-int zmk_vfx_scene_get_list_color(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t *hue,
+int zmk_vfx_scene_get_list_color(uint8_t target, uint8_t slot, uint8_t idx, uint16_t *hue,
                                  uint8_t *sat, uint8_t *bri) {
-    if (ch >= channel_count() || !vfx_runtime_get_list_color(ch, slot, idx, hue, sat, bri)) {
+    if (!valid_rt_target(target) || !vfx_runtime_get_list_color(target, slot, idx, hue, sat, bri)) {
         return -EINVAL;
     }
 
     return 0;
 }
 
-int zmk_vfx_scene_set_zone(uint8_t ch, uint8_t slot, uint8_t kind, uint8_t offset,
+int zmk_vfx_scene_set_zone(uint8_t target, uint8_t slot, uint8_t kind, uint8_t offset,
                            const uint8_t *data, uint8_t count) {
-    if (ch >= channel_count()) {
+    if (!valid_rt_target(target)) {
         return -EINVAL;
     }
 
@@ -1234,27 +1311,27 @@ int zmk_vfx_scene_set_zone(uint8_t ch, uint8_t slot, uint8_t kind, uint8_t offse
         return -ENOSPC;
     }
 
-    return runtime_result(vfx_runtime_set_zone(ch, slot, kind, offset, data, count));
+    return runtime_result(vfx_runtime_set_zone(target, slot, kind, offset, data, count));
 }
 
-int zmk_vfx_scene_get_zone(uint8_t ch, uint8_t slot, uint8_t offset, uint8_t *kind,
+int zmk_vfx_scene_get_zone(uint8_t target, uint8_t slot, uint8_t offset, uint8_t *kind,
                            uint8_t *total, uint8_t *data, uint8_t max, uint8_t *n) {
-    if (ch >= channel_count() ||
-        !vfx_runtime_get_zone(ch, slot, offset, kind, total, data, max, n)) {
+    if (!valid_rt_target(target) ||
+        !vfx_runtime_get_zone(target, slot, offset, kind, total, data, max, n)) {
         return -EINVAL;
     }
 
     return 0;
 }
 
-int zmk_vfx_scene_set_opts(uint8_t ch, uint8_t slot, uint8_t blend, uint8_t opacity,
+int zmk_vfx_scene_set_opts(uint8_t target, uint8_t slot, uint8_t blend, uint8_t opacity,
                            uint8_t opacity_src, uint8_t opacity_min, uint8_t opacity_full,
                            uint8_t tune_id) {
-    if (ch >= channel_count()) {
+    if (!valid_rt_target(target)) {
         return -EINVAL;
     }
 
-    return runtime_result(vfx_runtime_set_opts(ch, slot, blend, opacity, opacity_src, opacity_min,
+    return runtime_result(vfx_runtime_set_opts(target, slot, blend, opacity, opacity_src, opacity_min,
                                                opacity_full, tune_id));
 }
 #endif /* CONFIG_ZMK_VFX_RUNTIME_SCENES */

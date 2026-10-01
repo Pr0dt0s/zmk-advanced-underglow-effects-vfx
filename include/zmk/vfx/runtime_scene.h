@@ -14,7 +14,7 @@
 #include <zmk/vfx/scenes.h>
 
 /*
- * A scene built at runtime instead of by devicetree, one per channel, kept
+ * A scene built at runtime instead of by devicetree, several per channel (VFX_RT_SCENES_PER_CHANNEL), kept
  * to a bounded pool the same way the WebAssembly simulator's vfx_sim.c
  * builds one into a fixed arena rather than reading flash-const structs.
  * That is what makes this possible without an allocator: fixed arenas are
@@ -88,6 +88,10 @@ enum vfx_rt_type {
 #define CONFIG_ZMK_VFX_RUNTIME_MAX_ZONE_PIXELS 32
 #endif
 
+#ifndef CONFIG_ZMK_VFX_RUNTIME_SCENES_PER_CHANNEL
+#define CONFIG_ZMK_VFX_RUNTIME_SCENES_PER_CHANNEL 1
+#endif
+
 #ifndef CONFIG_ZMK_VFX_RUNTIME_HEAVY_STATES
 #define CONFIG_ZMK_VFX_RUNTIME_HEAVY_STATES 2
 #endif
@@ -96,6 +100,28 @@ enum vfx_rt_type {
 #define VFX_RT_MAX_COLORS CONFIG_ZMK_VFX_RUNTIME_MAX_COLORS
 #define VFX_RT_MAX_ZONE_PIXELS CONFIG_ZMK_VFX_RUNTIME_MAX_ZONE_PIXELS
 #define VFX_RT_HEAVY_STATES CONFIG_ZMK_VFX_RUNTIME_HEAVY_STATES
+#define VFX_RT_SCENES_PER_CHANNEL CONFIG_ZMK_VFX_RUNTIME_SCENES_PER_CHANNEL
+
+/* The first argument of every vfx_runtime_* call, and the wire byte that names
+ * what a host is editing: channel in the low nibble, which of that channel's
+ * runtime scenes in the high one. Scene 0 is what a host that predates several
+ * scenes per channel already addresses, so those keep working unchanged.
+ */
+#define VFX_RT_TARGET(ch, scene) ((uint8_t)(((scene) << 4) | ((ch) & 0x0F)))
+#define VFX_RT_TARGET_CH(t) ((uint8_t)((t) & 0x0F))
+#define VFX_RT_TARGET_SCENE(t) ((uint8_t)((t) >> 4))
+
+/* active_scene() answer for "the channel is showing its compiled list". */
+#define VFX_RT_NONE 0xFF
+
+/* Limits on what one runtime scene and the whole pool may take of the settings
+ * partition. The entry limit sits under the ~4 KB a settings (NVS) record can
+ * hold; the total is half of a 32 KB partition, leaving the rest to pairing
+ * keys and everything else that persists there. runtime_scene.c asserts both,
+ * so raising a Kconfig bound past them stops the build rather than a save.
+ */
+#define VFX_RT_SAVED_ENTRY_MAX 4000
+#define VFX_RT_SAVED_TOTAL_MAX 16384
 
 /* Small numbers a generator can be given, beyond its colours. SCENE_ADD_LAYER
  * carries the first four; SCENE_SET_ARG reaches all six, which is what lets
@@ -286,12 +312,11 @@ struct vfx_rt_channel {
     struct vfx_layer render[VFX_RT_MAX_LAYERS];
     struct vfx_scene scene;
 
-    bool active; /* true once this channel is showing this scene */
 };
 
 void vfx_runtime_init(void);
 
-void vfx_runtime_reset(uint8_t ch);
+void vfx_runtime_reset(uint8_t target);
 
 /* Where key positions turn into pixels: the engine's frame context, whose
  * key map and this half's strip offset are what a KEYS zone resolves through.
@@ -302,11 +327,11 @@ void vfx_runtime_reset(uint8_t ch);
 void vfx_runtime_set_key_context(const struct vfx_frame_ctx *ctx);
 
 /* Slot id (0..VFX_RT_MAX_LAYERS-1) on success, otherwise VFX_RT_ERR_INVALID
- * (ch out of range, unknown type, or a zone list longer than the pool
+ * (target out of range, unknown type, or a zone list longer than the pool
  * allows) or VFX_RT_ERR_FULL (the channel's pool is full, or it is a trail
  * or hold and every heavy state is taken).
  */
-int vfx_runtime_add_layer(uint8_t ch, const struct vfx_rt_params *params);
+int vfx_runtime_add_layer(uint8_t target, const struct vfx_rt_params *params);
 
 /* Same as add_layer, but the layer is held back from the render order: it can
  * be edited (set_arg, set_list_color, set_zone, set_opts, set_flags), holds its
@@ -316,41 +341,57 @@ int vfx_runtime_add_layer(uint8_t ch, const struct vfx_rt_params *params);
  * layer with a second colour or a zone list appear fully built instead of
  * half-configured. remove_layer abandons one.
  */
-int vfx_runtime_add_layer_staged(uint8_t ch, const struct vfx_rt_params *params);
+int vfx_runtime_add_layer_staged(uint8_t target, const struct vfx_rt_params *params);
 
 /* Puts a staged layer into render order at `position` (0 is the bottom;
  * anything at or past the current count means the top). False for a slot that
  * is unused or already rendered.
  */
-bool vfx_runtime_commit_layer(uint8_t ch, uint8_t slot, uint8_t position);
+bool vfx_runtime_commit_layer(uint8_t target, uint8_t slot, uint8_t position);
 
 /* Replaces a layer's flags byte in place (see VFX_RT_FLAG_*), so toggling stack,
  * reverse or axis needs no remove and re-add. False for bits outside
  * VFX_RT_FLAGS_MASK.
  */
-bool vfx_runtime_set_flags(uint8_t ch, uint8_t slot, uint8_t flags);
+bool vfx_runtime_set_flags(uint8_t target, uint8_t slot, uint8_t flags);
 
 /* idx 0..VFX_RT_MAX_ARGS-1. */
-bool vfx_runtime_set_arg(uint8_t ch, uint8_t slot, uint8_t idx, int16_t value);
-bool vfx_runtime_set_color(uint8_t ch, uint8_t slot, uint16_t hue, uint8_t sat, uint8_t bri);
-bool vfx_runtime_remove_layer(uint8_t ch, uint8_t slot);
+bool vfx_runtime_set_arg(uint8_t target, uint8_t slot, uint8_t idx, int16_t value);
+bool vfx_runtime_set_color(uint8_t target, uint8_t slot, uint16_t hue, uint8_t sat, uint8_t bri);
+bool vfx_runtime_remove_layer(uint8_t target, uint8_t slot);
 
 /* Swaps the layer at `slot` with its neighbour in render order, same as the
  * composer's up/down buttons. False at either end of the list.
  */
-bool vfx_runtime_move_layer(uint8_t ch, uint8_t slot, int8_t direction);
+bool vfx_runtime_move_layer(uint8_t target, uint8_t slot, int8_t direction);
 
-bool vfx_runtime_set_active(uint8_t ch, bool active);
-bool vfx_runtime_is_active(uint8_t ch);
+/* true makes this scene the one its channel shows (and ends whichever other
+ * runtime scene was); false ends it only if it is the one showing.
+ */
+bool vfx_runtime_set_active(uint8_t target, bool active);
 
-/* NULL if ch is out of range or its scene has no layers -- render_frame()
+/* Back to the channel's compiled list, whichever runtime scene was showing. */
+void vfx_runtime_deactivate(uint8_t ch);
+
+/* Whether this very scene is the one showing. */
+bool vfx_runtime_is_active(uint8_t target);
+
+/* Which of a channel's scenes is showing, or VFX_RT_NONE. */
+uint8_t vfx_runtime_active_scene(uint8_t ch);
+
+/* The scene a channel is showing, NULL when it shows its compiled list or the
+ * runtime scene is empty.
+ */
+const struct vfx_scene *vfx_runtime_current(uint8_t ch);
+
+/* NULL if target is out of range or its scene has no layers -- render_frame()
  * already treats a NULL scene as black, so a caller need not special-case
  * "nothing built yet" itself.
  */
-const struct vfx_scene *vfx_runtime_scene(uint8_t ch);
+const struct vfx_scene *vfx_runtime_scene(uint8_t target);
 
-bool vfx_runtime_get_info(uint8_t ch, uint8_t *count, bool *active);
-bool vfx_runtime_get_layer(uint8_t ch, uint8_t slot, struct vfx_rt_params *out);
+bool vfx_runtime_get_info(uint8_t target, uint8_t *count, bool *active);
+bool vfx_runtime_get_layer(uint8_t target, uint8_t slot, struct vfx_rt_params *out);
 
 /* Slot ids in render order, bottom of the stack first, same sense
  * render_order[] itself already keeps them in. `order` must have room for
@@ -358,33 +399,33 @@ bool vfx_runtime_get_layer(uint8_t ch, uint8_t slot, struct vfx_rt_params *out);
  * is the only way to learn that order at all -- get_layer answers one slot
  * at a time and says nothing about where it renders relative to the rest.
  */
-bool vfx_runtime_get_order(uint8_t ch, uint8_t *order, uint8_t *count);
+bool vfx_runtime_get_order(uint8_t target, uint8_t *order, uint8_t *count);
 
 /* Sets entry `idx` of a slot's colour list (any generator type), growing the
  * list to idx+1 if it is longer than the list was; entries a growth skips
- * over read as black, which every generator treats as "unset". False if ch or
+ * over read as black, which every generator treats as "unset". False if target or
  * slot is not valid or idx is VFX_RT_MAX_COLORS or more.
  */
-bool vfx_runtime_set_list_color(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t hue,
+bool vfx_runtime_set_list_color(uint8_t target, uint8_t slot, uint8_t idx, uint16_t hue,
                                 uint8_t sat, uint8_t bri);
 
-/* False if ch, slot or idx is out of range (idx at or past the list's
+/* False if target, slot or idx is out of range (idx at or past the list's
  * current length).
  */
-bool vfx_runtime_get_list_color(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t *hue,
+bool vfx_runtime_get_list_color(uint8_t target, uint8_t slot, uint8_t idx, uint16_t *hue,
                                 uint8_t *sat, uint8_t *bri);
 
 /* Appends one stop to a gradient slot's list and rebuilds it, in the order
- * stops are sent. False if ch or slot is out of range, the slot is not a
+ * stops are sent. False if target or slot is out of range, the slot is not a
  * gradient, or its list already holds VFX_RT_MAX_COLORS stops.
  */
-bool vfx_runtime_gradient_add_stop(uint8_t ch, uint8_t slot, uint16_t hue, uint8_t sat,
+bool vfx_runtime_gradient_add_stop(uint8_t target, uint8_t slot, uint16_t hue, uint8_t sat,
                                    uint8_t bri);
 
 /* The other half, for a host reading a gradient back one stop at a time.
- * False if ch, slot or idx is out of range, or the slot is not a gradient.
+ * False if target, slot or idx is out of range, or the slot is not a gradient.
  */
-bool vfx_runtime_gradient_get_stop(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t *hue,
+bool vfx_runtime_gradient_get_stop(uint8_t target, uint8_t slot, uint8_t idx, uint16_t *hue,
                                    uint8_t *sat, uint8_t *bri);
 
 /* Writes part of a slot's zone.
@@ -399,25 +440,25 @@ bool vfx_runtime_gradient_get_stop(uint8_t ch, uint8_t slot, uint8_t idx, uint16
  * 0 starts the list over, and is also what switches a zone from one kind to
  * another. count of 0 with offset 0 makes an empty list.
  *
- * False if ch or slot is invalid, the kind is unknown, or the list would
+ * False if target or slot is invalid, the kind is unknown, or the list would
  * overrun the pool.
  */
-bool vfx_runtime_set_zone(uint8_t ch, uint8_t slot, uint8_t kind, uint8_t offset,
+bool vfx_runtime_set_zone(uint8_t target, uint8_t slot, uint8_t kind, uint8_t offset,
                           const uint8_t *data, uint8_t count);
 
 /* Reads a slot's zone back in pieces. *kind and *total are what the zone
  * is; up to `max` bytes of it starting at `offset` go to `data` and `*n` is
  * how many. For RANGE the "list" is the two bytes start, length. False if
- * ch or slot is invalid or offset is past the end.
+ * target or slot is invalid or offset is past the end.
  */
-bool vfx_runtime_get_zone(uint8_t ch, uint8_t slot, uint8_t offset, uint8_t *kind, uint8_t *total,
+bool vfx_runtime_get_zone(uint8_t target, uint8_t slot, uint8_t offset, uint8_t *kind, uint8_t *total,
                           uint8_t *data, uint8_t max, uint8_t *n);
 
 /* blend, opacity, the source that drives opacity, and the tuning slot. False
- * if ch or slot is invalid, blend is past VFX_BLEND_MAX or opacity_src past
+ * if target or slot is invalid, blend is past VFX_BLEND_MAX or opacity_src past
  * VFX_SRC_ACTIVITY.
  */
-bool vfx_runtime_set_opts(uint8_t ch, uint8_t slot, uint8_t blend, uint8_t opacity,
+bool vfx_runtime_set_opts(uint8_t target, uint8_t slot, uint8_t blend, uint8_t opacity,
                           uint8_t opacity_src, uint8_t opacity_min, uint8_t opacity_full,
                           uint8_t tune_id);
 
@@ -444,17 +485,29 @@ struct vfx_rt_saved_channel {
     bool active;
 };
 
-/* The whole pool, across every channel, for persisting it. Same shape as
- * vfx_tuning_state(): the returned pointer is scratch storage this module
- * owns, valid until the next call.
+/* One scene's image for persisting it. Same shape as vfx_tuning_state(): the
+ * returned pointer is scratch storage this module owns, valid until the next
+ * call. NULL for an invalid target.
  */
-const void *vfx_runtime_state(uint16_t *len);
+const void *vfx_runtime_state(uint8_t target, uint16_t *len);
 
-/* The other half of that: rebuilds every channel's slots, render order and
+/* The other half of that: rebuilds one scene's slots, render order and
  * activation from a blob vfx_runtime_state() previously produced. False
- * (state left untouched) if len does not match, which a caller takes to
- * mean the saved layout does not match this build. A slot whose saved
- * params fail validation, or that needs a heavy state none is left for, is
- * dropped rather than trusted.
+ * (scene left untouched) if len does not match, which a caller takes to mean
+ * the saved layout does not match this build. A slot whose saved params fail
+ * validation, or that needs a heavy state none is left for, is dropped rather
+ * than trusted.
  */
-bool vfx_runtime_restore_state(const void *blob, uint16_t len);
+bool vfx_runtime_restore_one(uint8_t target, const void *blob, uint16_t len);
+
+/* Hands back one scene changed since it was last handed back (or restored),
+ * and clears it. False once none is left. What the save work loops over so a
+ * change to one scene writes one flash entry rather than the whole pool.
+ */
+bool vfx_runtime_take_dirty(uint8_t *target);
+
+/* A checksum of what a host built into one scene: every committed layer's
+ * params in render order and its slot id. Two halves that were sent the same
+ * messages agree; see runtime_scene.c for what is deliberately left out.
+ */
+uint32_t vfx_runtime_hash(uint8_t target);

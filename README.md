@@ -923,12 +923,24 @@ sized per channel:
 | `CONFIG_ZMK_VFX_RUNTIME_MAX_LAYERS` | 6 (1–16) | Layers in the pool. |
 | `CONFIG_ZMK_VFX_RUNTIME_MAX_COLORS` | 8 (3–16) | Entries in a layer's colour list: a gradient's stops, a layer-state layer's colours, the second colour of the generators that draw with two. At least 3, which is what `peripheral-battery` needs. |
 | `CONFIG_ZMK_VFX_RUNTIME_MAX_ZONE_PIXELS` | 32 (4–128) | Entries in a `pixels` or `keys` zone. |
+| `CONFIG_ZMK_VFX_RUNTIME_SCENES_PER_CHANNEL` | 1 (1–8) | Runtime scenes per channel. Each is its own pool of layers, saved on its own, and each joins the NEXT/PREV cycle (as `Runtime`, or `Runtime 1`…`Runtime N` when there are several) while it has at least one layer. |
 | `CONFIG_ZMK_VFX_RUNTIME_HEAVY_STATES` | 2 (1–8) | `trail` and `hold` layers at once. Each keeps a byte of animation state per pixel, which every other layer would waste if each slot carried it, so they draw from this small pool instead. Adding one when it is empty is refused with `POOL_FULL`, the answer a full layer pool gives. |
 
 The colour list, the zone list and the layer count are persisted with every
-layer, so together they size the saved blob (`vfx/rt`), which has to fit one
-flash sector. Raising all of them at once can stop that from fitting; the
-option help in `Kconfig` says the same.
+layer, so together they size a scene's saved entry (`vfx/rt/<channel>_<scene>`),
+which has to fit one settings record. Two compile-time asserts keep that
+honest: one saved scene is at most 4000 bytes, and all of them together (channels
+× scenes × saved size) at most 16384, half of a 32 KB settings partition. Raising
+the options past either fails the build instead of silently losing a save.
+
+#### Targets
+
+Every scene op's channel byte is really a **target**: the channel in the low
+nibble and the runtime scene's index in the high one (`scene << 4 | channel`).
+Scene 0 is what the byte always meant, so a host that predates several scenes
+keeps working unchanged. `SCENE_ACTIVATE` on a target makes that scene the one
+its channel shows and ends whichever was showing; `SCENE_DEACTIVATE` ends it
+only if it is the one showing.
 
 ### The wire format
 
@@ -952,7 +964,7 @@ channel's own pool — a different id space from a tuning slot, assigned by
 | `SCENE_MOVE_LAYER` (`0x0C`) | ch, slot, direction (`int8`, ±1) | `0x8C`: slot, status | 3 |
 | `SCENE_ACTIVATE` (`0x0D`) | ch | `0x8D`: ch, status | 3 |
 | `SCENE_DEACTIVATE` (`0x0E`) | ch | `0x8E`: ch, status | 3 |
-| `SCENE_GET_INFO` (`0x0F`) | ch | `0x8F`: ch, count, active, status | 5 |
+| `SCENE_GET_INFO` (`0x0F`) | target | `0x8F`: target, count, active, status, scenes per channel, active scene (`0xFF` = none), hash (`uint32` LE) | 11 |
 | `SCENE_GET_LAYER` (`0x10`) | ch, slot | `0x90`: ch, slot, type, zone start, zone len, blend, opacity, hue, sat, bri, 4 args, flags, status | 22 |
 | `SCENE_GET_ORDER` (`0x11`) | ch | `0x91`: ch, count, `count` slot ids, status | 4 + count |
 | `SCENE_GRADIENT_ADD_STOP` (`0x12`) | ch, slot, hue (`int16`), sat, bri | `0x92`: slot, status | 3 |
@@ -1122,8 +1134,10 @@ stop count in `args[2]`, a number it never otherwise uses.
 ### Persistence
 
 Saved the same way tuning is: `vfx_runtime_state()` hands
-`vfx_save_work_handler()` a snapshot to write to the `"vfx/rt"` settings key,
-debounced the same 2 seconds after the last change as everything else this
+`vfx_save_work_handler()` a snapshot of each scene that changed to write to its
+own `"vfx/rt/<channel>_<scene>"` settings key (an edit rewrites one scene, not the
+whole pool; the single `vfx/rt` blob of earlier builds is deleted on the first
+save), debounced the same 2 seconds after the last change as everything else this
 module persists. What gets saved is deliberately not the live pool itself —
 every slot's `zone`/`config`/`state`/`layer` are plain pointers into that
 same pool, not something to trust after a reboot or a different build — only

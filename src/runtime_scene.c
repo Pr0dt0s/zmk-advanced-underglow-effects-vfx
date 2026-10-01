@@ -9,7 +9,30 @@
 #include <zmk/vfx/engine.h>
 #include <zmk/vfx/runtime_scene.h>
 
-static struct vfx_rt_channel channels[VFX_MAX_CHANNELS];
+static struct vfx_rt_channel channels[VFX_MAX_CHANNELS][VFX_RT_SCENES_PER_CHANNEL];
+
+/* Which scene of each channel is on screen, or VFX_RT_NONE for the compiled
+ * list. Kept beside the pool rather than in each scene because at most one of
+ * a channel's scenes can be showing.
+ */
+static uint8_t active_scene[VFX_MAX_CHANNELS];
+
+/* Set by every change that alters what vfx_runtime_state() would write for a
+ * scene, cleared by vfx_runtime_take_dirty() as the save work picks it up.
+ */
+static bool dirty[VFX_MAX_CHANNELS][VFX_RT_SCENES_PER_CHANNEL];
+
+/* A flash entry must fit a settings record and the lot must leave room for
+ * everything else on the settings partition. Enforced here so a Kconfig change
+ * that outgrows either fails to build instead of failing to save.
+ */
+_Static_assert(sizeof(struct vfx_rt_saved_channel) <= VFX_RT_SAVED_ENTRY_MAX,
+               "one runtime scene no longer fits a settings entry: lower RUNTIME_MAX_LAYERS, "
+               "RUNTIME_MAX_COLORS or RUNTIME_MAX_ZONE_PIXELS");
+_Static_assert(VFX_MAX_CHANNELS * VFX_RT_SCENES_PER_CHANNEL * sizeof(struct vfx_rt_saved_channel) <=
+                   VFX_RT_SAVED_TOTAL_MAX,
+               "saved runtime scenes would use too much of the settings partition: lower "
+               "RUNTIME_SCENES_PER_CHANNEL or the per-scene limits");
 
 /* What a KEYS zone resolves through. Copied rather than pointed at so this
  * file never depends on the engine's own copy staying put.
@@ -17,7 +40,19 @@ static struct vfx_rt_channel channels[VFX_MAX_CHANNELS];
 static struct vfx_frame_ctx key_ctx;
 static bool key_ctx_set;
 
-static bool valid_channel(uint8_t ch) { return ch < VFX_MAX_CHANNELS; }
+static bool valid_target(uint8_t target) {
+    return VFX_RT_TARGET_CH(target) < VFX_MAX_CHANNELS &&
+           VFX_RT_TARGET_SCENE(target) < VFX_RT_SCENES_PER_CHANNEL;
+}
+
+/* Callers check valid_target() first, which is what makes this safe. */
+static struct vfx_rt_channel *rt(uint8_t target) {
+    return &channels[VFX_RT_TARGET_CH(target)][VFX_RT_TARGET_SCENE(target)];
+}
+
+static void touch(uint8_t target) {
+    dirty[VFX_RT_TARGET_CH(target)][VFX_RT_TARGET_SCENE(target)] = true;
+}
 
 static bool valid_slot(const struct vfx_rt_channel *rc, uint8_t slot) {
     return slot < VFX_RT_MAX_LAYERS && rc->slots[slot].used;
@@ -518,20 +553,20 @@ static void rebuild_render(struct vfx_rt_channel *rc) {
 
 void vfx_runtime_init(void) {
     memset(channels, 0, sizeof(channels));
+    memset(active_scene, VFX_RT_NONE, sizeof(active_scene));
+    memset(dirty, 0, sizeof(dirty));
     memset(&key_ctx, 0, sizeof(key_ctx));
     key_ctx_set = false;
 }
 
-void vfx_runtime_reset(uint8_t ch) {
-    if (!valid_channel(ch)) {
+void vfx_runtime_reset(uint8_t target) {
+    if (!valid_target(target)) {
         return;
     }
 
-    const bool active = channels[ch].active;
-
-    memset(&channels[ch], 0, sizeof(channels[ch]));
-    channels[ch].active = active;
-    rebuild_render(&channels[ch]);
+    memset(rt(target), 0, sizeof(*rt(target)));
+    rebuild_render(rt(target));
+    touch(target);
 }
 
 void vfx_runtime_set_key_context(const struct vfx_frame_ctx *ctx) {
@@ -539,22 +574,24 @@ void vfx_runtime_set_key_context(const struct vfx_frame_ctx *ctx) {
     key_ctx_set = true;
 
     for (uint8_t ch = 0; ch < VFX_MAX_CHANNELS; ch++) {
-        for (uint8_t i = 0; i < VFX_RT_MAX_LAYERS; i++) {
-            struct vfx_rt_slot *s = &channels[ch].slots[i];
+        for (uint8_t sc = 0; sc < VFX_RT_SCENES_PER_CHANNEL; sc++) {
+            for (uint8_t i = 0; i < VFX_RT_MAX_LAYERS; i++) {
+                struct vfx_rt_slot *s = &channels[ch][sc].slots[i];
 
-            if (s->used && s->params.zone_kind == VFX_RT_ZONE_KEYS) {
-                resolve_zone(s);
+                if (s->used && s->params.zone_kind == VFX_RT_ZONE_KEYS) {
+                    resolve_zone(s);
+                }
             }
         }
     }
 }
 
-static int add_layer(uint8_t ch, const struct vfx_rt_params *params, bool staged) {
-    if (!valid_channel(ch) || !params_valid(params)) {
+static int add_layer(uint8_t target, const struct vfx_rt_params *params, bool staged) {
+    if (!valid_target(target) || !params_valid(params)) {
         return VFX_RT_ERR_INVALID;
     }
 
-    struct vfx_rt_channel *rc = &channels[ch];
+    struct vfx_rt_channel *rc = rt(target);
 
     if (rc->count >= VFX_RT_MAX_LAYERS) {
         return VFX_RT_ERR_FULL;
@@ -596,23 +633,25 @@ static int add_layer(uint8_t ch, const struct vfx_rt_params *params, bool staged
         rebuild_render(rc);
     }
 
+    touch(target);
+
     return slot;
 }
 
-int vfx_runtime_add_layer(uint8_t ch, const struct vfx_rt_params *params) {
-    return add_layer(ch, params, false);
+int vfx_runtime_add_layer(uint8_t target, const struct vfx_rt_params *params) {
+    return add_layer(target, params, false);
 }
 
-int vfx_runtime_add_layer_staged(uint8_t ch, const struct vfx_rt_params *params) {
-    return add_layer(ch, params, true);
+int vfx_runtime_add_layer_staged(uint8_t target, const struct vfx_rt_params *params) {
+    return add_layer(target, params, true);
 }
 
-bool vfx_runtime_commit_layer(uint8_t ch, uint8_t slot, uint8_t position) {
-    if (!valid_channel(ch) || !valid_slot(&channels[ch], slot)) {
+bool vfx_runtime_commit_layer(uint8_t target, uint8_t slot, uint8_t position) {
+    if (!valid_target(target) || !valid_slot(rt(target), slot)) {
         return false;
     }
 
-    struct vfx_rt_channel *rc = &channels[ch];
+    struct vfx_rt_channel *rc = rt(target);
 
     if (render_position(rc, slot) != VFX_RT_MAX_LAYERS || rc->count >= VFX_RT_MAX_LAYERS) {
         return false; /* already rendered, or nowhere left to put it */
@@ -627,17 +666,18 @@ bool vfx_runtime_commit_layer(uint8_t ch, uint8_t slot, uint8_t position) {
     rc->render_order[pos] = slot;
     rc->count++;
     rebuild_render(rc);
+    touch(target);
 
     return true;
 }
 
-bool vfx_runtime_set_flags(uint8_t ch, uint8_t slot, uint8_t flags) {
-    if (!valid_channel(ch) || !valid_slot(&channels[ch], slot) ||
+bool vfx_runtime_set_flags(uint8_t target, uint8_t slot, uint8_t flags) {
+    if (!valid_target(target) || !valid_slot(rt(target), slot) ||
         (flags & (uint8_t)~VFX_RT_FLAGS_MASK) != 0) {
         return false;
     }
 
-    struct vfx_rt_channel *rc = &channels[ch];
+    struct vfx_rt_channel *rc = rt(target);
     struct vfx_rt_slot *s = &rc->slots[slot];
 
     s->params.flags = flags;
@@ -650,42 +690,47 @@ bool vfx_runtime_set_flags(uint8_t ch, uint8_t slot, uint8_t flags) {
     }
 
     rebuild_render(rc);
+    touch(target);
 
     return true;
 }
 
-bool vfx_runtime_set_arg(uint8_t ch, uint8_t slot, uint8_t idx, int16_t value) {
-    if (!valid_channel(ch) || idx >= VFX_RT_MAX_ARGS || !valid_slot(&channels[ch], slot)) {
+bool vfx_runtime_set_arg(uint8_t target, uint8_t slot, uint8_t idx, int16_t value) {
+    if (!valid_target(target) || idx >= VFX_RT_MAX_ARGS || !valid_slot(rt(target), slot)) {
         return false;
     }
 
-    struct vfx_rt_slot *s = &channels[ch].slots[slot];
+    struct vfx_rt_slot *s = &rt(target)->slots[slot];
 
     s->params.args[idx] = value;
 
-    return rebuild_slot(&channels[ch], s);
+    touch(target);
+
+    return rebuild_slot(rt(target), s);
 }
 
-bool vfx_runtime_set_color(uint8_t ch, uint8_t slot, uint16_t hue, uint8_t sat, uint8_t bri) {
-    if (!valid_channel(ch) || !valid_slot(&channels[ch], slot)) {
+bool vfx_runtime_set_color(uint8_t target, uint8_t slot, uint16_t hue, uint8_t sat, uint8_t bri) {
+    if (!valid_target(target) || !valid_slot(rt(target), slot)) {
         return false;
     }
 
-    struct vfx_rt_slot *s = &channels[ch].slots[slot];
+    struct vfx_rt_slot *s = &rt(target)->slots[slot];
 
     s->params.hue = (uint16_t)(hue % 360);
     s->params.sat = sat;
     s->params.bri = bri;
 
-    return rebuild_slot(&channels[ch], s);
+    touch(target);
+
+    return rebuild_slot(rt(target), s);
 }
 
-bool vfx_runtime_remove_layer(uint8_t ch, uint8_t slot) {
-    if (!valid_channel(ch) || !valid_slot(&channels[ch], slot)) {
+bool vfx_runtime_remove_layer(uint8_t target, uint8_t slot) {
+    if (!valid_target(target) || !valid_slot(rt(target), slot)) {
         return false;
     }
 
-    struct vfx_rt_channel *rc = &channels[ch];
+    struct vfx_rt_channel *rc = rt(target);
     const uint8_t pos = render_position(rc, slot);
 
     /* A staged slot has no position; removing it is how a half-built layer is
@@ -702,17 +747,18 @@ bool vfx_runtime_remove_layer(uint8_t ch, uint8_t slot) {
     release_heavy(rc, &rc->slots[slot]);
     rc->slots[slot].used = false;
     rebuild_render(rc);
+    touch(target);
 
     return true;
 }
 
-bool vfx_runtime_move_layer(uint8_t ch, uint8_t slot, int8_t direction) {
-    if (!valid_channel(ch) || !valid_slot(&channels[ch], slot) ||
+bool vfx_runtime_move_layer(uint8_t target, uint8_t slot, int8_t direction) {
+    if (!valid_target(target) || !valid_slot(rt(target), slot) ||
         (direction != VFX_RT_MOVE_UP && direction != VFX_RT_MOVE_DOWN)) {
         return false;
     }
 
-    struct vfx_rt_channel *rc = &channels[ch];
+    struct vfx_rt_channel *rc = rt(target);
     const uint8_t pos = render_position(rc, slot);
     const int neighbour = (int)pos + direction;
 
@@ -725,57 +771,90 @@ bool vfx_runtime_move_layer(uint8_t ch, uint8_t slot, int8_t direction) {
     rc->render_order[pos] = rc->render_order[neighbour];
     rc->render_order[neighbour] = tmp;
     rebuild_render(rc);
+    touch(target);
 
     return true;
 }
 
-bool vfx_runtime_set_active(uint8_t ch, bool active) {
-    if (!valid_channel(ch)) {
+bool vfx_runtime_set_active(uint8_t target, bool active) {
+    if (!valid_target(target)) {
         return false;
     }
 
-    channels[ch].active = active;
+    const uint8_t ch = VFX_RT_TARGET_CH(target);
+    const uint8_t sc = VFX_RT_TARGET_SCENE(target);
+
+    if (active) {
+        if (active_scene[ch] != VFX_RT_NONE && active_scene[ch] != sc) {
+            dirty[ch][active_scene[ch]] = true;
+        }
+
+        active_scene[ch] = sc;
+        touch(target);
+    } else if (active_scene[ch] == sc) {
+        active_scene[ch] = VFX_RT_NONE;
+        touch(target);
+    }
 
     return true;
 }
 
-bool vfx_runtime_is_active(uint8_t ch) { return valid_channel(ch) && channels[ch].active; }
+void vfx_runtime_deactivate(uint8_t ch) {
+    if (ch < VFX_MAX_CHANNELS && active_scene[ch] != VFX_RT_NONE) {
+        dirty[ch][active_scene[ch]] = true;
+        active_scene[ch] = VFX_RT_NONE;
+    }
+}
 
-const struct vfx_scene *vfx_runtime_scene(uint8_t ch) {
-    if (!valid_channel(ch) || channels[ch].count == 0) {
+bool vfx_runtime_is_active(uint8_t target) {
+    return valid_target(target) && active_scene[VFX_RT_TARGET_CH(target)] == VFX_RT_TARGET_SCENE(target);
+}
+
+uint8_t vfx_runtime_active_scene(uint8_t ch) {
+    return ch < VFX_MAX_CHANNELS ? active_scene[ch] : VFX_RT_NONE;
+}
+
+const struct vfx_scene *vfx_runtime_current(uint8_t ch) {
+    const uint8_t sc = vfx_runtime_active_scene(ch);
+
+    return sc == VFX_RT_NONE ? NULL : vfx_runtime_scene(VFX_RT_TARGET(ch, sc));
+}
+
+const struct vfx_scene *vfx_runtime_scene(uint8_t target) {
+    if (!valid_target(target) || rt(target)->count == 0) {
         return NULL;
     }
 
-    return &channels[ch].scene;
+    return &rt(target)->scene;
 }
 
-bool vfx_runtime_get_info(uint8_t ch, uint8_t *count, bool *active) {
-    if (!valid_channel(ch)) {
+bool vfx_runtime_get_info(uint8_t target, uint8_t *count, bool *active) {
+    if (!valid_target(target)) {
         return false;
     }
 
-    *count = channels[ch].count;
-    *active = channels[ch].active;
+    *count = rt(target)->count;
+    *active = vfx_runtime_is_active(target);
 
     return true;
 }
 
-bool vfx_runtime_get_layer(uint8_t ch, uint8_t slot, struct vfx_rt_params *out) {
-    if (!valid_channel(ch) || !valid_slot(&channels[ch], slot)) {
+bool vfx_runtime_get_layer(uint8_t target, uint8_t slot, struct vfx_rt_params *out) {
+    if (!valid_target(target) || !valid_slot(rt(target), slot)) {
         return false;
     }
 
-    *out = channels[ch].slots[slot].params;
+    *out = rt(target)->slots[slot].params;
 
     return true;
 }
 
-bool vfx_runtime_get_order(uint8_t ch, uint8_t *order, uint8_t *count) {
-    if (!valid_channel(ch)) {
+bool vfx_runtime_get_order(uint8_t target, uint8_t *order, uint8_t *count) {
+    if (!valid_target(target)) {
         return false;
     }
 
-    const struct vfx_rt_channel *rc = &channels[ch];
+    const struct vfx_rt_channel *rc = rt(target);
 
     memcpy(order, rc->render_order, rc->count);
     *count = rc->count;
@@ -783,13 +862,13 @@ bool vfx_runtime_get_order(uint8_t ch, uint8_t *order, uint8_t *count) {
     return true;
 }
 
-bool vfx_runtime_set_list_color(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t hue,
+bool vfx_runtime_set_list_color(uint8_t target, uint8_t slot, uint8_t idx, uint16_t hue,
                                 uint8_t sat, uint8_t bri) {
-    if (!valid_channel(ch) || idx >= VFX_RT_MAX_COLORS || !valid_slot(&channels[ch], slot)) {
+    if (!valid_target(target) || idx >= VFX_RT_MAX_COLORS || !valid_slot(rt(target), slot)) {
         return false;
     }
 
-    struct vfx_rt_slot *s = &channels[ch].slots[slot];
+    struct vfx_rt_slot *s = &rt(target)->slots[slot];
     struct vfx_rt_params *p = &s->params;
 
     for (uint8_t i = p->num_colors; i < idx; i++) {
@@ -802,16 +881,18 @@ bool vfx_runtime_set_list_color(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t 
         p->num_colors = (uint8_t)(idx + 1);
     }
 
-    return rebuild_slot(&channels[ch], s);
+    touch(target);
+
+    return rebuild_slot(rt(target), s);
 }
 
-bool vfx_runtime_get_list_color(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t *hue,
+bool vfx_runtime_get_list_color(uint8_t target, uint8_t slot, uint8_t idx, uint16_t *hue,
                                 uint8_t *sat, uint8_t *bri) {
-    if (!valid_channel(ch) || !valid_slot(&channels[ch], slot)) {
+    if (!valid_target(target) || !valid_slot(rt(target), slot)) {
         return false;
     }
 
-    const struct vfx_rt_params *p = &channels[ch].slots[slot].params;
+    const struct vfx_rt_params *p = &rt(target)->slots[slot].params;
 
     if (idx >= p->num_colors) {
         return false;
@@ -830,32 +911,32 @@ static bool valid_gradient_slot(const struct vfx_rt_channel *rc, uint8_t slot) {
     return valid_slot(rc, slot) && rc->slots[slot].params.type == VFX_RT_GRADIENT;
 }
 
-bool vfx_runtime_gradient_add_stop(uint8_t ch, uint8_t slot, uint16_t hue, uint8_t sat,
+bool vfx_runtime_gradient_add_stop(uint8_t target, uint8_t slot, uint16_t hue, uint8_t sat,
                                    uint8_t bri) {
-    if (!valid_channel(ch) || !valid_gradient_slot(&channels[ch], slot)) {
+    if (!valid_target(target) || !valid_gradient_slot(rt(target), slot)) {
         return false;
     }
 
-    return vfx_runtime_set_list_color(ch, slot, channels[ch].slots[slot].params.num_colors, hue,
+    return vfx_runtime_set_list_color(target, slot, rt(target)->slots[slot].params.num_colors, hue,
                                       sat, bri);
 }
 
-bool vfx_runtime_gradient_get_stop(uint8_t ch, uint8_t slot, uint8_t idx, uint16_t *hue,
+bool vfx_runtime_gradient_get_stop(uint8_t target, uint8_t slot, uint8_t idx, uint16_t *hue,
                                    uint8_t *sat, uint8_t *bri) {
-    if (!valid_channel(ch) || !valid_gradient_slot(&channels[ch], slot)) {
+    if (!valid_target(target) || !valid_gradient_slot(rt(target), slot)) {
         return false;
     }
 
-    return vfx_runtime_get_list_color(ch, slot, idx, hue, sat, bri);
+    return vfx_runtime_get_list_color(target, slot, idx, hue, sat, bri);
 }
 
-bool vfx_runtime_set_zone(uint8_t ch, uint8_t slot, uint8_t kind, uint8_t offset,
+bool vfx_runtime_set_zone(uint8_t target, uint8_t slot, uint8_t kind, uint8_t offset,
                           const uint8_t *data, uint8_t count) {
-    if (!valid_channel(ch) || !valid_slot(&channels[ch], slot)) {
+    if (!valid_target(target) || !valid_slot(rt(target), slot)) {
         return false;
     }
 
-    struct vfx_rt_slot *s = &channels[ch].slots[slot];
+    struct vfx_rt_slot *s = &rt(target)->slots[slot];
     struct vfx_rt_params *p = &s->params;
 
     if (kind == VFX_RT_ZONE_RANGE) {
@@ -890,17 +971,18 @@ bool vfx_runtime_set_zone(uint8_t ch, uint8_t slot, uint8_t kind, uint8_t offset
     }
 
     resolve_zone(s);
+    touch(target);
 
     return true;
 }
 
-bool vfx_runtime_get_zone(uint8_t ch, uint8_t slot, uint8_t offset, uint8_t *kind, uint8_t *total,
+bool vfx_runtime_get_zone(uint8_t target, uint8_t slot, uint8_t offset, uint8_t *kind, uint8_t *total,
                           uint8_t *data, uint8_t max, uint8_t *n) {
-    if (!valid_channel(ch) || !valid_slot(&channels[ch], slot)) {
+    if (!valid_target(target) || !valid_slot(rt(target), slot)) {
         return false;
     }
 
-    const struct vfx_rt_params *p = &channels[ch].slots[slot].params;
+    const struct vfx_rt_params *p = &rt(target)->slots[slot].params;
     uint8_t range[2] = {p->zone_start, p->zone_len};
     const uint8_t *src = p->zone_items;
     uint8_t len = p->zone_count;
@@ -925,15 +1007,15 @@ bool vfx_runtime_get_zone(uint8_t ch, uint8_t slot, uint8_t offset, uint8_t *kin
     return true;
 }
 
-bool vfx_runtime_set_opts(uint8_t ch, uint8_t slot, uint8_t blend, uint8_t opacity,
+bool vfx_runtime_set_opts(uint8_t target, uint8_t slot, uint8_t blend, uint8_t opacity,
                           uint8_t opacity_src, uint8_t opacity_min, uint8_t opacity_full,
                           uint8_t tune_id) {
-    if (!valid_channel(ch) || !valid_slot(&channels[ch], slot) || blend > VFX_BLEND_MAX ||
+    if (!valid_target(target) || !valid_slot(rt(target), slot) || blend > VFX_BLEND_MAX ||
         opacity_src > VFX_SRC_ACTIVITY) {
         return false;
     }
 
-    struct vfx_rt_channel *rc = &channels[ch];
+    struct vfx_rt_channel *rc = rt(target);
     struct vfx_rt_slot *s = &rc->slots[slot];
 
     s->params.blend = blend;
@@ -948,92 +1030,189 @@ bool vfx_runtime_set_opts(uint8_t ch, uint8_t slot, uint8_t blend, uint8_t opaci
      */
     apply_opts(s);
     rebuild_render(rc);
+    touch(target);
 
     return true;
 }
 
 /* Scratch home for vfx_runtime_state()'s answer. Static rather than a local
  * the caller must size itself, same as vfx_tuning_state() -- the caller
- * only ever wants to hand this straight to settings_save_one() or compare
- * its length before a restore.
+ * only ever wants to hand this straight to settings_save_one().
  */
-static struct vfx_rt_saved_channel saved[VFX_MAX_CHANNELS];
+static struct vfx_rt_saved_channel saved;
 
-const void *vfx_runtime_state(uint16_t *len) {
-    for (uint8_t ch = 0; ch < VFX_MAX_CHANNELS; ch++) {
-        for (uint8_t i = 0; i < VFX_RT_MAX_LAYERS; i++) {
-            saved[ch].slots[i].params = channels[ch].slots[i].params;
-            saved[ch].slots[i].used = channels[ch].slots[i].used &&
-                                      render_position(&channels[ch], i) != VFX_RT_MAX_LAYERS;
-        }
-
-        memcpy(saved[ch].render_order, channels[ch].render_order,
-              sizeof(saved[ch].render_order));
-        saved[ch].count = channels[ch].count;
-        saved[ch].active = channels[ch].active;
+const void *vfx_runtime_state(uint8_t target, uint16_t *len) {
+    if (!valid_target(target)) {
+        return NULL;
     }
+
+    const struct vfx_rt_channel *rc = rt(target);
+
+    memset(&saved, 0, sizeof(saved));
+
+    for (uint8_t i = 0; i < VFX_RT_MAX_LAYERS; i++) {
+        saved.slots[i].params = rc->slots[i].params;
+        saved.slots[i].used = rc->slots[i].used && render_position(rc, i) != VFX_RT_MAX_LAYERS;
+    }
+
+    memcpy(saved.render_order, rc->render_order, sizeof(saved.render_order));
+    saved.count = rc->count;
+    saved.active = vfx_runtime_is_active(target);
 
     if (len) {
         *len = (uint16_t)sizeof(saved);
     }
 
-    return saved;
+    return &saved;
 }
 
-bool vfx_runtime_restore_state(const void *blob, uint16_t len) {
-    if (len != sizeof(saved)) {
+bool vfx_runtime_restore_one(uint8_t target, const void *blob, uint16_t len) {
+    if (!valid_target(target) || len != sizeof(saved)) {
         return false;
     }
 
-    memcpy(saved, blob, sizeof(saved));
+    const struct vfx_rt_saved_channel *in = blob;
+    struct vfx_rt_channel *rc = rt(target);
 
-    for (uint8_t ch = 0; ch < VFX_MAX_CHANNELS; ch++) {
-        struct vfx_rt_channel *rc = &channels[ch];
+    memset(rc, 0, sizeof(*rc));
 
-        memset(rc, 0, sizeof(*rc));
+    for (uint8_t i = 0; i < VFX_RT_MAX_LAYERS; i++) {
+        struct vfx_rt_slot *s = &rc->slots[i];
 
-        for (uint8_t i = 0; i < VFX_RT_MAX_LAYERS; i++) {
-            struct vfx_rt_slot *s = &rc->slots[i];
-
-            if (!saved[ch].slots[i].used || !params_valid(&saved[ch].slots[i].params)) {
-                continue;
-            }
-
-            s->params = saved[ch].slots[i].params;
-
-            if (rebuild_slot(rc, s)) {
-                s->used = true;
-            } else {
-                memset(s, 0, sizeof(*s));
-            }
+        if (!in->slots[i].used || !params_valid(&in->slots[i].params)) {
+            continue;
         }
 
-        /* Saved order first, trusted only as far as it names distinct slots
-         * that survived; anything used it missed goes on the end. For a blob
-         * this build wrote that changes nothing.
-         */
-        bool listed[VFX_RT_MAX_LAYERS] = {false};
-        const uint8_t saved_count =
-            saved[ch].count < VFX_RT_MAX_LAYERS ? saved[ch].count : VFX_RT_MAX_LAYERS;
+        s->params = in->slots[i].params;
 
-        for (uint8_t i = 0; i < saved_count; i++) {
-            const uint8_t idx = saved[ch].render_order[i];
-
-            if (idx < VFX_RT_MAX_LAYERS && rc->slots[idx].used && !listed[idx]) {
-                listed[idx] = true;
-                rc->render_order[rc->count++] = idx;
-            }
+        if (rebuild_slot(rc, s)) {
+            s->used = true;
+        } else {
+            memset(s, 0, sizeof(*s));
         }
-
-        for (uint8_t i = 0; i < VFX_RT_MAX_LAYERS; i++) {
-            if (rc->slots[i].used && !listed[i]) {
-                rc->render_order[rc->count++] = i;
-            }
-        }
-
-        rc->active = saved[ch].active;
-        rebuild_render(rc);
     }
 
+    /* Saved order first, trusted only as far as it names distinct slots that
+     * survived; anything used it missed goes on the end. For a blob this
+     * build wrote that changes nothing.
+     */
+    bool listed[VFX_RT_MAX_LAYERS] = {false};
+    const uint8_t saved_count = in->count < VFX_RT_MAX_LAYERS ? in->count : VFX_RT_MAX_LAYERS;
+
+    for (uint8_t i = 0; i < saved_count; i++) {
+        const uint8_t idx = in->render_order[i];
+
+        if (idx < VFX_RT_MAX_LAYERS && rc->slots[idx].used && !listed[idx]) {
+            listed[idx] = true;
+            rc->render_order[rc->count++] = idx;
+        }
+    }
+
+    for (uint8_t i = 0; i < VFX_RT_MAX_LAYERS; i++) {
+        if (rc->slots[i].used && !listed[i]) {
+            rc->render_order[rc->count++] = i;
+        }
+    }
+
+    rebuild_render(rc);
+
+    const uint8_t ch = VFX_RT_TARGET_CH(target);
+    const uint8_t sc = VFX_RT_TARGET_SCENE(target);
+
+    if (in->active) {
+        active_scene[ch] = sc;
+    } else if (active_scene[ch] == sc) {
+        active_scene[ch] = VFX_RT_NONE;
+    }
+
+    /* What was just loaded is what flash already holds. */
+    dirty[ch][sc] = false;
+
     return true;
+}
+
+bool vfx_runtime_take_dirty(uint8_t *target) {
+    for (uint8_t ch = 0; ch < VFX_MAX_CHANNELS; ch++) {
+        for (uint8_t sc = 0; sc < VFX_RT_SCENES_PER_CHANNEL; sc++) {
+            if (dirty[ch][sc]) {
+                dirty[ch][sc] = false;
+                *target = VFX_RT_TARGET(ch, sc);
+
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+/* FNV-1a over what a host could have sent, written byte by byte so struct
+ * padding, endianness and every derived field stay out of it. Left out on
+ * purpose: which scene is active, because that is the one thing a half may
+ * legitimately differ on until the next NEXT/PREV lands; zone_pixels, which
+ * depends on each half's own strip offset; and the heavy pool, which is
+ * private to each half.
+ */
+#define FNV_BASIS 2166136261u
+#define FNV_PRIME 16777619u
+
+static uint32_t fnv8(uint32_t h, uint8_t v) { return (h ^ v) * FNV_PRIME; }
+
+static uint32_t fnv16(uint32_t h, uint16_t v) { return fnv8(fnv8(h, (uint8_t)v), (uint8_t)(v >> 8)); }
+
+static uint32_t fnv32(uint32_t h, uint32_t v) { return fnv16(fnv16(h, (uint16_t)v), (uint16_t)(v >> 16)); }
+
+uint32_t vfx_runtime_hash(uint8_t target) {
+    uint32_t h = FNV_BASIS;
+
+    if (!valid_target(target)) {
+        return h;
+    }
+
+    const struct vfx_rt_channel *rc = rt(target);
+
+    h = fnv8(h, rc->count);
+
+    for (uint8_t n = 0; n < rc->count; n++) {
+        const uint8_t slot = rc->render_order[n];
+        const struct vfx_rt_params *p = &rc->slots[slot].params;
+
+        h = fnv8(h, slot);
+        h = fnv8(h, p->type);
+        h = fnv8(h, p->zone_kind);
+
+        if (p->zone_kind == VFX_RT_ZONE_RANGE) {
+            h = fnv8(h, p->zone_start);
+            h = fnv8(h, p->zone_len);
+        } else {
+            h = fnv8(h, p->zone_count);
+
+            for (uint8_t i = 0; i < p->zone_count; i++) {
+                h = fnv8(h, p->zone_items[i]);
+            }
+        }
+
+        h = fnv8(h, p->blend);
+        h = fnv8(h, p->opacity);
+        h = fnv8(h, p->opacity_src);
+        h = fnv8(h, p->opacity_min);
+        h = fnv8(h, p->opacity_full);
+        h = fnv8(h, p->tune_id);
+        h = fnv16(h, p->hue);
+        h = fnv8(h, p->sat);
+        h = fnv8(h, p->bri);
+
+        for (uint8_t i = 0; i < VFX_RT_MAX_ARGS; i++) {
+            h = fnv16(h, (uint16_t)p->args[i]);
+        }
+
+        h = fnv8(h, p->flags);
+        h = fnv8(h, p->num_colors);
+
+        for (uint8_t i = 0; i < p->num_colors; i++) {
+            h = fnv32(h, p->colors[i]);
+        }
+    }
+
+    return h;
 }

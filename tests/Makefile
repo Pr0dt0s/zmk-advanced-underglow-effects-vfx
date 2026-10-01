@@ -6,7 +6,7 @@
 
 CC      ?= cc
 CFLAGS  ?= -std=c11 -Wall -Wextra -Werror -O2
-CPPFLAGS = -DVFX_SIM -I../include
+CPPFLAGS = -DVFX_SIM -DCONFIG_ZMK_VFX_RUNTIME_SCENES_PER_CHANNEL=2 -I../include
 LDLIBS   = -lm
 
 CORE = ../src/color.c ../src/zone.c ../src/render.c ../src/power_policy.c \

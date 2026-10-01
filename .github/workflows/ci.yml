@@ -178,6 +178,14 @@ jobs:
             shield: lily58_left raw_hid_adapter
             args: -DCONFIG_ZMK_VFX_RAW_HID=y -DCONFIG_ZMK_VFX_RUNTIME_SCENES=y
             prep: "true"
+          # Three runtime scenes per channel: the per-scene settings keys, the
+          # (channel, scene) pool and the saved-size static asserts all build
+          # against a count other than the default of one.
+          - name: three runtime scenes per channel
+            shield: lily58_left raw_hid_adapter
+            args: -DCONFIG_ZMK_VFX_RAW_HID=y -DCONFIG_ZMK_VFX_RUNTIME_SCENES=y
+              -DCONFIG_ZMK_VFX_RUNTIME_SCENES_PER_CHANNEL=3
+            prep: "true"
           # VFX_MAX_CHANNELS is sized to DT_NUM_INST_STATUS_OKAY(zmk_vfx_channel)
           # rather than a fixed ceiling (see scenes.h); six is deliberately
           # more than the old fixed value of 4, so this is what would have

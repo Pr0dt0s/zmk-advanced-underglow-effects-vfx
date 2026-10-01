@@ -266,7 +266,13 @@ uint8_t vfx_hid_encode_pong(uint8_t max_slot, uint8_t *out);
 uint8_t vfx_hid_encode_ack(uint8_t op, uint8_t slot, uint8_t status, uint8_t *out);
 uint8_t vfx_hid_encode_state(uint8_t slot, int16_t hue, uint8_t level, uint8_t speed,
                              uint8_t status, uint8_t *out);
-uint8_t vfx_hid_encode_scene_info(uint8_t ch, uint8_t count, bool active, uint8_t status,
+/* `ch` here is the wire target byte. After the original five bytes it appends
+ * how many runtime scenes a channel holds, which of them is showing (0xFF for
+ * the compiled list) and vfx_runtime_hash() of the target, so a host that only
+ * knows the first five keeps working.
+ */
+uint8_t vfx_hid_encode_scene_info(uint8_t ch, uint8_t count, bool active, uint8_t scenes,
+                                  uint8_t active_scene, uint32_t hash, uint8_t status,
                                   uint8_t *out);
 uint8_t vfx_hid_encode_scene_layer(uint8_t ch, uint8_t slot, uint8_t type, uint8_t zone_start,
                                    uint8_t zone_len, uint8_t blend, uint8_t opacity, int16_t hue,

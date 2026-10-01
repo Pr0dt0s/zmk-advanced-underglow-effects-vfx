@@ -427,15 +427,22 @@ uint8_t vfx_hid_encode_state(uint8_t slot, int16_t hue, uint8_t level, uint8_t s
     return 7;
 }
 
-uint8_t vfx_hid_encode_scene_info(uint8_t ch, uint8_t count, bool active, uint8_t status,
+uint8_t vfx_hid_encode_scene_info(uint8_t ch, uint8_t count, bool active, uint8_t scenes,
+                                  uint8_t active_scene, uint32_t hash, uint8_t status,
                                   uint8_t *out) {
     out[0] = VFX_HID_REPLY_SCENE_INFO;
     out[1] = ch;
     out[2] = count;
     out[3] = active ? 1 : 0;
     out[4] = status;
+    out[5] = scenes;
+    out[6] = active_scene;
+    out[7] = (uint8_t)hash;
+    out[8] = (uint8_t)(hash >> 8);
+    out[9] = (uint8_t)(hash >> 16);
+    out[10] = (uint8_t)(hash >> 24);
 
-    return 5;
+    return 11;
 }
 
 uint8_t vfx_hid_encode_scene_layer(uint8_t ch, uint8_t slot, uint8_t type, uint8_t zone_start,

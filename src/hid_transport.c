@@ -99,9 +99,12 @@ static void reply_scene_ack(uint8_t op, uint8_t slot, int rc) {
 static void reply_scene_info(uint8_t ch) {
     uint8_t count = 0;
     bool active = false;
-    const int rc = zmk_vfx_scene_info(ch, &count, &active);
+    uint8_t active_scene = 0xFF;
+    uint32_t hash = 0;
+    const int rc = zmk_vfx_scene_info(ch, &count, &active, &active_scene, &hash);
     uint8_t buf[VFX_HID_MAX_REPLY_LEN];
-    const uint8_t len = vfx_hid_encode_scene_info(ch, count, active, scene_status(rc), buf);
+    const uint8_t len = vfx_hid_encode_scene_info(ch, count, active, VFX_RT_SCENES_PER_CHANNEL,
+                                                  active_scene, hash, scene_status(rc), buf);
 
     send(buf, len);
 }

@@ -72,6 +72,11 @@ int zmk_vfx_tune_reset(uint8_t slot);
  * same two side effects zmk_vfx_tune_*() adds over vfx_tuning_set_*():
  * asking for a redraw and persisting, debounced.
  *
+ * The `ch` every one of them takes is a target byte: the channel in the low
+ * nibble and, in the high one, which of that channel's runtime scenes
+ * (VFX_RT_TARGET() in runtime_scene.h). 0 to VFX_MAX_CHANNELS-1 therefore
+ * still means "that channel's first scene".
+ *
  * `ch` is a channel index, never ZMK_VFX_CH_ALL: a runtime scene belongs to
  * one channel, unlike a tuning slot which can belong to layers on several.
  * -EINVAL for a channel out of range, an unusable generator type, an
@@ -116,7 +121,8 @@ int zmk_vfx_scene_deactivate(uint8_t ch);
  * active are left untouched on failure so a caller can pass its own
  * defaults in without a separate zero-init.
  */
-int zmk_vfx_scene_info(uint8_t ch, uint8_t *count, bool *active);
+int zmk_vfx_scene_info(uint8_t ch, uint8_t *count, bool *active, uint8_t *active_scene,
+                       uint32_t *hash);
 int zmk_vfx_scene_get_layer(uint8_t ch, uint8_t slot, struct vfx_rt_params *out);
 
 /* Slot ids in render order; `order` must have room for

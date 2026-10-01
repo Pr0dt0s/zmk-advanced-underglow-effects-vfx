@@ -398,6 +398,10 @@ function decodeReply(data) {
       count: data.getUint8(2),
       active: data.getUint8(3) !== 0,
       status: data.getUint8(4),
+      // Older firmware stops at byte 4; one scene per channel, no hash.
+      scenes: data.byteLength >= 11 ? data.getUint8(5) : 1,
+      activeScene: data.byteLength >= 11 ? data.getUint8(6) : data.getUint8(3) !== 0 ? 0 : 0xff,
+      hash: data.byteLength >= 11 ? data.getUint32(7, true) : null,
     };
   }
 

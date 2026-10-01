@@ -256,6 +256,18 @@ config ZMK_VFX_RUNTIME_HEAVY_STATES
       draw from this pool instead, per channel; adding one when it is empty
       is refused with the same POOL_FULL a full layer pool gives.
 
+config ZMK_VFX_RUNTIME_SCENES_PER_CHANNEL
+    int "Runtime scenes each channel can hold"
+    range 1 8
+    default 1
+    help
+      Each channel gets this many runtime scenes, each a full pool of its own
+      and each saved as its own settings entry. NEXT and PREV walk through the
+      non-empty ones after the compiled list. More scenes cost RAM and flash
+      in proportion to RUNTIME_MAX_LAYERS and the other limits above; the
+      build fails if the saved scenes would outgrow their share of the
+      settings partition.
+
 endif # ZMK_VFX_RUNTIME_SCENES
 
 module = ZMK_VFX

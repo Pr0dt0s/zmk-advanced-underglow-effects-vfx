@@ -2807,9 +2807,13 @@ static void test_hid_scene_remove_and_move_decode(void) {
 
 static void test_hid_scene_info_and_layer_encode(void) {
     uint8_t buf[VFX_HID_MAX_REPLY_LEN];
-    uint8_t len = vfx_hid_encode_scene_info(2, 4, true, VFX_HID_STATUS_OK, buf);
+    uint8_t len = vfx_hid_encode_scene_info(2, 4, true, 3, 1, 0xA1B2C3D4u, VFX_HID_STATUS_OK, buf);
 
-    CHECK(len == 5, "SCENE_INFO is five bytes, got %d", len);
+    CHECK(len == 11, "SCENE_INFO is eleven bytes, got %d", len);
+    CHECK(buf[4] == VFX_HID_STATUS_OK, "status stays where an old host reads it");
+    CHECK(buf[5] == 3 && buf[6] == 1, "scene count and active scene follow it: %d,%d", buf[5], buf[6]);
+    CHECK(buf[7] == 0xD4 && buf[8] == 0xC3 && buf[9] == 0xB2 && buf[10] == 0xA1,
+          "hash is little-endian");
     CHECK(buf[0] == VFX_HID_REPLY_SCENE_INFO, "SCENE_INFO must use GET_INFO's op with the reply bit");
     CHECK(buf[1] == 2 && buf[2] == 4 && buf[3] == 1, "ch, count and active must round-trip: %d,%d,%d",
         buf[1], buf[2], buf[3]);
@@ -3502,7 +3506,7 @@ static void test_runtime_save_and_restore_round_trips(void) {
     vfx_render_frame(vfx_runtime_scene(0), &ctx, before, NULL);
 
     uint16_t len;
-    const void *blob = vfx_runtime_state(&len);
+    const void *blob = vfx_runtime_state(0, &len);
     uint8_t copy[4096];
 
     CHECK(len <= sizeof(copy), "test buffer must be large enough for the real blob (%u bytes)",
@@ -3516,7 +3520,7 @@ static void test_runtime_save_and_restore_round_trips(void) {
     vfx_runtime_init();
     CHECK(vfx_runtime_scene(0) == NULL, "the fresh pool must start empty");
 
-    CHECK(vfx_runtime_restore_state(copy, len), "restoring a blob of the right length must succeed");
+    CHECK(vfx_runtime_restore_one(0, copy, len), "restoring a blob of the right length must succeed");
     CHECK(vfx_runtime_is_active(0), "restore must bring the activation flag back");
 
     struct vfx_rgb after[NPX];
@@ -3529,7 +3533,7 @@ static void test_runtime_save_and_restore_round_trips(void) {
             before[i].g, before[i].b, after[i].r, after[i].g, after[i].b);
     }
 
-    CHECK(!vfx_runtime_restore_state(copy, (uint16_t)(len - 1)),
+    CHECK(!vfx_runtime_restore_one(0, copy, (uint16_t)(len - 1)),
         "a blob of the wrong length must be refused rather than misread");
 }
 
@@ -4368,14 +4372,22 @@ static void test_runtime_save_and_restore_keeps_everything_a_layer_now_has(void)
     vfx_render_frame(vfx_runtime_scene(0), &ctx, before, NULL);
 
     uint16_t len;
-    const void *blob = vfx_runtime_state(&len);
+    const void *blob = vfx_runtime_state(0, &len);
     uint8_t copy[8192];
 
     CHECK(len <= sizeof(copy), "test buffer must hold the real blob (%u bytes)", len);
     memcpy(copy, blob, len);
 
+    uint16_t len1;
+    uint8_t copy1[8192];
+
+    const void *blob1 = vfx_runtime_state(1, &len1);
+
+    memcpy(copy1, blob1, len1);
+
     vfx_runtime_init();
-    CHECK(vfx_runtime_restore_state(copy, len), "restoring the blob must succeed");
+    CHECK(vfx_runtime_restore_one(0, copy, len), "restoring the blob must succeed");
+    CHECK(vfx_runtime_restore_one(1, copy1, len1), "and so must channel 1's own");
 
     struct vfx_rgb after[NPX];
 
@@ -4422,18 +4434,18 @@ static void test_runtime_restore_drops_what_cannot_be_trusted(void) {
     }
 
     uint16_t len;
-    struct vfx_rt_saved_channel blob[VFX_MAX_CHANNELS];
+    struct vfx_rt_saved_channel blob;
 
-    memcpy(blob, vfx_runtime_state(&len), sizeof(blob));
-    CHECK(len == sizeof(blob), "the blob is an array of the saved channel type");
+    memcpy(&blob, vfx_runtime_state(0, &len), sizeof(blob));
+    CHECK(len == sizeof(blob), "the blob is one saved scene");
 
-    blob[0].slots[0].params.type = VFX_RT_TYPE_COUNT;
-    blob[0].slots[1].params.zone_count = VFX_RT_MAX_ZONE_PIXELS + 1;
-    blob[0].slots[2].params.num_colors = VFX_RT_MAX_COLORS + 1;
-    blob[0].slots[3].params.zone_kind = 9;
+    blob.slots[0].params.type = VFX_RT_TYPE_COUNT;
+    blob.slots[1].params.zone_count = VFX_RT_MAX_ZONE_PIXELS + 1;
+    blob.slots[2].params.num_colors = VFX_RT_MAX_COLORS + 1;
+    blob.slots[3].params.zone_kind = 9;
 
     vfx_runtime_init();
-    CHECK(vfx_runtime_restore_state(blob, sizeof(blob)), "a blob of the right length is accepted");
+    CHECK(vfx_runtime_restore_one(0, &blob, sizeof(blob)), "a blob of the right length is accepted");
 
     uint8_t count;
     bool active;
@@ -4449,19 +4461,19 @@ static void test_runtime_restore_drops_what_cannot_be_trusted(void) {
     /* More trail and hold layers than there are heavy states: the extras have
      * nothing to draw with and are dropped, not left half built.
      */
-    memset(blob, 0, sizeof(blob));
+    memset(&blob, 0, sizeof(blob));
 
     const int wanted = VFX_RT_HEAVY_STATES + 1;
 
     for (int i = 0; i < wanted && i < VFX_RT_MAX_LAYERS; i++) {
-        blob[0].slots[i].params = rtx_base(VFX_RT_TRAIL, 0, 100, 100);
-        blob[0].slots[i].used = true;
-        blob[0].render_order[i] = (uint8_t)i;
-        blob[0].count = (uint8_t)(i + 1);
+        blob.slots[i].params = rtx_base(VFX_RT_TRAIL, 0, 100, 100);
+        blob.slots[i].used = true;
+        blob.render_order[i] = (uint8_t)i;
+        blob.count = (uint8_t)(i + 1);
     }
 
     vfx_runtime_init();
-    CHECK(vfx_runtime_restore_state(blob, sizeof(blob)), "the second blob is accepted");
+    CHECK(vfx_runtime_restore_one(0, &blob, sizeof(blob)), "the second blob is accepted");
     vfx_runtime_get_info(0, &count, &active);
     CHECK(count == VFX_RT_HEAVY_STATES, "only as many trails as heavy states survive, got %d", count);
     CHECK(vfx_runtime_get_layer(0, (uint8_t)(VFX_RT_HEAVY_STATES - 1), &out),
@@ -4693,14 +4705,14 @@ static void test_runtime_save_skips_staged_layers(void) {
     CHECK(vfx_runtime_add_layer_staged(0, &b) == 1, "the staged layer");
 
     uint16_t len = 0;
-    const void *blob = vfx_runtime_state(&len);
+    const void *blob = vfx_runtime_state(0, &len);
     static uint8_t copy[4096];
 
     CHECK(len <= sizeof(copy), "saved image fits the scratch copy");
     memcpy(copy, blob, len);
 
     vfx_runtime_init();
-    CHECK(vfx_runtime_restore_state(copy, len), "restore must accept the image");
+    CHECK(vfx_runtime_restore_one(0, copy, len), "restore must accept the image");
 
     uint8_t count = 0;
     bool active;
@@ -4710,6 +4722,208 @@ static void test_runtime_save_skips_staged_layers(void) {
     CHECK(count == 1, "only the committed layer survives a restore, got %d", count);
     CHECK(vfx_runtime_get_layer(0, 0, &got) && got.hue == 10, "the committed layer is intact");
     CHECK(!vfx_runtime_get_layer(0, 1, &got), "the staged layer is gone, not auto-appended");
+}
+
+/* ---- several runtime scenes per channel ---------------------------------- */
+
+_Static_assert(VFX_RT_SCENES_PER_CHANNEL == 2, "tests/Makefile builds with two scenes per channel");
+
+static void test_runtime_scenes_in_one_channel_are_independent(void) {
+    vfx_runtime_init();
+
+    const uint8_t s0 = VFX_RT_TARGET(1, 0);
+    const uint8_t s1 = VFX_RT_TARGET(1, 1);
+    struct vfx_rt_params a = rt_solid(0, NPX, 10);
+    struct vfx_rt_params b = rt_solid(0, NPX, 200);
+
+    CHECK(vfx_runtime_add_layer(s0, &a) == 0, "first scene, first slot");
+    CHECK(vfx_runtime_add_layer(s1, &b) == 0, "second scene starts its own slot numbering at 0");
+    CHECK(vfx_runtime_add_layer(s1, &b) == 1, "and fills on its own");
+
+    uint8_t count;
+    bool active;
+
+    vfx_runtime_get_info(s0, &count, &active);
+    CHECK(count == 1, "the first scene keeps its one layer, got %d", count);
+    vfx_runtime_get_info(s1, &count, &active);
+    CHECK(count == 2, "the second scene has two, got %d", count);
+
+    CHECK(vfx_runtime_remove_layer(s1, 0), "remove from the second scene");
+    vfx_runtime_get_info(s0, &count, &active);
+    CHECK(count == 1, "the first is untouched by it, got %d", count);
+
+    CHECK(vfx_runtime_scene(VFX_RT_TARGET(0, 1)) == NULL, "another channel's second scene is empty");
+    CHECK(vfx_runtime_hash(s0) != vfx_runtime_hash(s1), "different scenes hash differently");
+}
+
+static void test_runtime_target_must_name_a_real_scene(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params a = rt_solid(0, NPX, 10);
+
+    CHECK(vfx_runtime_add_layer(VFX_RT_TARGET(0, VFX_RT_SCENES_PER_CHANNEL), &a) == VFX_RT_ERR_INVALID,
+          "a scene index past the pool is refused");
+    CHECK(vfx_runtime_add_layer(VFX_RT_TARGET(VFX_MAX_CHANNELS, 0), &a) == VFX_RT_ERR_INVALID,
+          "a channel past the last is refused");
+    CHECK(!vfx_runtime_set_active(VFX_RT_TARGET(0, VFX_RT_SCENES_PER_CHANNEL), true),
+          "activating a scene that does not exist is refused");
+    CHECK(vfx_runtime_state(VFX_RT_TARGET(0, VFX_RT_SCENES_PER_CHANNEL), NULL) == NULL,
+          "an invalid scene has no saved image");
+}
+
+static void test_runtime_one_scene_shows_per_channel(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params a = rt_solid(0, NPX, 10);
+    struct vfx_rt_params b = rt_solid(0, NPX, 200);
+
+    vfx_runtime_add_layer(VFX_RT_TARGET(0, 0), &a);
+    vfx_runtime_add_layer(VFX_RT_TARGET(0, 1), &b);
+
+    CHECK(vfx_runtime_active_scene(0) == VFX_RT_NONE, "a fresh channel shows its compiled list");
+    CHECK(vfx_runtime_current(0) == NULL, "so there is no runtime scene to draw");
+
+    vfx_runtime_set_active(VFX_RT_TARGET(0, 0), true);
+    CHECK(vfx_runtime_active_scene(0) == 0 && vfx_runtime_is_active(VFX_RT_TARGET(0, 0)),
+          "scene 0 is showing");
+    CHECK(vfx_runtime_current(0) == vfx_runtime_scene(VFX_RT_TARGET(0, 0)), "and is what is drawn");
+
+    vfx_runtime_set_active(VFX_RT_TARGET(0, 1), true);
+    CHECK(vfx_runtime_active_scene(0) == 1 && !vfx_runtime_is_active(VFX_RT_TARGET(0, 0)),
+          "activating the second ends the first");
+    CHECK(vfx_runtime_active_scene(1) == VFX_RT_NONE, "another channel is not affected");
+
+    vfx_runtime_set_active(VFX_RT_TARGET(0, 0), false);
+    CHECK(vfx_runtime_active_scene(0) == 1, "deactivating a scene that is not showing does nothing");
+
+    vfx_runtime_deactivate(0);
+    CHECK(vfx_runtime_active_scene(0) == VFX_RT_NONE,
+          "deactivate returns the channel to its compiled list");
+}
+
+static void test_runtime_dirty_tracks_scenes_separately(void) {
+    vfx_runtime_init();
+
+    uint8_t t;
+
+    CHECK(!vfx_runtime_take_dirty(&t), "nothing is dirty on a fresh pool");
+
+    struct vfx_rt_params a = rt_solid(0, NPX, 10);
+
+    vfx_runtime_add_layer(VFX_RT_TARGET(1, 1), &a);
+
+    CHECK(vfx_runtime_take_dirty(&t) && t == VFX_RT_TARGET(1, 1),
+          "the scene that changed is handed back");
+    CHECK(!vfx_runtime_take_dirty(&t), "and only once");
+
+    vfx_runtime_set_active(VFX_RT_TARGET(0, 0), true);
+    vfx_runtime_set_active(VFX_RT_TARGET(0, 1), true);
+
+    unsigned seen = 0;
+
+    while (vfx_runtime_take_dirty(&t)) {
+        seen |= 1u << VFX_RT_TARGET_SCENE(t);
+        CHECK(VFX_RT_TARGET_CH(t) == 0, "only channel 0 changed");
+    }
+
+    CHECK(seen == 3, "switching the active scene dirties both, since both persist an active flag");
+
+    uint16_t len;
+    const void *blob = vfx_runtime_state(VFX_RT_TARGET(1, 1), &len);
+    static uint8_t copy[VFX_RT_SAVED_ENTRY_MAX];
+
+    memcpy(copy, blob, len);
+    vfx_runtime_init();
+    CHECK(vfx_runtime_restore_one(VFX_RT_TARGET(1, 1), copy, len), "restore one scene");
+    CHECK(!vfx_runtime_take_dirty(&t), "what was just loaded is what flash already holds");
+}
+
+static void test_runtime_each_scene_saves_and_restores_on_its_own(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params a = rt_solid(0, NPX, 10);
+    struct vfx_rt_params b = rt_solid(0, NPX, 200);
+
+    vfx_runtime_add_layer(VFX_RT_TARGET(0, 0), &a);
+    vfx_runtime_add_layer(VFX_RT_TARGET(0, 1), &b);
+    vfx_runtime_set_active(VFX_RT_TARGET(0, 1), true);
+
+    uint16_t len0, len1;
+    static uint8_t img0[VFX_RT_SAVED_ENTRY_MAX], img1[VFX_RT_SAVED_ENTRY_MAX];
+    const void *p0 = vfx_runtime_state(VFX_RT_TARGET(0, 0), &len0);
+
+    memcpy(img0, p0, len0);
+
+    const void *p1 = vfx_runtime_state(VFX_RT_TARGET(0, 1), &len1);
+
+    memcpy(img1, p1, len1);
+
+    const uint32_t h0 = vfx_runtime_hash(VFX_RT_TARGET(0, 0));
+    const uint32_t h1 = vfx_runtime_hash(VFX_RT_TARGET(0, 1));
+
+    vfx_runtime_init();
+    CHECK(vfx_runtime_restore_one(VFX_RT_TARGET(0, 1), img1, len1), "restore the active scene first");
+    CHECK(vfx_runtime_active_scene(0) == 1, "its activation comes back with it");
+    CHECK(vfx_runtime_restore_one(VFX_RT_TARGET(0, 0), img0, len0), "then the inactive one");
+    CHECK(vfx_runtime_active_scene(0) == 1, "which must not steal the activation");
+    CHECK(vfx_runtime_hash(VFX_RT_TARGET(0, 0)) == h0 && vfx_runtime_hash(VFX_RT_TARGET(0, 1)) == h1,
+          "both come back identical");
+}
+
+static void test_runtime_hash_follows_what_a_host_built(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params a = rt_solid(0, NPX, 10);
+    struct vfx_rt_params b = rt_solid(0, NPX, 200);
+
+    const uint32_t empty = vfx_runtime_hash(VFX_RT_TARGET(0, 0));
+
+    CHECK(empty == vfx_runtime_hash(VFX_RT_TARGET(2, 1)), "every empty scene hashes alike");
+
+    for (uint8_t sc = 0; sc < 2; sc++) {
+        vfx_runtime_add_layer(VFX_RT_TARGET(0, sc), &a);
+        vfx_runtime_add_layer(VFX_RT_TARGET(0, sc), &b);
+    }
+
+    const uint32_t full = vfx_runtime_hash(VFX_RT_TARGET(0, 0));
+
+    CHECK(full != empty, "building a scene changes its hash");
+    CHECK(full == vfx_runtime_hash(VFX_RT_TARGET(0, 1)),
+          "the same build in another scene hashes the same");
+
+    vfx_runtime_set_active(VFX_RT_TARGET(0, 0), true);
+    CHECK(vfx_runtime_hash(VFX_RT_TARGET(0, 0)) == full, "activation is not part of what is compared");
+
+    vfx_runtime_move_layer(VFX_RT_TARGET(0, 1), 1, VFX_RT_MOVE_UP);
+    CHECK(vfx_runtime_hash(VFX_RT_TARGET(0, 1)) != full, "render order is");
+    vfx_runtime_move_layer(VFX_RT_TARGET(0, 1), 1, VFX_RT_MOVE_DOWN);
+    CHECK(vfx_runtime_hash(VFX_RT_TARGET(0, 1)) == full, "and moving back restores it");
+
+    vfx_runtime_set_arg(VFX_RT_TARGET(0, 1), 0, 2, 7);
+    CHECK(vfx_runtime_hash(VFX_RT_TARGET(0, 1)) != full, "an argument is");
+    vfx_runtime_set_arg(VFX_RT_TARGET(0, 1), 0, 2, 0);
+    CHECK(vfx_runtime_hash(VFX_RT_TARGET(0, 1)) == full, "and setting it back restores the hash");
+
+    vfx_runtime_set_list_color(VFX_RT_TARGET(0, 1), 1, 0, 90, 50, 50);
+    CHECK(vfx_runtime_hash(VFX_RT_TARGET(0, 1)) != full, "a list colour is");
+
+    struct vfx_rt_params staged = rt_solid(0, NPX, 33);
+
+    vfx_runtime_add_layer_staged(VFX_RT_TARGET(0, 0), &staged);
+    CHECK(vfx_runtime_hash(VFX_RT_TARGET(0, 0)) == full, "a staged layer is not, until committed");
+
+    /* Pinned so an accidental change to the serialisation, which would make two
+     * firmware builds disagree about whether their halves match, is noticed.
+     */
+    CHECK(full == 0xC25D3B1Eu, "golden hash: 0x%08X", (unsigned)full);
+}
+
+static void test_runtime_sizes_are_visible(void) {
+    printf("  runtime scene: %u bytes of RAM, %u bytes saved, %d scenes x %d channels\n",
+           (unsigned)sizeof(struct vfx_rt_channel), (unsigned)sizeof(struct vfx_rt_saved_channel),
+           VFX_RT_SCENES_PER_CHANNEL, VFX_MAX_CHANNELS);
+    CHECK(sizeof(struct vfx_rt_saved_channel) <= VFX_RT_SAVED_ENTRY_MAX,
+          "one scene fits a settings entry");
 }
 
 /* ---- host control: the ops added for full generator coverage ------------- */
@@ -5055,6 +5269,15 @@ int main(void) {
         {"runtime staged heavy layer holds its state until removed",
          test_runtime_staged_heavy_layer_holds_its_state_until_removed},
         {"runtime save skips staged layers", test_runtime_save_skips_staged_layers},
+        {"runtime scenes in one channel are independent",
+         test_runtime_scenes_in_one_channel_are_independent},
+        {"runtime target must name a real scene", test_runtime_target_must_name_a_real_scene},
+        {"runtime one scene shows per channel", test_runtime_one_scene_shows_per_channel},
+        {"runtime dirty tracks scenes separately", test_runtime_dirty_tracks_scenes_separately},
+        {"runtime each scene saves and restores on its own",
+         test_runtime_each_scene_saves_and_restores_on_its_own},
+        {"runtime hash follows what a host built", test_runtime_hash_follows_what_a_host_built},
+        {"runtime sizes are visible", test_runtime_sizes_are_visible},
     };
 
     for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {
