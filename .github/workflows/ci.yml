@@ -71,6 +71,12 @@ jobs:
       - name: Check the host control panel against a fake HID device
         run: node tools/verify-host-hid.mjs
 
+      # The composer-to-board bridge: every preset converts both ways, and what
+      # runtime_scene.c draws from the converted layers matches the compiled
+      # compositor pixel for pixel.
+      - name: Check the composer-to-board bridge
+        run: node tools/verify-bridge.mjs
+
       - uses: actions/upload-artifact@v4
         with:
           name: sample-clips

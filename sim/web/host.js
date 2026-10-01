@@ -17,6 +17,12 @@
  * note about that.
  */
 
+import {
+  AXES, GENERIC, RT_TYPES, argLabel, c, flagsFor, RT_FLAG_STACK, RT_FLAG_REVERSE,
+  RT_FLAG_AXIS_SHIFT, RT_MAX_ARGS, BLENDS, OPACITY_SOURCES, blankLayer, newLayerData,
+  composerToRuntime, runtimeToComposer, sameLayers, saveFile, parseSaveFile,
+} from './scene-bridge.js';
+
 const OP = {
   PING: 0x00,
   SET_HUE: 0x01,
@@ -46,6 +52,9 @@ const OP = {
   SCENE_GET_LAYER_EXT: 0x19,
   SCENE_SET_FLAGS: 0x1a,
   SCENE_COMMIT_LAYER: 0x1b,
+  SCENE_VERIFY: 0x1c,
+  SCENE_GET_SYNC: 0x1d,
+  SCENE_RESYNC: 0x1e,
 };
 
 /* SCENE_ADD_LAYER's flags bit 5: reserve the layer without rendering it until
@@ -64,25 +73,35 @@ const REPLY_SCENE_ORDER = OP.SCENE_GET_ORDER | REPLY_BIT;
 const REPLY_LIST_COLOR = OP.SCENE_GET_LIST_COLOR | REPLY_BIT;
 const REPLY_ZONE = OP.SCENE_GET_ZONE | REPLY_BIT;
 const REPLY_LAYER_EXT = OP.SCENE_GET_LAYER_EXT | REPLY_BIT;
+const REPLY_SYNC = OP.SCENE_GET_SYNC | REPLY_BIT;
 
 const STATUS_OK = 0;
 const STATUS_POOL_FULL = 2;
+/* The central's relay queue is full, or a replay is running: nothing was
+ * applied, so the same request can be sent again once it drains.
+ */
+const STATUS_BUSY = 3;
+
+/* The wire's target byte: the runtime scene in the high nibble, the channel in
+ * the low (VFX_RT_TARGET). Scene 0 is what a host that knows nothing of scenes
+ * has always addressed.
+ */
+const target = (ch, scene = 0) => ((scene & 0xf) << 4) | (ch & 0xf);
+const chOf = t => t & 0xf;
+const sceneOf = t => t >> 4;
+const TARGET_ALL = 0xff;
+
+const PEER_STATES = ['none', 'unknown', 'match', 'MISMATCH', 'resyncing'];
+const FEATURE_RETURN_CHANNEL = 0x01;
 
 /* VFX_HID_ZONE_CHUNK: how many zone entries one SET_ZONE / ZONE carries. */
 const ZONE_CHUNK = 12;
 
-/* VFX_RT_MAX_ARGS: SCENE_ADD_LAYER carries the first four, SCENE_SET_ARG all
- * six. Water and matrix use every one.
- */
-const RT_MAX_ARGS = 6;
 const ADD_LAYER_ARGS = 4;
 
 /* VFX_RT_ZONE_*, in wire order. */
 const ZONE_KINDS = ['range', 'pixels', 'keys'];
 
-/* VFX_BLEND_* and VFX_SRC_* from dt-bindings/zmk/vfx.h, in numeric order. */
-const BLENDS = ['normal', 'add', 'multiply', 'screen', 'max'];
-const OPACITY_SOURCES = ['none', 'wpm', 'battery', 'activity'];
 
 /* How many channels to probe for on connect. Larger than any real board is
  * expected to declare -- discovery stops at the first channel that answers
@@ -100,128 +119,6 @@ const MAX_CHANNEL_PROBE = 8;
 const USAGE_PAGE = 0xff60;
 const USAGE = 0x61;
 
-/* VFX_AXIS_* from dt-bindings/zmk/vfx.h, in numeric order. Carried in bits
- * 2-4 of a layer's flags byte, for every generator that has an axis.
- */
-const AXES = ['strip', 'x', 'y', 'radial', 'angle', 'spiral'];
-
-const c = (h, s, v) => ({ h, s, v });
-
-/* The colour every layer started as before any type had colours of its own. */
-const GENERIC = c(200, 90, 100);
-
-/* Every generator the firmware can build, in the same order runtime_scene.h's
- * enum vfx_rt_type uses -- index into this array is the wire's `type` byte.
- *
- *   primary   the layer's own colour (SCENE_ADD_LAYER's hue/sat/bri, edited by
- *             SCENE_SET_COLOR); null for a type that has none.
- *   list      the colour list (SCENE_SET_LIST_COLOR), in the order
- *             rebuild_slot() in runtime_scene.c reads it: `labels` names the
- *             fixed entries of a generator that draws with a second colour,
- *             `grow` names the entries of one whose list is the point (a
- *             gradient's stops, a layer-state layer's colour per keymap layer)
- *             and can be extended. `defs` is what a fresh layer starts with.
- *   args      the small numbers, in the order rebuild_slot() reads them. A
- *             string is a free number; { label, options } is one whose values
- *             are a short enumeration, shown as a picker.
- *   stack, reverse, axis
- *             which of the flags byte's bits mean something to this generator.
- *
- * `defaultArgs` and the colours are not arbitrary -- each is a real value from
- * one of this module's own devicetree presets (dts/vfx/presets.dtsi), so a
- * freshly added layer already looks like something rather than a guess at what
- * "period ms" or "scale" ought to be. Where no preset uses a generator (wave,
- * keyflash, trail, flag, wpm, peripheral-battery) they come from its own
- * dt-binding's documented default instead. `defaultAxis` is the preset's
- * choice of direction where it is not the generic 'strip'.
- */
-const P = { label: 'colour', def: GENERIC };
-
-const RT_TYPES = [
-  { name: 'solid', primary: P, args: [], defaultArgs: [] },
-  { name: 'breathe', primary: P, args: ['period ms', 'min level', 'hue swing'],
-    defaultArgs: [4500, 20, 0] },
-  { name: 'wave', primary: P, args: ['wavelength', 'period ms', 'depth'], axis: true,
-    defaultArgs: [20, 2000, 255] },
-  { name: 'twinkle', primary: P, args: ['period ms', 'density', 'hue spread'],
-    defaultArgs: [1600, 55, 0] },
-  { name: 'plasma', primary: P, args: ['scale', 'period ms', 'hue spread'],
-    defaultArgs: [14, 7000, 70] },
-  { name: 'ripple', primary: P, args: ['decay ms', 'speed', 'width'],
-    defaultArgs: [700, 60, 15] },
-  { name: 'keyflash', primary: P, args: ['decay ms', 'spread'], defaultArgs: [400, 12] },
-  { name: 'pulse', primary: P, args: ['decay ms', 'min level', 'hue step'], stack: true,
-    defaultArgs: [900, 40, 7] },
-  { name: 'dart', primary: { label: 'tail colour', def: c(285, 90, 70) },
-    list: { labels: ['head colour'], defs: [c(300, 20, 100)] },
-    args: ['speed', 'lifetime ms', 'tail'], axis: true, reverse: true,
-    defaultArgs: [110, 1100, 28], defaultAxis: 1 /* VFX_AXIS_X */ },
-  { name: 'static', primary: P, args: ['period ms', 'density', 'hue spread'],
-    defaultArgs: [70, 45, 40] },
-  /* No colour of its own: its stops are the colour list, added to and edited
-   * one at a time.
-   */
-  { name: 'gradient', primary: null,
-    list: { grow: 'stop', defs: [c(0, 100, 70), c(60, 100, 70), c(120, 100, 70),
-                                 c(200, 100, 70), c(280, 100, 70), c(330, 100, 70)] },
-    args: ['scroll speed', 'span'], axis: true, defaultArgs: [8, 0] },
-  { name: 'trail', primary: P, args: ['decay ms', 'spread'], defaultArgs: [1500, 12] },
-  { name: 'hold', primary: { label: 'colour', def: c(45, 55, 90) }, args: ['release ms'],
-    defaultArgs: [260] },
-  { name: 'water', primary: { label: 'surface colour', def: c(205, 95, 30) },
-    list: { labels: ['crest colour'], defs: [c(190, 30, 100)] },
-    args: ['wavelength', 'speed', 'lifetime ms', 'drop rate ms', 'amplitude', 'damping'],
-    defaultArgs: [20, 45, 3200, 700, 255, 6] },
-  { name: 'matrix', primary: { label: 'tail colour', def: c(125, 100, 55) },
-    list: { labels: ['head colour'], defs: [c(110, 25, 100)] },
-    args: ['speed', 'tail', 'drop rate ms', 'columns', 'jitter', 'head size'],
-    defaultArgs: [55, 34, 260, 12, 90, 9] },
-  { name: 'fire', primary: { label: 'base colour', def: c(0, 100, 55) },
-    list: { labels: ['tip colour'], defs: [c(45, 75, 100)] },
-    args: ['period ms', 'cell', 'height', 'flicker'], axis: true,
-    defaultArgs: [420, 12, 235, 200], defaultAxis: 2 /* VFX_AXIS_Y */ },
-  { name: 'comet', primary: { label: 'tail colour', def: c(265, 95, 75) },
-    list: { labels: ['head colour'], defs: [c(280, 25, 100)] },
-    args: ['period ms', 'tail', 'count'], axis: true,
-    defaultArgs: [2600, 45, 2], defaultAxis: 1 /* VFX_AXIS_X */ },
-  { name: 'cross', primary: { label: 'arm colour', def: c(190, 90, 60) },
-    list: { labels: ['centre colour'], defs: [c(40, 20, 100)] },
-    args: ['decay ms', 'radius', 'thickness',
-           { label: 'axes', options: ['both', 'horizontal', 'vertical'] }],
-    defaultArgs: [600, 0, 4, 0] },
-  /* Its colour per keymap layer, layer 0 first: black draws nothing, so the
-   * layers underneath show through it.
-   */
-  { name: 'layer_state', primary: null,
-    list: { grow: 'layer', defs: [c(0, 0, 0), c(50, 100, 70), c(280, 100, 70), c(0, 100, 70)] },
-    args: [], defaultArgs: [] },
-  { name: 'battery', primary: { label: 'low colour', def: c(0, 100, 80) },
-    list: { labels: ['high colour', 'empty colour'], defs: [c(120, 100, 70), c(0, 0, 0)] },
-    args: ['warn below %'], defaultArgs: [25] },
-  { name: 'ble_profile', primary: { label: 'connected colour', def: c(210, 100, 80) },
-    list: { labels: ['disconnected colour', 'usb colour'],
-            defs: [c(20, 100, 50), c(120, 100, 70)] },
-    args: [], defaultArgs: [] },
-  { name: 'flag', primary: { label: 'colour', def: c(0, 100, 80) },
-    args: [{ label: 'source', options: ['locks', 'modifiers'] },
-           { label: 'mask',
-             title: 'Which bits light the zone; any one is enough. Locks: num 1, caps 2, scroll 4, compose 8, kana 16. Modifiers: ctrl 17, shift 34, alt 68, gui 136 (each covers both sides). Add them together for more than one.' }],
-    defaultArgs: [0, 2] },
-  { name: 'wpm', primary: { label: 'idle colour', def: c(220, 80, 20) },
-    list: { labels: ['fast colour'], defs: [c(0, 100, 100)] },
-    args: ['full wpm', { label: 'mode', options: ['colour', 'bar'] }],
-    defaultArgs: [80, 0] },
-  { name: 'peripheral_battery', primary: { label: 'low colour', def: c(0, 100, 80) },
-    list: { labels: ['high colour', 'empty colour', 'unknown colour'],
-            defs: [c(120, 100, 70), c(0, 0, 0), c(0, 0, 0)] },
-    args: ['peripheral', 'warn below %'], defaultArgs: [0, 20] },
-];
-
-const argLabel = a => (typeof a === 'string' ? a : a.label);
-
-const RT_FLAG_STACK = 0x01;
-const RT_FLAG_REVERSE = 0x02;
-const RT_FLAG_AXIS_SHIFT = 2;
 
 /* Delays `fn` until `ms` after the last call, so a number field can send its
  * edit once the user pauses typing instead of only on blur -- 'change' never
@@ -237,16 +134,6 @@ const debounce = (fn, ms) => {
   };
 };
 
-const flagsFor = (typeIdx, { stack, reverse, axis }) => {
-  const spec = RT_TYPES[typeIdx];
-  let f = 0;
-
-  if (spec.stack && stack) f |= RT_FLAG_STACK;
-  if (spec.reverse && reverse) f |= RT_FLAG_REVERSE;
-  if (spec.axis) f |= (axis & 0x7) << RT_FLAG_AXIS_SHIFT;
-
-  return f;
-};
 
 const writeI16 = (buf, offset, value) => {
   const v = value & 0xffff;
@@ -255,7 +142,7 @@ const writeI16 = (buf, offset, value) => {
   buf[offset + 1] = (v >> 8) & 0xff;
 };
 
-const requests = {
+export const requests = {
   ping: () => new Uint8Array([OP.PING]),
   setHue: (slot, hue) => {
     const b = new Uint8Array(4);
@@ -367,6 +254,9 @@ const requests = {
     new Uint8Array([OP.SCENE_SET_OPTS, ch, slot, o.blend, o.opacity, o.opacitySrc, o.opacityMin,
                     o.opacityFull, o.tuneId]),
   sceneGetLayerExt: (ch, slot) => new Uint8Array([OP.SCENE_GET_LAYER_EXT, ch, slot]),
+  sceneVerify: t => new Uint8Array([OP.SCENE_VERIFY, t]),
+  sceneGetSync: () => new Uint8Array([OP.SCENE_GET_SYNC]),
+  sceneResync: t => new Uint8Array([OP.SCENE_RESYNC, t]),
 };
 
 /* `data` is the report body WebHID hands the input-report listener; for a
@@ -482,6 +372,26 @@ function decodeReply(data) {
     };
   }
 
+  if (op === REPLY_SYNC) {
+    const peers = [];
+
+    for (let i = 0; i < 3; i++) {
+      const state = data.getUint8(4 + i * 5);
+
+      if (state) peers.push({ index: i, state, hash: data.getUint32(5 + i * 5, true) });
+    }
+
+    return {
+      kind: 'sync',
+      status: data.getUint8(1),
+      features: data.getUint8(2),
+      replaying: data.getUint8(3) !== 0,
+      peers,
+      queueHighWater: data.getUint8(19),
+      refused: data.getUint8(20),
+    };
+  }
+
   /* Every SET_/SCENE_ or RESET ack shares this shape, op set to the
    * request's own op with the reply bit added -- SCENE_ADD_LAYER's included,
    * its "slot" byte carrying the newly assigned id rather than an echo.
@@ -504,14 +414,43 @@ export function initHostPanel() {
   const addTypeEl = $('host-add-type');
   const addLayerBtn = $('host-add-layer');
   const addHintEl = $('host-add-hint');
+  const scenesEl = $('host-scenes');
+  const sendBtn = $('host-send');
+  const loadBtn = $('host-load');
+  const saveBtn = $('host-save');
+  const openBtn = $('host-open');
+  const openFileEl = $('host-open-file');
+  const progressRow = $('host-progress-row');
+  const progressEl = $('host-progress');
+  const progressText = $('host-progress-text');
+  const transferNote = $('host-transfer-note');
+  const syncEl = $('host-sync');
+  const verifyBtn = $('host-verify');
+  const resyncBtn = $('host-resync');
+  const syncRefreshBtn = $('host-sync-refresh');
+  const paceEl = $('host-pace');
+  const syncOut = $('host-sync-out');
+  const stressCountEl = $('host-stress-count');
+  const stressBtn = $('host-stress');
+  const stressOut = $('host-stress-out');
 
   if (!connectBtn) return; // panel not on this page
 
   let device = null;
   let slots = new Map(); // tuning slot -> row elements
   let channels = []; // discovered channel ids, in probe order
+  /* The wire target of what is being edited: channel in the low nibble, the
+   * runtime scene in the high one (see target()). Every request below passes it
+   * as its channel byte.
+   */
   let activeChannel = null;
-  let layerRows = new Map(); // device slot -> row elements, for the active channel
+  let layerRows = new Map(); // device slot -> row elements, for the active target
+  const sceneCounts = new Map(); // channel -> runtime scenes it holds
+  const boardActive = new Map(); // channel -> its active runtime scene, 0xff for none
+  const lastScene = new Map(); // channel -> the scene tab last open on it
+  let lastInfo = null; // the active target's most recent GET_INFO
+  let transferring = false; // a send or load owns the card list: tabs are inert
+  let hasSync = false; // the firmware's GET_INFO carries a hash, so it speaks the sync ops
 
   /* Every wire send goes through transact() below and pushes one resolver
    * here; a real (or fake) device answers reports strictly in the order it
@@ -663,19 +602,26 @@ export function initHostPanel() {
 
   /* ----------------------------------------------------------- scene UI */
 
-  function selectChannel(ch) {
-    activeChannel = ch;
+  function selectTarget(t) {
+    if (transferring) return null;
+
+    activeChannel = t;
+    lastScene.set(chOf(t), sceneOf(t));
 
     document.querySelectorAll('#host-channels button').forEach(b => {
-      b.classList.toggle('active', Number(b.dataset.ch) === ch);
+      b.classList.toggle('active', Number(b.dataset.ch) === chOf(t));
     });
 
+    renderSceneTabs();
     sceneEl.hidden = false;
     layerRows = new Map();
     sceneLayersEl.innerHTML = '';
+    transferNote.textContent = '';
 
-    refreshChannel(ch);
+    return refreshChannel(t);
   }
+
+  const selectChannel = ch => selectTarget(target(ch, lastScene.get(ch) ?? 0));
 
   function renderChannelTabs() {
     channelsEl.innerHTML = '';
@@ -691,6 +637,28 @@ export function initHostPanel() {
     }
 
     if (channels.length && activeChannel === null) selectChannel(channels[0]);
+  }
+
+  /* One tab per runtime scene the channel holds. A board built with one (the
+   * default) gets no row: it looks exactly as it did before scenes.
+   */
+  function renderSceneTabs() {
+    scenesEl.innerHTML = '';
+
+    const ch = activeChannel === null ? 0 : chOf(activeChannel);
+    const n = sceneCounts.get(ch) ?? 1;
+
+    scenesEl.style.display = n < 2 ? 'none' : '';
+
+    for (let k = 0; k < n && n > 1; k++) {
+      const b = document.createElement('button');
+
+      b.textContent = `Scene ${k + 1}` + (boardActive.get(ch) === k ? ' (showing)' : '');
+      b.className = 'preset' + (activeChannel !== null && sceneOf(activeChannel) === k ? ' active' : '');
+      b.dataset.scene = k;
+      b.addEventListener('click', () => selectTarget(target(ch, k)));
+      scenesEl.appendChild(b);
+    }
   }
 
   /* --------------------------------------------------------- layer widgets */
@@ -864,9 +832,9 @@ export function initHostPanel() {
       argCtls.push({ wrap, num, sel });
     }
 
-    /* stack, reverse and the axis ride in the flags byte, which only
-     * SCENE_ADD_LAYER carries: changing one builds the layer again (see
-     * rebuildFromScratch()) rather than editing it in place.
+    /* stack, reverse and the axis ride in the flags byte, which
+     * SCENE_SET_FLAGS rewrites in place: nothing is removed or re-added, so
+     * the layer keeps its slot and its place in the stack.
      */
     const editFlag = (key, value) => {
       const l = cur();
@@ -874,7 +842,7 @@ export function initHostPanel() {
       if (!l) return;
 
       l.data[key] = value;
-      rebuildFromScratch(slot, l.data);
+      act(requests.sceneSetFlags(activeChannel, slot, flagsFor(l.data.type, l.data)));
     };
 
     const stackEl = document.createElement('input');
@@ -1079,14 +1047,6 @@ export function initHostPanel() {
     return row;
   }
 
-  function blankLayer() {
-    return {
-      type: 0, zoneKind: 0, zoneStart: 0, zoneLen: 0, zoneItems: [],
-      blend: 0, opacity: 255, opacitySrc: 0, opacityMin: 0, opacityFull: 0, tuneId: 0,
-      hue: 0, sat: 0, bri: 0, args: new Array(RT_MAX_ARGS).fill(0),
-      stack: false, reverse: false, axis: 0, colors: [],
-    };
-  }
 
   /* A colour per entry of the layer's list, each editable in place. */
   function renderList(row) {
@@ -1158,81 +1118,67 @@ export function initHostPanel() {
    * Left out when it is what a new layer already is.
    */
   async function writeLayerExtras(ch, slot, data) {
+    const check = msg => (msg.status === STATUS_OK ? null : msg);
+
     for (let i = ADD_LAYER_ARGS; i < RT_MAX_ARGS; i++) {
-      if (data.args[i]) await act(requests.sceneSetArg(ch, slot, i, data.args[i]));
+      if (!data.args[i]) continue;
+
+      const bad = check(await act(requests.sceneSetArg(ch, slot, i, data.args[i])));
+
+      if (bad) return bad;
     }
 
     for (let i = 0; i < data.colors.length; i++) {
       const { h, s, v } = data.colors[i];
-      const msg = await act(requests.sceneSetListColor(ch, slot, i, h, s, v));
+      const bad = check(await act(requests.sceneSetListColor(ch, slot, i, h, s, v)));
 
-      if (msg.status !== STATUS_OK) break; // the rest would be refused too
+      if (bad) return bad;
     }
 
-    if (data.zoneKind !== 0) await writeZone(ch, slot, data.zoneKind, data.zoneItems);
+    if (data.zoneKind !== 0) {
+      const bad = check(await writeZone(ch, slot, data.zoneKind, data.zoneItems));
+
+      if (bad) return bad;
+    }
 
     if (data.opacitySrc || data.opacityMin || data.opacityFull || data.tuneId) {
-      await act(requests.sceneSetOpts(ch, slot, data));
+      const bad = check(await act(requests.sceneSetOpts(ch, slot, data)));
+
+      if (bad) return bad;
     }
+
+    return null;
   }
 
-  async function addLayer(ch, data) {
+  /* A layer is built staged -- reserved on the board but invisible -- and only
+   * committed once every message of it has landed, so a half-built layer is
+   * never drawn, and one that cannot be finished (the pool ran out part way)
+   * is removed instead of left behind. The commit is one message: the layer
+   * appears all at once.
+   */
+  async function addLayer(ch, data, position = POSITION_TOP) {
     const added = await act(requests.sceneAddLayer(ch, data.type, data.zoneStart, data.zoneLen,
                                                     data.blend, data.opacity, data.hue, data.sat,
-                                                    data.bri, data.args, flagsFor(data.type, data)));
+                                                    data.bri, data.args, flagsFor(data.type, data),
+                                                    true));
 
-    if (added.status === STATUS_OK) await writeLayerExtras(ch, added.slot, data);
+    if (added.status !== STATUS_OK) return added;
 
-    return added;
-  }
+    let failed = await writeLayerExtras(ch, added.slot, data);
 
-  /* What Add layer builds: the type's own defaults, colours included. */
-  function newLayerData(type) {
-    const spec = RT_TYPES[type];
-    const primary = spec.primary?.def ?? GENERIC;
-    const data = blankLayer();
+    if (!failed) {
+      const committed = await act(requests.sceneCommitLayer(ch, added.slot, position));
 
-    Object.assign(data, {
-      type,
-      zoneLen: 6, // a safe starting width on any channel, even the smallest a board declares
-      hue: primary.h, sat: primary.s, bri: primary.v,
-      axis: spec.defaultAxis ?? 0,
-      colors: (spec.list?.defs ?? []).map(d => ({ ...d })),
-    });
-    spec.defaultArgs.forEach((v, i) => { data.args[i] = v; });
-
-    return data;
-  }
-
-  /* Changing a flag (stack, reverse, axis) is the one edit with no message of
-   * its own, so it builds the layer again from what the panel holds and puts
-   * it back where it was: a fresh layer is added at the top of the stack, so
-   * it is walked down to its old position rather than left there.
-   */
-  async function rebuildFromScratch(slot, data) {
-    const ch = activeChannel;
-    const cards = [...sceneLayersEl.children];
-    const position = cards.findIndex(el => Number(el.dataset.slot) === slot);
-
-    await act(requests.sceneRemoveLayer(ch, slot));
-
-    const added = await addLayer(ch, data);
-
-    if (added.status === STATUS_OK && position >= 0) {
-      for (let i = position; i < cards.length - 1; i++) {
-        await act(requests.sceneMoveLayer(ch, added.slot, -1));
-      }
+      if (committed.status !== STATUS_OK) failed = committed;
     }
 
-    /* Simplest to just ask the device what the channel looks like now
-     * rather than guess.
-     */
-    layerRows.delete(slot);
-    const card = sceneLayersEl.querySelector(`[data-slot="${slot}"]`);
+    if (failed) {
+      await act(requests.sceneRemoveLayer(ch, added.slot));
 
-    if (card) card.remove();
+      return { ...added, status: failed.status };
+    }
 
-    refreshChannel(ch);
+    return added;
   }
 
   function applyLayer(msg, ext, colors, zoneItems) {
@@ -1341,13 +1287,17 @@ export function initHostPanel() {
   async function refreshChannel(ch) {
     const info = await transact(requests.sceneGetInfo(ch));
 
-    if (ch !== activeChannel) return; // superseded by a later selection
+    if (ch !== activeChannel) return null; // superseded by a later selection
 
+    lastInfo = info;
+    boardActive.set(chOf(ch), info.activeScene);
+    sceneCounts.set(chOf(ch), info.scenes);
+    renderSceneTabs();
     sceneActiveEl.checked = info.active;
 
     const orderMsg = await transact(requests.sceneGetOrder(ch));
 
-    if (ch !== activeChannel) return;
+    if (ch !== activeChannel) return null;
 
     const seen = new Set();
 
@@ -1355,7 +1305,7 @@ export function initHostPanel() {
       const layer = await transact(requests.sceneGetLayer(ch, slot));
       const ext = await transact(requests.sceneGetLayerExt(ch, slot));
 
-      if (ch !== activeChannel) return;
+      if (ch !== activeChannel) return null;
 
       if (layer.status !== STATUS_OK || ext.status !== STATUS_OK) continue;
 
@@ -1364,7 +1314,7 @@ export function initHostPanel() {
       for (let i = 0; i < ext.numColors; i++) {
         const entry = await transact(requests.sceneGetListColor(ch, slot, i));
 
-        if (ch !== activeChannel) return;
+        if (ch !== activeChannel) return null;
 
         if (entry.status === STATUS_OK) {
           colors.push({ h: hueOf(entry.hue), s: entry.sat, v: entry.bri });
@@ -1379,7 +1329,7 @@ export function initHostPanel() {
         while (zoneItems.length < total) {
           const z = await transact(requests.sceneGetZone(ch, slot, zoneItems.length));
 
-          if (ch !== activeChannel) return;
+          if (ch !== activeChannel) return null;
 
           if (z.status !== STATUS_OK || !z.items.length) break;
 
@@ -1398,7 +1348,16 @@ export function initHostPanel() {
         layerRows.delete(slot);
       }
     }
+
+    return boardLayers();
   }
+
+  /* What the board holds for the open target, bottom of the stack first, as
+   * the cards last read it. Only meaningful right after a refreshChannel().
+   */
+  const boardLayers = () => [...sceneLayersEl.children]
+    .map(el => layerRows.get(Number(el.dataset.slot))?.data)
+    .filter(Boolean);
 
   async function discoverChannels() {
     channels = [];
@@ -1409,9 +1368,13 @@ export function initHostPanel() {
       if (info.status !== STATUS_OK) break;
 
       channels.push(ch);
+      hasSync ||= info.hash !== null;
+      sceneCounts.set(ch, info.scenes);
+      boardActive.set(ch, info.activeScene);
     }
 
     renderChannelTabs();
+    syncEl.hidden = !hasSync;
   }
 
   sceneActiveEl.addEventListener('change', () => {
@@ -1442,6 +1405,278 @@ export function initHostPanel() {
     refreshChannel(activeChannel);
   });
 
+  /* ------------------------------------- composer <-> board, and files */
+
+  const setProgress = (done, total, text) => {
+    progressRow.style.display = total ? '' : 'none';
+    progressEl.max = total || 1;
+    progressEl.value = done;
+    progressText.textContent = text ?? '';
+  };
+
+  const note = (msg, ok = true) => {
+    transferNote.textContent = msg;
+    transferNote.style.color = ok ? '' : '#ff7b72';
+  };
+
+  const transferButtons = [sendBtn, loadBtn, saveBtn, openBtn, sceneResetBtn, addLayerBtn];
+
+  async function transfer(body) {
+    if (activeChannel === null || transferring) return;
+
+    transferring = true;
+    transferButtons.forEach(b => { b.disabled = true; });
+
+    try {
+      await body(activeChannel);
+    } catch (err) {
+      note(`failed: ${err.message}`, false);
+    } finally {
+      transferring = false;
+      transferButtons.forEach(b => { b.disabled = false; });
+      setProgress(0, 0);
+    }
+  }
+
+  /* Replaces what the open target holds with `layers`: reset, then each layer
+   * built staged and committed (see addLayer()), then activated, then the
+   * board is read back and compared with what was meant to land.
+   */
+  function sendLayers(layers, warnings, activate = true) {
+    return transfer(async t => {
+      if (warnings.length) {
+        const list = warnings.map(w => `  - ${w}`).join('\n');
+
+        if (!window.confirm(`The board cannot hold this scene as written:\n\n${list}\n\nSend what fits?`)) {
+          return;
+        }
+      }
+
+      const total = layers.length + 2;
+
+      setProgress(0, total, 'clearing the scene…');
+      await act(requests.sceneReset(t));
+      layerRows = new Map();
+      sceneLayersEl.innerHTML = '';
+
+      const sent = [];
+      let failure = null;
+
+      for (const [i, d] of layers.entries()) {
+        const name = RT_TYPES[d.type].name;
+
+        setProgress(i + 1, total, `layer ${i + 1} of ${layers.length} (${name})…`);
+
+        const r = await addLayer(t, d);
+
+        if (r.status !== STATUS_OK) {
+          failure = `layer ${i + 1} (${name}) was refused (status ${r.status}); the rest were not sent`;
+          break;
+        }
+
+        sent.push(d);
+      }
+
+      if (activate && sent.length) await act(requests.sceneActivate(t));
+
+      setProgress(total - 1, total, 'reading it back…');
+
+      const read = await refreshChannel(t);
+
+      if (failure) note(failure, false);
+      else if (!read) note('stopped: another scene was opened', false);
+      else if (sameLayers(sent, read)) note(`sent ${sent.length} layer${sent.length === 1 ? '' : 's'}; the board reports exactly that`);
+      else note('sent, but what the board reports differs from what was sent', false);
+    });
+  }
+
+  const composerChannel = () => {
+    const composer = window.vfxComposer;
+    const ci = chOf(activeChannel);
+
+    if (!composer) throw new Error('the composer is not on this page');
+    if (!composer.channels()[ci]) throw new Error(`the composer has no channel ${ci}`);
+
+    return { composer, ci };
+  };
+
+  sendBtn.addEventListener('click', () => {
+    let scene;
+
+    try {
+      const { composer, ci } = composerChannel();
+
+      scene = composer.getScene(ci);
+    } catch (err) {
+      note(err.message, false);
+
+      return;
+    }
+
+    const { layers, warnings } = composerToRuntime(scene);
+
+    sendLayers(layers, warnings);
+  });
+
+  loadBtn.addEventListener('click', () => transfer(async t => {
+    const { composer, ci } = composerChannel();
+    const layers = await refreshChannel(t);
+
+    if (!layers) return;
+
+    composer.setScene(ci, runtimeToComposer(layers, `board channel ${ci}`));
+    note(`loaded ${layers.length} layer${layers.length === 1 ? '' : 's'} into the composer's channel ${ci}`);
+  }));
+
+  function download(name, obj) {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 2)],
+                                             { type: 'application/json' }));
+    const a = document.createElement('a');
+
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  saveBtn.addEventListener('click', () => transfer(async t => {
+    const layers = await refreshChannel(t);
+
+    if (!layers) return;
+
+    download(`vfx-scene-ch${chOf(t)}-${sceneOf(t) + 1}.json`,
+             saveFile(layers, { channel: chOf(t), sceneIndex: sceneOf(t),
+                                active: sceneActiveEl.checked }));
+    note(`saved ${layers.length} layer${layers.length === 1 ? '' : 's'}`);
+  }));
+
+  openBtn.addEventListener('click', () => openFileEl.click());
+
+  openFileEl.addEventListener('change', async () => {
+    const file = openFileEl.files[0];
+
+    openFileEl.value = '';
+
+    if (!file) return;
+
+    try {
+      const parsed = parseSaveFile(await file.text());
+
+      await sendLayers(parsed.layers, parsed.warnings, parsed.active || parsed.channel === null);
+    } catch (err) {
+      note(`${file.name}: ${err.message}`, false);
+    }
+  });
+
+  /* ------------------------------------------------- split link and sync */
+
+  const hex32 = h => `0x${(h >>> 0).toString(16).padStart(8, '0')}`;
+  const VERIFY_WAIT_MS = 600;
+
+  function describeSync(sync) {
+    if (sync.status !== STATUS_OK) return 'the board did not answer GET_SYNC';
+
+    const lines = [];
+
+    lines.push(sync.features & FEATURE_RETURN_CHANNEL
+      ? 'return channel: on (peripherals report back)'
+      : 'return channel: off (build with CONFIG_ZMK_VFX_SPLIT_REPORT=y; Resync still works)');
+
+    if (lastInfo?.hash != null) lines.push(`central hash, open scene: ${hex32(lastInfo.hash)}`);
+
+    if (!sync.peers.length) lines.push('no peripheral has reported yet');
+
+    for (const p of sync.peers) {
+      lines.push(`peripheral ${p.index}: ${PEER_STATES[p.state] ?? p.state}, last hash ${hex32(p.hash)}`);
+    }
+
+    lines.push(`relay queue high-water ${sync.queueHighWater} pieces, ${sync.refused} refused as busy` +
+               (sync.replaying ? ', a resync is running' : ''));
+
+    return lines.join('\n');
+  }
+
+  async function refreshSync() {
+    const sync = await transact(requests.sceneGetSync());
+
+    syncOut.textContent = describeSync(sync);
+
+    return sync;
+  }
+
+  syncRefreshBtn.addEventListener('click', refreshSync);
+
+  verifyBtn.addEventListener('click', async () => {
+    syncOut.textContent = 'asking the peripherals to compare…';
+    await act(requests.sceneVerify(TARGET_ALL));
+    await sleep(VERIFY_WAIT_MS);
+    await refreshSync();
+  });
+
+  resyncBtn.addEventListener('click', async () => {
+    syncOut.textContent = 'replaying the central\'s scenes onto the peripherals…';
+    await act(requests.sceneResync(TARGET_ALL));
+
+    for (let i = 0; i < 60; i++) {
+      await sleep(500);
+
+      const sync = await refreshSync();
+
+      if (!sync.replaying && !sync.peers.some(p => p.state === 4)) break;
+    }
+  });
+
+  /* The measurement the pace and the board's relay interval are tuned from: a
+   * run of small changes sent as fast as the pace allows, then a verify. BUSY
+   * retries and the central's own refused count say whether the queue
+   * overflowed; the peripherals' verdict says whether anything was lost.
+   */
+  stressBtn.addEventListener('click', () => transfer(async t => {
+    const first = sceneLayersEl.children[0];
+
+    if (!first) {
+      stressOut.textContent = 'add a layer to this scene first: the test recolours it';
+      return;
+    }
+
+    const slot = Number(first.dataset.slot);
+    const data = layerRows.get(slot).data;
+    const n = Math.max(1, Math.min(500, Number(stressCountEl.value) || 1));
+
+    busyRetries = 0;
+
+    let refused = 0;
+    const t0 = performance.now();
+
+    for (let i = 0; i < n; i++) {
+      setProgress(i, n, `change ${i + 1} of ${n}…`);
+
+      const msg = await act(requests.sceneSetColor(t, slot, (i * 37) % 360, 100, 100));
+
+      if (msg.status !== STATUS_OK) refused++;
+    }
+
+    const ms = performance.now() - t0;
+
+    await act(requests.sceneSetColor(t, slot, data.hue, data.sat, data.bri));
+
+    const lines = [
+      `${n} changes in ${Math.round(ms)} ms (${(ms / n).toFixed(1)} ms each) at ${paceMs} ms per piece`,
+      `BUSY retries ${busyRetries}, never accepted ${refused}`,
+    ];
+
+    stressOut.textContent = lines.join('\n') + '\nverifying…';
+
+    await act(requests.sceneVerify(TARGET_ALL));
+    await sleep(VERIFY_WAIT_MS);
+
+    const sync = await refreshSync();
+
+    stressOut.textContent = lines.concat(describeSync(sync)).join('\n');
+  }));
+
   /* ------------------------------------------------------- wire plumbing */
 
   function transact(bytes) {
@@ -1455,36 +1690,53 @@ export function initHostPanel() {
    * not a value the caller reads back. Still goes through the same queue as
    * transact(), so it never gets its reply crossed with a later transact()
    * call's.
+   *
+   * BUSY means the central's relay backlog was full (or a resync is
+   * running) and applied nothing, so the identical request is simply sent
+   * again after a growing wait. The retries are counted: they are how the
+   * stress test shows that the pace is too fast.
    */
-  function act(bytes) {
-    return transact(bytes).then(async msg => {
-      if (msg.kind === 'ack' && msg.status !== STATUS_OK) {
-        const full = {
-          [OP.SCENE_GRADIENT_ADD_STOP]: 'stop list is full',
-          [OP.SCENE_SET_LIST_COLOR]: 'colour list is full',
-          [OP.SCENE_SET_ZONE]: 'zone list is full',
-          [OP.SCENE_ADD_LAYER]: 'channel is full (or out of trail/hold state)',
-        };
-        const label = msg.status !== STATUS_POOL_FULL ? 'refused'
+  const BUSY_RETRIES = 8;
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  let busyRetries = 0;
+
+  async function act(bytes) {
+    let msg;
+
+    for (let attempt = 0; ; attempt++) {
+      msg = await transact(bytes);
+
+      if (msg.kind !== 'ack' || msg.status !== STATUS_BUSY || attempt >= BUSY_RETRIES) break;
+
+      busyRetries++;
+      await sleep(Math.min(500, 20 * 2 ** attempt));
+    }
+
+    if (msg.kind === 'ack' && msg.status !== STATUS_OK) {
+      const full = {
+        [OP.SCENE_GRADIENT_ADD_STOP]: 'stop list is full',
+        [OP.SCENE_SET_LIST_COLOR]: 'colour list is full',
+        [OP.SCENE_SET_ZONE]: 'zone list is full',
+        [OP.SCENE_ADD_LAYER]: 'channel is full (or out of trail/hold state)',
+      };
+      const label = msg.status === STATUS_BUSY ? 'busy: the split link backlog did not drain'
+        : msg.status !== STATUS_POOL_FULL ? 'refused'
           : full[msg.op] ?? 'channel is full';
 
-        setStatus(`op 0x${msg.op.toString(16)} ${label} (byte1 ${msg.slot})`, false);
-      }
+      setStatus(`op 0x${msg.op.toString(16)} ${label} (byte1 ${msg.slot})`, false);
+    }
 
-      await pace(bytes);
+    await pace(bytes);
 
-      return msg;
-    });
+    return msg;
   }
 
   /* A split board's central hands each scene change to its peripheral in
-   * 4-byte pieces, fire and forget -- there is no reply from the far side to
-   * wait for -- so a burst of changes can outrun the link. The reply this
-   * page just got only says the central applied it; waiting a moment per
-   * piece before the next send keeps a long build (a water layer is an add, a
-   * list of colours and two more numbers) from queueing faster than it drains.
-   * The figure is a guess, not a measurement: this project has no hardware
-   * to time it on (see the README).
+   * 4-byte pieces over a paced queue (CONFIG_ZMK_VFX_RELAY_CHUNK_INTERVAL_MS
+   * apart), and answers BUSY when that queue has no room. Waiting a moment per
+   * piece keeps a long build from hitting BUSY at all. The value here is the
+   * time per piece, and is yours to tune: the relay stress test below shows
+   * whether a given figure keeps up.
    */
   const RELAY_OPS = new Set([
     OP.SCENE_RESET, OP.SCENE_ADD_LAYER, OP.SCENE_SET_ARG, OP.SCENE_SET_COLOR,
@@ -1493,14 +1745,35 @@ export function initHostPanel() {
     OP.SCENE_SET_FLAGS, OP.SCENE_COMMIT_LAYER,
   ]);
   const RELAY_CHUNK_BYTES = 4;
-  const RELAY_PACE_MS_PER_CHUNK = 16;
+  const PACE_KEY = 'vfx-relay-pace-ms';
+  const PACE_DEFAULT_MS = 4;
+
+  const readPace = () => {
+    try {
+      const v = Number(localStorage.getItem(PACE_KEY));
+
+      return localStorage.getItem(PACE_KEY) !== null && v >= 0 ? v : PACE_DEFAULT_MS;
+    } catch {
+      return PACE_DEFAULT_MS;
+    }
+  };
+
+  let paceMs = readPace();
+
+  paceEl.value = paceMs;
+  paceEl.addEventListener('change', () => {
+    paceMs = Math.max(0, Math.min(200, Number(paceEl.value) || 0));
+    paceEl.value = paceMs;
+
+    try {
+      localStorage.setItem(PACE_KEY, String(paceMs));
+    } catch { /* storage blocked: the value just does not persist */ }
+  });
 
   function pace(bytes) {
-    if (!RELAY_OPS.has(bytes[0])) return Promise.resolve();
+    if (!RELAY_OPS.has(bytes[0]) || paceMs === 0) return Promise.resolve();
 
-    const chunks = Math.ceil(bytes.length / RELAY_CHUNK_BYTES);
-
-    return new Promise(resolve => setTimeout(resolve, chunks * RELAY_PACE_MS_PER_CHUNK));
+    return sleep(Math.ceil(bytes.length / RELAY_CHUNK_BYTES) * paceMs);
   }
 
   function onInputReport(event) {
@@ -1527,7 +1800,14 @@ export function initHostPanel() {
     channels = [];
     activeChannel = null;
     channelsEl.innerHTML = '';
+    scenesEl.innerHTML = '';
     sceneEl.hidden = true;
+    syncEl.hidden = true;
+    sceneCounts.clear();
+    boardActive.clear();
+    lastScene.clear();
+    lastInfo = null;
+    hasSync = false;
     replyQueue.length = 0;
 
     device.addEventListener('inputreport', onInputReport);
@@ -1580,7 +1860,10 @@ export function initHostPanel() {
     channels = [];
     activeChannel = null;
     channelsEl.innerHTML = '';
+    scenesEl.innerHTML = '';
     sceneEl.hidden = true;
+    syncEl.hidden = true;
+    transferring = false;
     connectBtn.hidden = false;
     disconnectBtn.hidden = true;
     setStatus('disconnected', false);
@@ -1637,4 +1920,4 @@ function hexToHsb(hex) {
          Math.round(max * 100)];
 }
 
-initHostPanel();
+if (typeof document !== 'undefined') initHostPanel();

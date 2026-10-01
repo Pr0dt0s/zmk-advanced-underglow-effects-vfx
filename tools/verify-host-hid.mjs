@@ -18,6 +18,7 @@
  *   node tools/verify-host-hid.mjs
  */
 
+import { readFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
 
 const PAGE = process.env.VFX_SIM_URL ?? 'http://127.0.0.1:8899/index.html';
@@ -52,7 +53,11 @@ await page.addInitScript(() => {
     SCENE_GRADIENT_ADD_STOP: 18, SCENE_GET_GRADIENT_STOP: 19,
     SCENE_SET_LIST_COLOR: 20, SCENE_GET_LIST_COLOR: 21, SCENE_SET_ZONE: 22, SCENE_GET_ZONE: 23,
     SCENE_SET_OPTS: 24, SCENE_GET_LAYER_EXT: 25,
+    SCENE_SET_FLAGS: 0x1a, SCENE_COMMIT_LAYER: 0x1b, SCENE_VERIFY: 0x1c, SCENE_GET_SYNC: 0x1d,
+    SCENE_RESYNC: 0x1e,
   };
+  /* Ops a split central hands to its peripheral, so the ones it can refuse as BUSY. */
+  const RELAYED = new Set([7, 8, 9, 10, 11, 12, 13, 14, 18, 20, 22, 24, 0x1a, 0x1b]);
   const REPLY = 0x80;
   const MAX_LAYERS = 3;
   const MAX_COLORS = 8; // VFX_RT_MAX_COLORS
@@ -64,6 +69,19 @@ await page.addInitScript(() => {
   const isHeavy = t => t === 11 || t === 12; // VFX_RT_TRAIL, VFX_RT_HOLD
   const STATUS_BAD_SLOT = 1;
   const STATUS_POOL_FULL = 2;
+  const STATUS_BUSY = 3;
+  const FLAG_STAGED = 0x20;
+  const SCENES = 2; // runtime scenes per channel (CONFIG_ZMK_VFX_RUNTIME_SCENES_PER_CHANNEL)
+
+  /* FNV-1a over a scene's committed layers: stands in for vfx_runtime_hash(). */
+  const hashOf = sc => {
+    let h = 0x811c9dc5;
+    const text = JSON.stringify(sc.order.map(i => sc.slots[i]));
+
+    for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193) >>> 0;
+
+    return h;
+  };
 
   const readI16 = (b, off) => {
     const u = b[off] | (b[off + 1] << 8);
@@ -89,8 +107,34 @@ await page.addInitScript(() => {
       /* Two channels, matching a two-channel board -- channel discovery in
        * host.js is expected to stop right after these.
        */
-      this.channels = [0, 1].map(() => ({ active: false, slots: Array(MAX_LAYERS).fill(null),
-                                          order: [] }));
+      this.channels = [0, 1].map(() => {
+        const scenes = Array.from({ length: SCENES }, () => ({
+          active: false, slots: Array(MAX_LAYERS).fill(null), order: [],
+        }));
+
+        /* Scene 0 doubles as the channel object, so `channels[0].slots` is the
+         * first runtime scene and existing assertions keep reading it.
+         */
+        return Object.assign(scenes[0], { scenes });
+      });
+
+      /* A one-peripheral split: it mirrors the central unless made to drift. */
+      this.peer = { state: 1, hash: 0 };
+      this.peerDrift = false;
+      this.features = 1;
+      this.busyNext = 0;
+      this.replaying = false;
+    }
+
+    scene(t) {
+      const chan = this.channels[t & 0xf];
+
+      return chan ? chan.scenes[t >> 4] : undefined;
+    }
+
+    centralHash() {
+      return this.channels.reduce((h, c) => c.scenes.reduce(
+        (a, sc) => (Math.imul(a, 31) + hashOf(sc)) >>> 0, h), 7);
     }
 
     async open() { this.opened = true; }
@@ -120,8 +164,29 @@ await page.addInitScript(() => {
 
     sceneAckBytes(op, slot, status) { return [op | REPLY, slot, status]; }
 
-    sceneInfoBytes(ch, count, active, status) {
-      return [OP.SCENE_GET_INFO | REPLY, ch, count, active ? 1 : 0, status];
+    sceneInfoBytes(t, count, active, status) {
+      const chan = this.channels[t & 0xf];
+      const sc = this.scene(t);
+      const activeScene = chan ? chan.scenes.findIndex(x => x.active) : -1;
+      const hash = sc ? hashOf(sc) : 0;
+
+      return [OP.SCENE_GET_INFO | REPLY, t, count, active ? 1 : 0, status, SCENES,
+              activeScene === -1 ? 0xff : activeScene,
+              hash & 0xff, (hash >>> 8) & 0xff, (hash >>> 16) & 0xff, (hash >>> 24) & 0xff];
+    }
+
+    syncBytes() {
+      const buf = new Array(21).fill(0);
+
+      buf[0] = OP.SCENE_GET_SYNC | REPLY;
+      buf[2] = this.features;
+      buf[3] = this.replaying ? 1 : 0;
+      buf[4] = this.peer.state;
+      for (let i = 0; i < 4; i++) buf[5 + i] = (this.peer.hash >>> (8 * i)) & 0xff;
+      buf[19] = 7;
+      buf[20] = this.busyRefused ?? 0;
+
+      return buf;
     }
 
     sceneLayerBytes(ch, slot, l, status) {
@@ -254,8 +319,17 @@ await page.addInitScript(() => {
       const op = b[0];
       const slot = b[1];
       const st = this.slots.get(slot);
-      const ch = this.channels[b[1]];
+      const ch = this.scene(b[1]);
       const l = ch && ch.slots[b[2]];
+
+      if (RELAYED.has(op) && this.busyNext > 0) {
+        /* The central's relay backlog is full: nothing is applied. */
+        this.busyNext--;
+        this.busyRefused = (this.busyRefused ?? 0) + 1;
+        this.reply(this.sceneAckBytes(op, op === OP.SCENE_ADD_LAYER ? 0xff : b[2], STATUS_BUSY));
+
+        return;
+      }
 
       if (op === OP.PING) {
         this.reply([OP.PING | REPLY, 1, this.slots.size]);
@@ -281,20 +355,45 @@ await page.addInitScript(() => {
         if (st) Object.assign(st, { hue: 0, level: 255, speed: 0 });
         this.reply([OP.RESET | REPLY, slot, st ? 0 : 1]);
       } else if (op === OP.SCENE_RESET) {
-        const target = this.channels[slot];
-
-        if (target) { target.slots.fill(null); target.order = []; }
-        this.reply(this.sceneAckBytes(op, slot, target ? 0 : 1));
+        if (ch) { ch.slots.fill(null); ch.order = []; }
+        this.reply(this.sceneAckBytes(op, slot, ch ? 0 : 1));
       } else if (op === OP.SCENE_GET_INFO) {
-        const target = this.channels[slot];
-
-        this.reply(this.sceneInfoBytes(slot, target ? target.order.length : 0,
-                                       target ? target.active : false, target ? 0 : 1));
+        this.reply(this.sceneInfoBytes(slot, ch ? ch.order.length : 0, ch ? ch.active : false,
+                                       ch ? 0 : 1));
       } else if (op === OP.SCENE_ACTIVATE || op === OP.SCENE_DEACTIVATE) {
-        const target = this.channels[slot];
+        if (ch) {
+          /* One runtime scene shows per channel: activating one retires the others. */
+          this.channels[slot & 0xf].scenes.forEach(x => { x.active = false; });
+          ch.active = op === OP.SCENE_ACTIVATE;
+        }
 
-        if (target) target.active = op === OP.SCENE_ACTIVATE;
-        this.reply(this.sceneAckBytes(op, slot, target ? 0 : 1));
+        this.reply(this.sceneAckBytes(op, slot, ch ? 0 : 1));
+      } else if (op === OP.SCENE_SET_FLAGS) {
+        const ok = l && (b[3] & 0xe0) === 0;
+
+        if (ok) l.flags = b[3];
+        this.reply(this.sceneAckBytes(op, b[2], l ? (ok ? 0 : STATUS_BAD_SLOT) : STATUS_BAD_SLOT));
+      } else if (op === OP.SCENE_COMMIT_LAYER) {
+        const ok = l && l.staged;
+
+        if (ok) {
+          l.staged = false;
+          if (b[3] === 0xff || b[3] >= ch.order.length) ch.order.push(b[2]);
+          else ch.order.splice(b[3], 0, b[2]);
+        }
+
+        this.reply(this.sceneAckBytes(op, b[2], ok ? 0 : STATUS_BAD_SLOT));
+      } else if (op === OP.SCENE_VERIFY) {
+        this.peer.hash = this.peerDrift ? 0xdeadbeef : this.centralHash();
+        this.peer.state = this.peerDrift ? 3 : 2;
+        this.reply(this.sceneAckBytes(op, slot, 0));
+      } else if (op === OP.SCENE_GET_SYNC) {
+        this.reply(this.syncBytes());
+      } else if (op === OP.SCENE_RESYNC) {
+        this.peerDrift = false;
+        this.peer.hash = this.centralHash();
+        this.peer.state = 2;
+        this.reply(this.sceneAckBytes(op, slot, 0));
       } else if (op === OP.SCENE_ADD_LAYER) {
         if (!ch) {
           this.reply(this.sceneAckBytes(op, 0xff, STATUS_BAD_SLOT));
@@ -315,10 +414,12 @@ await page.addInitScript(() => {
               tuneId: 0,
               hue: readI16(b, 7), sat: b[9], bri: b[10],
               args: [readI16(b, 11), readI16(b, 13), readI16(b, 15), readI16(b, 17), 0, 0],
-              flags: b[19],
+              flags: b[19] & ~FLAG_STAGED,
+              staged: (b[19] & FLAG_STAGED) !== 0,
               colors: [],
             };
-            ch.order.push(free);
+            /* A staged layer holds a slot but is not in the order until committed. */
+            if (!ch.slots[free].staged) ch.order.push(free);
             this.reply(this.sceneAckBytes(op, free, 0));
           }
         }
@@ -363,9 +464,7 @@ await page.addInitScript(() => {
       } else if (op === OP.SCENE_GET_LAYER_EXT) {
         this.reply(this.layerExtBytes(b[1], b[2], l, l ? 0 : STATUS_BAD_SLOT));
       } else if (op === OP.SCENE_GET_ORDER) {
-        const target = this.channels[slot];
-
-        this.reply(this.sceneOrderBytes(slot, target ? target.order : [], target ? 0 : 1));
+        this.reply(this.sceneOrderBytes(slot, ch ? ch.order : [], ch ? 0 : 1));
       } else if (op === OP.SCENE_SET_LIST_COLOR) {
         const idx = b[3];
         let status = STATUS_BAD_SLOT;
@@ -464,6 +563,9 @@ await page.goto(PAGE);
 await page.waitForFunction(() => window.__fakeDevice !== undefined);
 
 let failed = 0;
+const dialogs = [];
+
+page.on('dialog', d => { dialogs.push(d.message()); d.accept(); });
 
 const check = (label, ok, detail = '') => {
   console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${label}${detail ? '   ' + detail : ''}`);
@@ -524,7 +626,7 @@ const addLayer = async typeIdx => {
 };
 
 const mutatingOps = () => page.evaluate(() => (window.__sentReports ?? [])
-  .filter(r => ![0x0f, 0x10, 0x11, 0x13, 0x15, 0x17, 0x19].includes(r[0])).map(r => r[0]));
+  .filter(r => ![0x0f, 0x10, 0x11, 0x13, 0x15, 0x17, 0x19, 0x1d].includes(r[0])).map(r => r[0]));
 
 /* ------------------------------------------------------ connect, tuning */
 
@@ -700,8 +802,13 @@ await addLayer(13); // water
 
 const waterOps = await mutatingOps();
 
-check('A water layer is one ADD_LAYER, then SET_ARG for numbers 4 and 5, then its colour',
-      JSON.stringify(waterOps) === '[8,9,9,20]', JSON.stringify(waterOps));
+check('A water layer is a staged ADD_LAYER, SET_ARG for numbers 4 and 5, its colour, then COMMIT',
+      JSON.stringify(waterOps) === '[8,9,9,20,27]', JSON.stringify(waterOps));
+
+const waterAdd = await page.evaluate(() => window.__sentReports.find(r => r[0] === 8));
+
+check('That ADD_LAYER carries the STAGED flag',
+      (waterAdd[19] & 0x20) !== 0, JSON.stringify(waterAdd));
 
 const waterArgIdx = await page.evaluate(
   () => window.__sentReports.filter(r => r[0] === 9).map(r => r[3]));
@@ -809,14 +916,16 @@ check('A refresh shows the gradient\'s own two numbers, scroll speed 8 and span 
       (await numberOf(/^scroll speed/).inputValue()) === '8' &&
       (await field(/^span/).locator('input[type="number"]').inputValue()) === '0');
 
-/* ------------------------------------------- flags need a rebuild, in place */
+/* ------------------------------------------------- flags, edited in place */
 
-/* A flags byte (stack, reverse, axis) only rides SCENE_ADD_LAYER, so editing
- * one is the one change that removes and re-adds a layer. It has to come
- * back with everything the panel holds -- every stop including the one just
- * edited -- and in the position it was in, not on top.
+/* stack, reverse and the axis ride in the flags byte. SET_FLAGS rewrites it
+ * where the layer sits: nothing is removed or re-added, so the layer keeps its
+ * slot, its place in the stack and every stop it holds.
  */
 await addLayer(0); // solid, on top of the gradient
+
+const beforeFlags = await orderTypes();
+const gradientSlot = (await layerAt(0)).slot;
 
 await page.evaluate(() => { window.__sentReports = []; });
 await page.locator(`${CARDS}:nth-of-type(1)`).locator('.field').filter({ hasText: /^axisstrip/ })
@@ -824,30 +933,255 @@ await page.locator(`${CARDS}:nth-of-type(1)`).locator('.field').filter({ hasText
 
 await page.waitForFunction(() => {
   const ch = window.__fakeDevice.channels[0];
-  const types = ch.order.map(s => ch.slots[s].type);
-  const g = ch.slots[ch.order[0]];
 
-  return types.join() === '10,0' && ((g.flags >> 2) & 7) === 2 && g.colors.length === 8;
+  return ((ch.slots[ch.order[0]].flags >> 2) & 7) === 2;
 });
 
-const rebuilt = await layerAt(0);
+const flagOps = await mutatingOps();
+const edited = await layerAt(0);
 
-check('Changing an axis rebuilds the layer with its edited stops and all eight of them',
-      rebuilt.colors.map(c => c.hue).join(',') === '0,60,0,200,280,330,330,330',
-      rebuilt.colors.map(c => c.hue).join(','));
+check('Changing an axis sends one SET_FLAGS and nothing else',
+      JSON.stringify(flagOps) === '[26]', JSON.stringify(flagOps));
 
-/* A gradient's layer reply puts its colour count in args[2]; carried back
- * into the rebuild it would land in the new layer's third number.
- */
-const rebuildAdd = await page.evaluate(() => window.__sentReports.find(r => r[0] === 8 && r[2] === 10));
+check('The layer keeps its slot, its place in the stack and all eight stops',
+      edited.slot === gradientSlot &&
+      JSON.stringify(await orderTypes()) === JSON.stringify(beforeFlags) &&
+      edited.colors.map(c => c.hue).join(',') === '0,60,0,200,280,330,330,330',
+      edited.colors.map(c => c.hue).join(','));
 
-check('The rebuild does not send the colour count back as a number',
-      rebuildAdd && rebuildAdd[15] === 0 && rebuildAdd[16] === 0, JSON.stringify(rebuildAdd));
-
-check('The rebuilt layer is walked back to where it was, under the solid',
-      JSON.stringify(await orderTypes()) === '[10,0]' &&
+check('The card stack is unchanged too',
       JSON.stringify(await page.$$eval(`${CARDS} strong`, els => els.map(e => e.textContent)))
         === '["gradient","solid"]');
+
+await page.locator(`${CARDS}:nth-of-type(1)`).locator('.field').filter({ hasText: /^axisstrip/ })
+  .locator('select').selectOption('0');
+await page.waitForFunction(() => {
+  const l = window.__fakeDevice.channels[0].slots[window.__fakeDevice.channels[0].order[0]];
+
+  return ((l.flags >> 2) & 7) === 0;
+});
+
+check('Editing the axis back sends the flags again, still without touching the layer',
+      JSON.stringify(await orderTypes()) === JSON.stringify(beforeFlags));
+
+await clearLayers();
+
+/* ---------------------------------------- staged build: invisible until commit */
+
+/* The panel always finishes what it starts, so drive the fake directly for the
+ * half-built state: a staged add holds a slot but does not enter the order,
+ * and only COMMIT does.
+ */
+const stagedState = await page.evaluate(async () => {
+  const dev = window.__fakeDevice;
+
+  dev.reply = () => {}; // keep these off the panel's reply queue
+  const add = new Uint8Array(20);
+
+  add[0] = 8; add[2] = 0; add[4] = 70; add[6] = 255; add[19] = 0x20;
+  await dev.sendReport(0, add);
+
+  const sc = dev.channels[0];
+  const during = { used: sc.slots.filter(Boolean).length, order: sc.order.length };
+
+  await dev.sendReport(0, new Uint8Array([0x1b, 0, 0, 0xff]));
+  const after = { order: sc.order.length, staged: sc.slots[0].staged };
+
+  await dev.sendReport(0, new Uint8Array([11, 0, 0]));
+  delete dev.reply;
+
+  return { during, after, left: sc.order.length };
+});
+
+check('A staged layer holds a slot but is not in the render order',
+      stagedState.during.used === 1 && stagedState.during.order === 0, JSON.stringify(stagedState));
+
+check('COMMIT puts it in the order, and the layer is removed again afterwards',
+      stagedState.after.order === 1 && stagedState.after.staged === false && stagedState.left === 0);
+
+/* --------------------------------------------------------- BUSY retry */
+
+await page.evaluate(() => { window.__fakeDevice.busyNext = 3; window.__sentReports = []; });
+await addLayer(0);
+
+const busyAdds = await page.evaluate(() => window.__sentReports.filter(r => r[0] === 8).length);
+
+check('A BUSY answer is retried until the board accepts, and the layer lands once',
+      busyAdds === 4 && (await orderTypes()).join() === '0', `${busyAdds} ADD_LAYERs`);
+
+await clearLayers();
+
+/* ------------------------------------------------------ runtime scene tabs */
+
+await page.waitForFunction(() => document.querySelectorAll('#host-scenes button').length === 2);
+
+check('A board with two runtime scenes per channel shows a tab for each',
+      (await page.$$eval('#host-scenes button', els => els.map(e => e.textContent.replace(/ \(.*/, ''))))
+        .join() === 'Scene 1,Scene 2');
+
+await addLayer(0);
+await page.click('#host-scenes [data-scene="1"]');
+await waitCards(0);
+
+check('The second scene is its own list: the first scene\'s layer is not shown there',
+      (await page.$$(CARDS)).length === 0);
+
+await page.selectOption('#host-add-type', '2'); // wave
+await page.click('#host-add-layer');
+await waitCards(1);
+
+check('A layer added on scene 2 goes to target byte 0x10 and lands in that scene only',
+      (await page.evaluate(() => {
+        const sc = window.__fakeDevice.channels[0].scenes;
+
+        return [sc[0].order.length, sc[1].order.length];
+      })).join() === '1,1' &&
+      (await page.evaluate(() => window.__sentReports.filter(r => r[0] === 8).pop()[1])) === 0x10);
+
+await page.click('#host-scene-active');
+await page.waitForFunction(() => window.__fakeDevice.channels[0].scenes[1].active === true);
+
+check('Activating scene 2 sends its target and leaves scene 1 inactive',
+      await page.evaluate(() => !window.__fakeDevice.channels[0].scenes[0].active));
+
+await page.click('#host-scenes [data-scene="0"]');
+await waitCards(1);
+
+check('Scene 1 reads back its own layer', (await page.textContent(`${CARDS} strong`)) === 'solid');
+
+await clearLayers();
+await page.click('#host-scenes [data-scene="1"]');
+await waitCards(1);
+await clearLayers();
+await page.evaluate(() => {
+  window.__fakeDevice.channels[0].scenes.forEach(x => { x.active = false; });
+});
+await page.click('#host-scenes [data-scene="0"]');
+await waitCards(0);
+
+/* ----------------------------------------- composer <-> board, and files */
+
+const SCENE = {
+  name: 'two layers',
+  zones: { all: { range: [0, 70] } },
+  layers: [
+    { type: 'solid', zone: 'all', color: [0, 100, 100] },
+    { type: 'breathe', zone: 'all', color: [120, 100, 100], period_ms: 3000 },
+  ],
+};
+
+check('The composer is reachable from the panel',
+      await page.evaluate(() => typeof window.vfxComposer?.getScene === 'function'));
+
+const noteDone = () => page.waitForFunction(
+  () => document.getElementById('host-transfer-note').textContent.length > 0 &&
+        !document.getElementById('host-send').disabled);
+
+await page.evaluate(s => window.vfxComposer.setScene(0, s), SCENE);
+await page.evaluate(() => {
+  window.__sentReports = [];
+  document.getElementById('host-transfer-note').textContent = '';
+});
+await page.click('#host-send');
+await noteDone();
+
+const sendNote = await page.textContent('#host-transfer-note');
+const sendOps = await page.evaluate(() => window.__sentReports.map(r => r[0]));
+
+check('Send resets the scene, builds each layer staged then commits it, and activates',
+      sendOps[0] === 7 && sendOps.filter(o => o === 8).length === 2 &&
+      sendOps.filter(o => o === 27).length === 2 && sendOps.includes(13),
+      JSON.stringify(sendOps));
+
+check('The board ends up with the composer\'s two layers, read back and compared',
+      JSON.stringify(await orderTypes()) === '[0,1]' && /the board reports exactly that/.test(sendNote),
+      sendNote);
+
+check('A scene that fits asks for no confirmation', dialogs.length === 0);
+
+await page.evaluate(s => window.vfxComposer.setScene(0, {
+  ...s, layers: [...s.layers, { type: 'solid', zone: 'nowhere', color: [0, 0, 100] }],
+}), SCENE);
+await page.evaluate(() => { document.getElementById('host-transfer-note').textContent = ''; });
+await page.click('#host-send');
+await noteDone();
+
+check('A layer the board cannot take is listed in a confirm dialog before anything is sent',
+      dialogs.length === 1 && /nowhere/.test(dialogs[0]), dialogs[0]);
+
+await page.evaluate(() => {
+  window.vfxComposer.setScene(0, { name: 'empty', zones: {}, layers: [] });
+  document.getElementById('host-transfer-note').textContent = '';
+  document.getElementById('host-load').click();
+});
+await page.waitForFunction(() => /loaded \d+ layer/.test(
+  document.getElementById('host-transfer-note').textContent));
+
+check('Load board scene into composer fills the composer with what the board holds',
+      await page.evaluate(() => {
+        const sc = window.vfxComposer.getScene(0);
+
+        return sc.layers.map(l => l.type).join() === 'solid,breathe';
+      }));
+
+const [download] = await Promise.all([
+  page.waitForEvent('download'),
+  page.click('#host-save'),
+]);
+const saved = JSON.parse(await readFile(await download.path(), 'utf8'));
+
+check('Save JSON downloads a vfx-runtime-scene file naming channel and scene',
+      saved.format === 'vfx-runtime-scene' && saved.version === 1 && saved.channel === 0 &&
+      saved.scene_index === 0 && Array.isArray(saved.scene?.layers), Object.keys(saved).join());
+
+await clearLayers();
+await page.evaluate(() => { document.getElementById('host-transfer-note').textContent = ''; });
+await page.setInputFiles('#host-open-file', {
+  name: 'scene.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(saved)),
+});
+await noteDone();
+
+check('Load JSON puts the saved scene back: the same layer types in the same order',
+      JSON.stringify(await orderTypes()) === '[0,1]', JSON.stringify(await orderTypes()));
+
+await clearLayers();
+
+/* ------------------------------------------------------- split sync box */
+
+await page.waitForFunction(() => !document.getElementById('host-sync').hidden);
+
+check('The sync box shows because the board speaks the sync ops', true);
+
+await page.click('#host-sync-refresh');
+await page.waitForFunction(() => document.getElementById('host-sync-out').textContent.length > 0);
+
+const syncText = await page.textContent('#host-sync-out');
+
+check('Refresh reports the return channel and the peripheral',
+      /return channel: on/.test(syncText) && /peripheral 0/.test(syncText), syncText);
+
+await page.evaluate(() => { window.__fakeDevice.peerDrift = true; });
+await page.click('#host-verify');
+await page.waitForFunction(() => /MISMATCH/.test(document.getElementById('host-sync-out').textContent));
+
+check('Verify shows a peripheral that has drifted as a mismatch', true);
+
+await page.click('#host-resync');
+await page.waitForFunction(
+  () => /peripheral 0: match/.test(document.getElementById('host-sync-out').textContent));
+
+check('Resync repairs it and the box shows a match', true);
+
+await addLayer(0);
+await page.fill('#host-stress-count', '5');
+await page.click('#host-stress');
+await page.waitForFunction(
+  () => /5 changes in/.test(document.getElementById('host-stress-out').textContent) &&
+        /peripheral 0/.test(document.getElementById('host-stress-out').textContent));
+
+check('The relay stress test reports its timing, BUSY retries and the peripheral\'s verdict',
+      /BUSY retries \d+/.test(await page.textContent('#host-stress-out')),
+      (await page.textContent('#host-stress-out')).split('\n')[0]);
 
 await clearLayers();
 
@@ -979,6 +1313,13 @@ check('A layer that needs no per-pixel state still fits beside them',
 await clearLayers();
 
 /* ------------------------------------------------------- activation etc */
+
+/* The composer send above left the scene showing; start from inactive. */
+await page.evaluate(() => {
+  window.__fakeDevice.channels[0].scenes.forEach(x => { x.active = false; });
+});
+await reselect();
+await waitCards(0);
 
 await page.click('#host-scene-active');
 await page.waitForFunction(() => window.__fakeDevice.channels[0].active === true);

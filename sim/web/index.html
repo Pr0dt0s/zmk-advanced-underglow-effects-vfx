@@ -203,18 +203,58 @@
         "Runtime scene authoring" section for the wire format.
       </p>
       <div class="row" id="host-channels"></div>
+      <div class="row" id="host-scenes"></div>
       <div id="host-scene" hidden>
         <div class="row">
           <label class="radio"><input type="checkbox" id="host-scene-active"> Active (showing
             this scene instead of the compiled list)</label>
           <button id="host-scene-reset">Reset</button>
         </div>
+        <div class="row">
+          <button id="host-send" title="Replace this board scene with the composer's scene for the matching channel">Send composer scene to board</button>
+          <button id="host-load" title="Read this board scene back into the composer">Load board scene into composer</button>
+          <button id="host-save" title="Download this board scene as a JSON file">Save JSON</button>
+          <button id="host-open" title="Send a saved JSON file (or a composer scene) to this board scene">Load JSON</button>
+          <input type="file" id="host-open-file" accept="application/json,.json" hidden>
+        </div>
+        <div class="row" id="host-progress-row" style="display:none">
+          <progress id="host-progress" max="100" value="0" style="flex:1"></progress>
+          <span id="host-progress-text" class="note" style="margin:0"></span>
+        </div>
+        <p class="note" id="host-transfer-note" style="margin-top:0"></p>
         <div id="host-scene-layers"></div>
         <div class="row">
           <select id="host-add-type"></select>
           <button id="host-add-layer">Add layer</button>
         </div>
         <p class="note" id="host-add-hint" style="margin-top:4px"></p>
+      </div>
+
+      <div id="host-sync" hidden>
+        <h3>Link and split sync</h3>
+        <p class="note" style="margin-top:0">
+          Each change is handed to the other half in small pieces over the
+          split link. <em>Verify</em> asks every peripheral to compare a hash
+          of its scene with the central's; <em>Resync</em> replays the
+          central's scene onto it. The peripheral only answers when the board
+          is built with <code>CONFIG_ZMK_VFX_SPLIT_REPORT</code>.
+        </p>
+        <div class="row">
+          <button id="host-verify">Verify</button>
+          <button id="host-resync">Resync</button>
+          <button id="host-sync-refresh">Refresh</button>
+          <label class="field" style="margin:0">pace (ms per piece)
+            <input type="number" id="host-pace" min="0" max="200" step="1" style="width:5em">
+          </label>
+        </div>
+        <pre id="host-sync-out" class="note" style="margin:4px 0"></pre>
+        <div class="row">
+          <label class="field" style="margin:0">stress test: changes
+            <input type="number" id="host-stress-count" min="1" max="500" value="100" style="width:5em">
+          </label>
+          <button id="host-stress">Run relay stress test</button>
+        </div>
+        <pre id="host-stress-out" class="note" style="margin:4px 0"></pre>
       </div>
     </div>
   </section>

@@ -397,7 +397,8 @@ EXPORT int vfx_sim_add_layer(int type, int zone, int blend, int opacity, uint32_
         wave_cfg[i] = (struct vfx_wave_cfg){.color = color,
                                             .wavelength = (uint16_t)a,
                                             .period_ms = (uint16_t)b,
-                                            .depth = (uint8_t)c};
+                                            .depth = (uint8_t)c,
+                                            .axis = (uint8_t)d};
         l->api = &vfx_layer_wave_api;
         l->config = &wave_cfg[i];
         break;

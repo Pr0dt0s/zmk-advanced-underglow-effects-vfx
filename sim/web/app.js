@@ -1915,6 +1915,28 @@ async function main() {
     selectChannel,
   };
 
+  /* What the host panel (host.js) reads and writes to move a scene between
+   * this composer and a connected board. Its own script, so this is the only
+   * seam between the two.
+   */
+  window.vfxComposer = {
+    channels: () => channels.map(ch => ({ name: ch.name, range: ch.range })),
+    active: () => activeChannel,
+    getScene: ci => structuredClone(channels[ci]?.scene ?? null),
+    setScene: (ci, scene) => {
+      if (!channels[ci]) return false;
+
+      channels[ci].scene = structuredClone(scene);
+
+      if (ci === activeChannel) {
+        renderComposer();
+        $('scene').value = JSON.stringify(activeScene(), null, 2);
+      }
+
+      return applyScene();
+    },
+  };
+
   requestAnimationFrame(tick);
 }
 

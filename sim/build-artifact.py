@@ -24,6 +24,11 @@ html = (src / "index.html").read_text()
 css = (src / "style.css").read_text()
 js = (src / "app.js").read_text()
 host_js = (src / "host.js").read_text()
+
+# host.js imports the layer table from scene-bridge.js; a single inline module
+# cannot import, so the bridge goes in front of it with its exports stripped.
+bridge_js = re.sub(r"^export ", "", (src / "scene-bridge.js").read_text(), flags=re.M)
+host_js = bridge_js + "\n" + re.sub(r"import \{[^}]*\} from './scene-bridge\.js';\n", "", host_js, count=1)
 keys = json.loads((src / "lily58-keys.json").read_text())
 wasm = base64.b64encode((src / "vfx.wasm").read_bytes()).decode("ascii")
 
