@@ -977,6 +977,14 @@ channel's own pool — a different id space from a tuning slot, assigned by
 | `SCENE_GET_LAYER_EXT` (`0x19`) | ch, slot | `0x99`: ch, slot, zone kind, zone count, colour count, opacity source, opacity min, opacity full, tune id, arg 4 (`int16`), arg 5 (`int16`), status | 15 |
 | `SCENE_SET_FLAGS` (`0x1A`) | ch, slot, flags | `0x9A`: slot, status | 3 |
 | `SCENE_COMMIT_LAYER` (`0x1B`) | ch, slot, position (`0xFF` = top) | `0x9B`: slot, status | 3 |
+| `SCENE_VERIFY` (`0x1C`) | target (`0xFF` = every scene that holds layers) | `0x9C`: target, status | 3 |
+| `SCENE_GET_SYNC` (`0x1D`) | none | `0x9D`: features (bit 0 = return channel), replaying, 3 × {state, hash (`uint32` LE)}, relay queue high-water, refused count | 21 |
+| `SCENE_RESYNC` (`0x1E`) | target (`0xFF` = all) | `0x9E`: target, status | 3 |
+
+`SCENE_VERIFY`, `SCENE_GET_SYNC` and `SCENE_RESYNC` are answered by the central
+itself and never relayed; see [Split keyboards](#split-keyboards-1) under
+runtime scenes. A peripheral's state in `SCENE_GET_SYNC` is `0` none, `1`
+unknown, `2` match, `3` mismatch, `4` resyncing.
 
 `SCENE_SET_LIST_COLOR` and `SCENE_GET_LIST_COLOR` work on any generator's
 colour list; `SCENE_GRADIENT_ADD_STOP` and `SCENE_GET_GRADIENT_STOP` are the
@@ -992,7 +1000,10 @@ reads a list by calling again at `offset + n` until that reaches `total`.
 the zone's kind and length, how many colours are in the list, the layer's
 options, and the fifth and sixth numbers.
 
-`status` is `0` for ok, `1` (`BAD_SLOT`) for a channel, slot, generator
+`status` is `0` for ok, `3` (`BUSY`) for a request the split link has no room
+to carry to the peripherals, or that arrives while a resync replays (nothing was
+applied on the central either, so the halves cannot diverge on a refused op; a
+host waits and sends it again), `1` (`BAD_SLOT`) for a channel, slot, generator
 type, argument index, colour index, zone kind, blend or opacity source
 outside range (or a zone chunk whose `offset` is not the number of entries
 the list already holds), and `2` (`POOL_FULL`) for anything that ran out of
@@ -1167,17 +1178,45 @@ messages to begin with rather than one big one, and why `SCENE_SET_ZONE`
 carries twelve entries and no more: every op that changes a scene has to
 fit, or it could be built on the central and never reach the other half.
 
-The relay is fire-and-forget. The central answers the host as soon as it has
-applied an op itself, and nothing reports back whether the peripheral has
-applied the relayed copy. Building one layer this way is a dozen or so relayed
-invocations (a `water` with a second colour is eleven), and a host that sends
-the next message before the split link has drained the last may find the
-two halves ending up with different scenes. `host.js` therefore waits sixteen
-milliseconds per four-byte chunk before sending the next request after any
-op that mutates a scene. **That figure is a guess, not a measurement**: there
-has been no hardware to measure the link on. If the halves disagree after a
-build, pace more slowly and file an issue with what you saw; the way back to
-a known state is `SCENE_RESET` and building it again, more slowly.
+The central does not fire chunks at ZMK's split transport as they come. It
+queues them (`CONFIG_ZMK_VFX_SPLIT_LINK_QUEUE_CHUNKS`, 48 by default) and hands
+one over every `CONFIG_ZMK_VFX_SPLIT_LINK_CHUNK_INTERVAL_MS` (16). Before
+applying a request it checks the queue can take all of it; if not it answers
+`BUSY` and applies nothing, so a refused request cannot leave the halves
+different. A request is relayed only when it succeeded on the central. The
+peripheral reassembles a request only when every chunk of it has arrived, and
+abandons a partial one when a new request begins. `host.js` retries `BUSY`
+with a growing delay, and its pace between requests is an editable field.
+**16 ms is a guess, not a measurement**: there has been no hardware to measure
+the link on. The README's [Verifying on hardware](#verifying-on-hardware) has
+the stress test that finds the smallest interval that loses nothing.
+
+#### Knowing whether the halves match
+
+Each scene has a hash (FNV-1a over its layers' own parameters, in render order;
+nothing derived, so the two halves agree even though their pixel ranges and
+heavy-state pools differ). `SCENE_GET_INFO` carries the central's hash.
+`SCENE_VERIFY` makes the central send each peripheral a `CHECK` with its hash,
+and the peripheral compares it with its own. After a run of relayed edits the
+central also sends a CHECK by itself, once edits have paused for
+`CONFIG_ZMK_VFX_SPLIT_CHECK_DEBOUNCE_MS`.
+
+Without a way back the peripheral can only log that result
+(`CONFIG_ZMK_VFX_SPLIT_LINK_STATS`). **`CONFIG_ZMK_VFX_SPLIT_REPORT`** adds that
+way: a small GATT service of its own on the peripheral, which the central
+discovers and subscribes to on each split connection after ZMK has finished its
+own discovery. With it the central learns each half's verdict, `SCENE_GET_SYNC`
+reports it, and with `CONFIG_ZMK_VFX_SPLIT_AUTO_RESYNC` (default on once the
+report channel is) a mismatch, or a peripheral reconnecting, makes the central
+replay the scene to it (twice at most per edit, so two builds that hash
+differently cannot loop). **It is off by default and experimental**: it has not
+run on hardware, and the risk is that its discovery disturbs ZMK's own
+connection to the peripheral. Enable it on both halves.
+
+`SCENE_RESYNC` (and `&vfx VFX_RT_RESYNC_CMD` from a keymap) replays on demand,
+with or without the return channel: a `SCENE_RESET`, then each layer staged and
+fully built, then committed in render order. It takes a few seconds for a full
+scene, during which mutating requests answer `BUSY`.
 
 The peripheral applies what it receives to a pool of its own, sized by its own
 `CONFIG_ZMK_VFX_RUNTIME_*` options, so give both halves the same ones. An edit
@@ -1210,15 +1249,12 @@ and full values, the tuning id). A new layer starts from values taken from one
 of the module's own presets, so it looks like something rather than a guess.
 
 Everything on a card is an edit in place, sent as the message the recipe
-above names for it, **except** `pulse`'s stack, `dart`'s reverse and the axis
-of the generators that have one. Those ride in the flags byte, which only
-`SCENE_ADD_LAYER` carries, so changing one removes the layer, adds it again
-from what the panel holds, and walks it back to its old place in the stack
-with `SCENE_MOVE_LAYER`. The layer is briefly gone while that happens, its
-animation restarts, and its slot id may change.
+above names for it; `pulse`'s stack, `dart`'s reverse and an axis are one
+`SCENE_SET_FLAGS`.
 
-Adding a layer sends `SCENE_ADD_LAYER` and then the messages for whatever else
-the type needs (see [Building a layer](#building-a-layer)), so a `water` or a
+Adding a layer sends a staged `SCENE_ADD_LAYER`, then the messages for whatever
+else the type needs, then `SCENE_COMMIT_LAYER`, so it appears complete
+(see [Building a layer](#building-a-layer)) (see [Building a layer](#building-a-layer)), so a `water` or a
 `layer-state` takes a moment to fill in. Selecting a channel reads every layer
 back with `SCENE_GET_LAYER`, `SCENE_GET_LAYER_EXT`, `SCENE_GET_LIST_COLOR` and
 `SCENE_GET_ZONE`, so what the panel shows is what the board holds, including
@@ -1226,10 +1262,57 @@ for a scene this page did not build. Adding a `trail` or `hold` to a channel
 whose `CONFIG_ZMK_VFX_RUNTIME_HEAVY_STATES` are all in use is refused by the
 board, and the panel says so.
 
+The rest of the panel:
+
+- **Scene tabs.** A channel with several runtime scenes shows one tab per scene;
+  each is its own target.
+- **Send to board.** Converts the composer's scene for that channel to layers
+  (`sim/web/scene-bridge.js`) and builds it with `SCENE_RESET`, then per layer a
+  staged add, its extras and a commit, then `SCENE_ACTIVATE`. A confirm dialog
+  lists anything the board cannot hold (more layers than
+  `RUNTIME_MAX_LAYERS`, a third `trail`/`hold`, a pixel list past the cap, a
+  zone or generator it does not have); everything else is sent as is.
+- **Load board into composer.** Reads the scene back and loads it into the
+  composer. What the converter draws is checked against the firmware's own
+  `runtime_scene.c` by `tools/verify-bridge.mjs` (every preset, pixel for pixel).
+- **Save JSON / Load JSON.** The composer's scene JSON plus
+  `{format: "vfx-runtime-scene", version: 1, channel, scene_index, active}`.
+  Generators are named, never numbered, so an old file survives renumbering.
+  A bare composer scene loads too.
+- **Sync box.** The central's hash, each half's verdict from `SCENE_GET_SYNC`,
+  **Verify** and **Resync** buttons and the link's counters. A board without
+  `SPLIT_REPORT` says it has no return channel.
+- **Relay stress test.** Sends a run of `SET_COLOR` edits at the pace you set,
+  then verifies, then shows the counters. It is the measurement behind the
+  [hardware checklist](#verifying-on-hardware).
+
 Same caveat as tuning: `tests/` proves the wire format round-trips with no
 Zephyr in scope, and `tools/verify-host-hid.mjs` now drives the Scenes panel
 against a fake device too, but **none of it has been tried against a real
 board.**
+
+### Verifying on hardware
+
+None of the split or runtime-scene code has run on a board yet; CI only compiles
+it and the host tests drive it. To check it, build both halves with the same
+`CONFIG_ZMK_VFX_RUNTIME_*` options, the central with raw HID, and set
+`CONFIG_ZMK_VFX_SPLIT_LINK_STATS=y` (and `SPLIT_REPORT=y` for item 6) with
+logging on the peripheral over USB or RTT. Then:
+
+1. Build a six-layer scene from the panel; the peripheral mirrors it.
+2. Run the stress test at 32, 16, 12 and 8 ms. Note the central's BUSY count and
+   queue high-water and the peripheral's lost-message log. Set
+   `SPLIT_LINK_CHUNK_INTERVAL_MS` to the smallest value with no losses.
+3. Switch the peripheral off, edit, switch it on. With the return channel the
+   scene repairs itself; without it, press **Resync**.
+4. Reboot both halves. The scenes come back.
+5. Step NEXT and PREV through the compiled scenes and every non-empty runtime
+   scene; both halves stay on the same one.
+6. With `SPLIT_REPORT=y`: connect and disconnect the peripheral several times.
+   ZMK's own connection, key relay and battery reporting must keep working. This
+   is the one most likely to find a problem.
+7. Note the RAM from `west build -t ram_report` and open an issue with anything
+   that disagrees with this README.
 
 ## Roadmap
 
