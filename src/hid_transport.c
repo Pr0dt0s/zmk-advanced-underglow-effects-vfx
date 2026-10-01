@@ -19,6 +19,7 @@
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
 #include <zmk/vfx/runtime_scene.h>
+#include <zmk/vfx/scene_sync.h>
 #endif
 
 LOG_MODULE_DECLARE(zmk_vfx, CONFIG_ZMK_VFX_LOG_LEVEL);
@@ -117,6 +118,19 @@ static void reply_scene_info(uint8_t ch) {
     uint8_t buf[VFX_HID_MAX_REPLY_LEN];
     const uint8_t len = vfx_hid_encode_scene_info(ch, count, active, VFX_RT_SCENES_PER_CHANNEL,
                                                   active_scene, hash, scene_status(rc), buf);
+
+    send(buf, len);
+}
+
+static void reply_sync(void) {
+    struct zmk_vfx_sync_info info;
+    uint8_t buf[VFX_HID_MAX_REPLY_LEN];
+
+    zmk_vfx_sync_get(&info);
+
+    const uint8_t len = vfx_hid_encode_sync(info.features, info.replaying, info.peers,
+                                            VFX_HID_MAX_PEERS, info.queue_high_water,
+                                            info.refused, VFX_HID_STATUS_OK, buf);
 
     send(buf, len);
 }
@@ -404,6 +418,18 @@ static void handle(const struct vfx_hid_request *req) {
         reply_scene_ack(req->op, req->slot,
                         zmk_vfx_scene_commit_layer(req->ch, req->slot, req->position));
         break;
+
+    case VFX_HID_OP_SCENE_VERIFY:
+        reply_scene_ack(req->op, req->ch, zmk_vfx_sync_verify(req->ch));
+        break;
+
+    case VFX_HID_OP_SCENE_GET_SYNC:
+        reply_sync();
+        break;
+
+    case VFX_HID_OP_SCENE_RESYNC:
+        reply_scene_ack(req->op, req->ch, zmk_vfx_sync_resync(req->ch));
+        break;
 #else
     /* CONFIG_ZMK_VFX_RUNTIME_SCENES is off: hid_protocol.c decodes these
      * fine regardless (see payload_len()), but there is nothing here to
@@ -432,6 +458,9 @@ static void handle(const struct vfx_hid_request *req) {
     case VFX_HID_OP_SCENE_GET_LAYER_EXT:
     case VFX_HID_OP_SCENE_SET_FLAGS:
     case VFX_HID_OP_SCENE_COMMIT_LAYER:
+    case VFX_HID_OP_SCENE_VERIFY:
+    case VFX_HID_OP_SCENE_GET_SYNC:
+    case VFX_HID_OP_SCENE_RESYNC:
         reply_ack(req->op, req->ch, -EINVAL);
         break;
 #endif
@@ -449,6 +478,15 @@ static int raw_hid_received_listener(const zmk_event_t *eh) {
             if (op_needs_relay(req.op)) {
                 const uint8_t len = vfx_hid_request_len(req.op);
 
+                /* A rebuild of the peripherals is going out: an edit now would land
+                 * in the middle of it.
+                 */
+                if (zmk_vfx_sync_busy()) {
+                    reply_scene_ack(req.op, busy_ack_slot(&req), -EBUSY);
+
+                    return ZMK_EV_EVENT_BUBBLE;
+                }
+
                 /* Refused before any of it is applied, so a request the link has
                  * no room to carry cannot leave the halves different.
                  */
@@ -463,6 +501,7 @@ static int raw_hid_received_listener(const zmk_event_t *eh) {
 
                 if (last_scene_rc == 0) {
                     zmk_vfx_scene_relay_send(event->data, len);
+                    zmk_vfx_sync_touch(req.ch);
                 }
 
                 return ZMK_EV_EVENT_BUBBLE;

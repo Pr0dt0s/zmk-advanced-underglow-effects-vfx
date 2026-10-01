@@ -12,7 +12,9 @@
 #include <dt-bindings/zmk/vfx.h>
 #include <zmk/vfx/hid_protocol.h>
 #include <zmk/vfx/runtime_scene.h>
+#include <zmk/vfx/scene_sync.h>
 #include <zmk/vfx/split_link.h>
+#include <zmk/vfx/sync_proto.h>
 #include <zmk/vfx/vfx.h>
 
 LOG_MODULE_DECLARE(zmk_vfx, CONFIG_ZMK_VFX_LOG_LEVEL);
@@ -122,7 +124,9 @@ static void apply_relayed_request(const struct vfx_hid_request *req) {
 static void on_message(const uint8_t *msg, uint8_t len) {
     struct vfx_hid_request req;
 
-    if (vfx_hid_decode(msg, len, &req)) {
+    if (len > 0 && msg[0] == VFX_SYNC_MSG_CHECK) {
+        zmk_vfx_sync_on_check(msg, len);
+    } else if (vfx_hid_decode(msg, len, &req)) {
         apply_relayed_request(&req);
     } else {
         LOG_WRN("Malformed relayed VFX scene op (%d bytes)", len);

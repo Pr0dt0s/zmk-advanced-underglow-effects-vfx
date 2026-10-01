@@ -111,20 +111,23 @@
 #define VFX_TUNE_SPEED_CMD 20
 #define VFX_TUNE_RESET_CMD 21
 
-/* A runtime-scene edit, relayed from the central to a peripheral the same
- * way VFX_SYNC_CMD/VFX_KEY_CMD already are. Never typed in a keymap: raw-hid
- * only builds on the central, so this is the only way an edit built from a
- * host over the Scenes panel ever reaches the other half.
+/* The split link's carrier (see split_link.h). Never typed in a keymap: raw-hid
+ * only builds on the central, so this is how an edit built from a host over
+ * the Scenes panel reaches the other half.
  *
- * What rides here is not one value but another op's own wire bytes (see
- * hid_protocol.h), so param1 carries a small header above the command byte
- * -- chunk length, chunk index, total length -- rather than a channel, and
- * param2 carries up to four of those bytes per invocation (not
- * event.position too: ZMK's own split transport narrows that to a single
- * byte, so it cannot carry a third payload word reliably). See
- * scene_relay.c.
+ * What rides here is not one value but a message of up to 20 bytes, so param1
+ * carries a header above the command byte -- chunk length, chunk index, message
+ * length and sequence -- and param2 up to four message bytes per invocation
+ * (not event.position too: ZMK's own split transport narrows that to a single
+ * byte).
  */
 #define VFX_RT_RELAY_CMD 22
+
+/* Rebuilds every runtime scene on the peripherals from the central's copy, for
+ * a keymap key. Does nothing on a peripheral and on a board that is not split.
+ * param1 is 0.
+ */
+#define VFX_RT_RESYNC_CMD 23
 
 #define VFX_TOG VFX_TOG_CMD 0
 #define VFX_ON VFX_ON_CMD 0

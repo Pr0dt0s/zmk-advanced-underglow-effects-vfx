@@ -301,6 +301,44 @@ config ZMK_VFX_SPLIT_LINK_STATS
       message, with running totals. For measuring the link; leave it off once
       the pacing is settled.
 
+config ZMK_VFX_SPLIT_REPORT
+    bool "Peripheral report channel (experimental)"
+    depends on ZMK_SPLIT_BLE
+    select BT_GATT_CLIENT if ZMK_SPLIT_ROLE_CENTRAL
+    help
+      Lets a peripheral tell the central whether its copy of each runtime scene
+      matches, over a small GATT service of its own that the central subscribes
+      to on every split connection. With it the central can check the halves
+      after each edit and rebuild a peripheral that drifted, and the Host panel
+      shows each half's state. Without it the link is one way: the halves
+      cannot tell the central anything: SCENE_VERIFY only makes a peripheral log
+      the result, there is no automatic repair and a rebuild has to be asked for
+      with SCENE_RESYNC.
+
+      Experimental until it has been run on hardware. The central discovers the
+      service on its own after ZMK has finished its own discovery, retrying
+      while ZMK still holds the connection; the risk is that this disturbs
+      ZMK's own peripheral connection or battery reporting, which the README's
+      "Verifying on hardware" checklist covers. Enable it on both halves.
+
+config ZMK_VFX_SPLIT_AUTO_RESYNC
+    bool "Rebuild a peripheral automatically when its scene does not match"
+    default y
+    depends on ZMK_VFX_SPLIT_REPORT
+    help
+      A mismatch report makes the central replay that scene to the peripherals.
+      Tried twice per scene per edit, then left for a manual resync, so two
+      builds that disagree about what a scene hashes to cannot loop.
+
+config ZMK_VFX_SPLIT_CHECK_DEBOUNCE_MS
+    int "Quiet time after an edit before the halves are compared"
+    range 50 5000
+    default 400
+    depends on ZMK_VFX_SPLIT_REPORT || ZMK_VFX_SPLIT_LINK_STATS
+    help
+      The central sends one hash CHECK per edited scene once edits have paused
+      for this long, rather than one per edit.
+
 endif # ZMK_VFX_RUNTIME_SCENES
 
 module = ZMK_VFX

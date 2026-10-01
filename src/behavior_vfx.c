@@ -14,6 +14,9 @@
 #include <dt-bindings/zmk/vfx.h>
 #include <zmk/vfx/scenes.h>
 #include <zmk/vfx/vfx.h>
+#if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
+#include <zmk/vfx/scene_sync.h>
+#endif
 
 LOG_MODULE_DECLARE(zmk_vfx, CONFIG_ZMK_VFX_LOG_LEVEL);
 
@@ -218,6 +221,10 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
 #if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
     case VFX_RT_RELAY_CMD:
         zmk_vfx_scene_relay_receive(binding->param1, binding->param2);
+        return 0;
+
+    case VFX_RT_RESYNC_CMD:
+        zmk_vfx_sync_resync(VFX_RT_NONE);
         return 0;
 #endif
     }

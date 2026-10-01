@@ -15,6 +15,7 @@
 #include <zmk/vfx/engine.h>
 #include <zmk/vfx/hid_protocol.h>
 #include <zmk/vfx/split_link.h>
+#include <zmk/vfx/sync_proto.h>
 #include <zmk/vfx/runtime_scene.h>
 #include <zmk/vfx/tuning.h>
 #include <zmk/vfx/layers.h>
@@ -4655,7 +4656,7 @@ static void test_hid_every_op_survives_decode_then_encode(void) {
         ops_checked++;
     }
 
-    CHECK(ops_checked == 0x1C, "expected 28 ops (0x00-0x1B), covered %u", ops_checked);
+    CHECK(ops_checked == 0x1F, "expected 31 ops (0x00-0x1E), covered %u", ops_checked);
 
     struct vfx_hid_request unknown = {.op = 0x7E};
     uint8_t out[VFX_HID_MAX_REQUEST_LEN];
@@ -5077,7 +5078,10 @@ static void test_hid_new_ops_have_the_lengths_the_relay_needs(void) {
     CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_GET_LAYER_EXT) == 3, "GET_LAYER_EXT is 3 bytes");
     CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_SET_FLAGS) == 4, "SET_FLAGS is 4 bytes");
     CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_COMMIT_LAYER) == 4, "COMMIT_LAYER is 4 bytes");
-    CHECK(vfx_hid_request_len(0x1C) == 0, "the first op past the last is unknown");
+    CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_VERIFY) == 2, "VERIFY is 2 bytes");
+    CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_GET_SYNC) == 1, "GET_SYNC is 1 byte");
+    CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_RESYNC) == 2, "RESYNC is 2 bytes");
+    CHECK(vfx_hid_request_len(0x1F) == 0, "the first op past the last is unknown");
 
     /* Every op that changes a scene is relayed to a split's peripheral, which
      * can carry SPLIT_LINK_MAX_MSG of it.
@@ -5200,6 +5204,284 @@ static void test_hid_opts_and_layer_ext_decode_and_encode(void) {
 
     CHECK(arg4 == -200 && arg5 == 300, "a negative argument survives the wire: %d,%d", arg4, arg5);
     CHECK(buf[14] == VFX_HID_STATUS_OK, "status is last");
+}
+
+/* ---- replay ---------------------------------------------------------------- */
+
+/* Applies a replayed request to the runtime pool the way scene_relay.c's
+ * apply_relayed_request() does on a peripheral, after an encode/decode round
+ * trip so the wire format is part of what is tested. Returns false if an op
+ * the replay sent was refused.
+ */
+static bool replay_apply(const struct vfx_hid_request *sent, uint8_t target) {
+    struct vfx_hid_request r = *sent;
+    uint8_t wire[VFX_HID_MAX_REQUEST_LEN];
+
+    r.ch = target;
+
+    const uint8_t n = vfx_hid_encode_request(&r, wire);
+
+    if (n == 0 || !vfx_hid_decode(wire, n, &r)) {
+        return false;
+    }
+
+    switch ((enum vfx_hid_op)r.op) {
+    case VFX_HID_OP_SCENE_RESET:
+        vfx_runtime_reset(r.ch);
+        return true;
+    case VFX_HID_OP_SCENE_ADD_LAYER: {
+        struct vfx_rt_params p = {
+            .type = r.type,
+            .zone_start = r.zone_start,
+            .zone_len = r.zone_len,
+            .blend = r.blend,
+            .opacity = r.opacity,
+            .hue = (uint16_t)r.hue,
+            .sat = r.sat,
+            .bri = r.bri,
+            .flags = r.flags,
+        };
+
+        memcpy(p.args, r.args, sizeof(r.args));
+
+        return (r.staged ? vfx_runtime_add_layer_staged(r.ch, &p) : vfx_runtime_add_layer(r.ch, &p)) >= 0;
+    }
+    case VFX_HID_OP_SCENE_SET_ARG:
+        return vfx_runtime_set_arg(r.ch, r.slot, r.arg_idx, r.args[0]);
+    case VFX_HID_OP_SCENE_SET_LIST_COLOR:
+        return vfx_runtime_set_list_color(r.ch, r.slot, r.arg_idx, (uint16_t)r.hue, r.sat, r.bri);
+    case VFX_HID_OP_SCENE_SET_ZONE:
+        return vfx_runtime_set_zone(r.ch, r.slot, r.zone_kind, r.zone_offset, r.zone_data,
+                                    r.zone_count);
+    case VFX_HID_OP_SCENE_SET_OPTS:
+        return vfx_runtime_set_opts(r.ch, r.slot, r.blend, r.opacity, r.opacity_src, r.opacity_min,
+                                    r.opacity_full, r.tune_id);
+    case VFX_HID_OP_SCENE_REMOVE_LAYER:
+        return vfx_runtime_remove_layer(r.ch, r.slot);
+    case VFX_HID_OP_SCENE_COMMIT_LAYER:
+        return vfx_runtime_commit_layer(r.ch, r.slot, r.position);
+    case VFX_HID_OP_SCENE_ACTIVATE:
+        return vfx_runtime_set_active(r.ch, true);
+    default:
+        return false;
+    }
+}
+
+static uint32_t replay_into(uint8_t from, uint8_t to, uint32_t *ops) {
+    struct vfx_rt_replay cur;
+    struct vfx_hid_request r;
+    uint32_t n = 0;
+
+    CHECK(vfx_runtime_replay_begin(&cur, from), "replay begins");
+
+    while (vfx_runtime_replay_next(&cur, &r)) {
+        CHECK(replay_apply(&r, to), "replayed op 0x%02X was accepted", r.op);
+        n++;
+    }
+
+    if (ops) {
+        *ops = n;
+    }
+
+    return vfx_runtime_hash(to);
+}
+
+static void test_replay_rebuilds_an_identical_scene_from_nothing(void) {
+    vfx_runtime_init();
+
+    const uint8_t src = VFX_RT_TARGET(0, 0);
+    const uint8_t dst = VFX_RT_TARGET(0, 1);
+
+    /* An empty scene is just a reset. */
+    uint32_t ops = 0;
+
+    CHECK(replay_into(src, dst, &ops) == vfx_runtime_hash(src), "an empty scene replays to an empty scene");
+    CHECK(ops == 1, "and takes one request (%u)", (unsigned)ops);
+
+    /* Slots 0 and 3 survive: the replay has to fill 1 and 2 with placeholders
+     * to hand out the same ids.
+     */
+    struct vfx_rt_params a = rtx_base(VFX_RT_SOLID, 10, 100, 100);
+    struct vfx_rt_params b = rtx_base(VFX_RT_SOLID, 20, 100, 100);
+    struct vfx_rt_params c = rtx_base(VFX_RT_SOLID, 30, 100, 100);
+    struct vfx_rt_params d = rtx_base(VFX_RT_WATER, 200, 100, 30);
+
+    CHECK(vfx_runtime_add_layer(src, &a) == 0, "slot 0");
+    CHECK(vfx_runtime_add_layer(src, &b) == 1, "slot 1");
+    CHECK(vfx_runtime_add_layer(src, &c) == 2, "slot 2");
+    CHECK(vfx_runtime_add_layer(src, &d) == 3, "slot 3");
+    vfx_runtime_remove_layer(src, 1);
+    vfx_runtime_remove_layer(src, 2);
+
+    vfx_runtime_set_arg(src, 3, 4, 7);
+    vfx_runtime_set_arg(src, 3, 5, -9);
+    vfx_runtime_set_list_color(src, 3, 0, 120, 80, 60);
+    vfx_runtime_set_list_color(src, 3, 2, 300, 50, 40);
+    vfx_runtime_set_opts(src, 3, VFX_BLEND_ADD, 140, VFX_SRC_ACTIVITY, 10, 200, 2);
+    vfx_runtime_set_flags(src, 3, VFX_RT_FLAG_REVERSE | (3 << VFX_RT_FLAG_AXIS_SHIFT));
+
+    /* A pixel zone that needs two chunks, and a key zone, and a heavy layer. */
+    uint8_t items[20];
+
+    for (uint8_t i = 0; i < 20; i++) {
+        items[i] = (uint8_t)(i * 2);
+    }
+
+    struct vfx_rt_params trail = rtx_base(VFX_RT_TRAIL, 30, 100, 100);
+
+    CHECK(vfx_runtime_add_layer(src, &trail) == 1, "the trail takes the lowest free id");
+    vfx_runtime_set_zone(src, 1, VFX_RT_ZONE_PIXELS, 0, items, VFX_HID_ZONE_CHUNK);
+    vfx_runtime_set_zone(src, 1, VFX_RT_ZONE_PIXELS, VFX_HID_ZONE_CHUNK, &items[VFX_HID_ZONE_CHUNK],
+                         8);
+
+    struct vfx_rt_params g = rt_gradient(0, NPX, 4);
+
+    CHECK(vfx_runtime_add_layer(src, &g) == 2, "and the gradient the next one");
+    vfx_runtime_gradient_add_stop(src, 2, 0, 100, 100);
+    vfx_runtime_gradient_add_stop(src, 2, 120, 100, 100);
+    vfx_runtime_gradient_add_stop(src, 2, 240, 100, 100);
+
+    struct vfx_rt_params keys = rtx_base(VFX_RT_SOLID, 55, 100, 100);
+
+    CHECK(vfx_runtime_add_layer(src, &keys) == 4, "a fifth layer");
+    vfx_runtime_set_zone(src, 4, VFX_RT_ZONE_KEYS, 0, items, 5);
+
+    /* Reorder so render order is not slot order. */
+    vfx_runtime_move_layer(src, 3, VFX_RT_MOVE_DOWN);
+    vfx_runtime_move_layer(src, 0, VFX_RT_MOVE_DOWN);
+
+    /* An uncommitted layer and activation are not part of the comparison, and
+     * the staged one must not leak into the replay either.
+     */
+    struct vfx_rt_params staged = rtx_base(VFX_RT_SOLID, 77, 100, 100);
+
+    vfx_runtime_remove_layer(src, 2);
+    CHECK(vfx_runtime_add_layer_staged(src, &staged) == 2, "a staged layer holds the freed slot 2");
+    vfx_runtime_set_active(src, true);
+
+    const uint32_t want = vfx_runtime_hash(src);
+    const uint32_t got = replay_into(src, dst, &ops);
+
+    CHECK(got == want, "the replayed scene hashes like the original (0x%08X vs 0x%08X)",
+          (unsigned)got, (unsigned)want);
+    CHECK(vfx_runtime_is_active(dst), "and is showing, because the original was");
+
+    uint8_t order_s[VFX_RT_MAX_LAYERS], order_d[VFX_RT_MAX_LAYERS], ns, nd;
+
+    vfx_runtime_get_order(src, order_s, &ns);
+    vfx_runtime_get_order(dst, order_d, &nd);
+    CHECK(ns == nd && memcmp(order_s, order_d, ns) == 0, "slot ids and render order match");
+
+    /* Everything the stream says fits the link. */
+    struct vfx_rt_replay cur;
+    struct vfx_hid_request r;
+    uint8_t wire[VFX_HID_MAX_REQUEST_LEN];
+
+    vfx_runtime_replay_begin(&cur, src);
+
+    while (vfx_runtime_replay_next(&cur, &r)) {
+        CHECK(vfx_hid_encode_request(&r, wire) <= SPLIT_LINK_MAX_MSG, "op 0x%02X fits one link message", r.op);
+    }
+
+    /* Replaying onto a scene that already holds something else replaces it. */
+    struct vfx_rt_params other = rtx_base(VFX_RT_SOLID, 99, 100, 100);
+
+    vfx_runtime_reset(dst);
+    vfx_runtime_add_layer(dst, &other);
+    CHECK(replay_into(src, dst, NULL) == want, "a diverged scene is repaired");
+}
+
+static void test_replay_handles_a_full_pool_and_every_zone_kind(void) {
+    vfx_runtime_init();
+
+    const uint8_t src = VFX_RT_TARGET(1, 0);
+    const uint8_t dst = VFX_RT_TARGET(1, 1);
+    uint8_t items[VFX_RT_MAX_ZONE_PIXELS];
+
+    for (uint8_t i = 0; i < VFX_RT_MAX_ZONE_PIXELS; i++) {
+        items[i] = i;
+    }
+
+    for (uint8_t i = 0; i < VFX_RT_MAX_LAYERS; i++) {
+        struct vfx_rt_params p = rtx_base(VFX_RT_SOLID, (uint16_t)(i * 40), 100, 100);
+
+        CHECK(vfx_runtime_add_layer(src, &p) == i, "slot %u", (unsigned)i);
+
+        if (i % 3 == 1) {
+            vfx_runtime_set_zone(src, i, VFX_RT_ZONE_PIXELS, 0, items, 0); /* empty list */
+        } else if (i % 3 == 2) {
+            vfx_runtime_set_zone(src, i, VFX_RT_ZONE_KEYS, 0, items, VFX_RT_MAX_ZONE_PIXELS < 12 ? VFX_RT_MAX_ZONE_PIXELS : 12);
+        }
+    }
+
+    CHECK(replay_into(src, dst, NULL) == vfx_runtime_hash(src), "a full pool replays whole");
+}
+
+/* ---- split sync messages -------------------------------------------------- */
+
+static void test_sync_check_round_trips_and_fits_the_link(void) {
+    uint8_t wire[VFX_SYNC_CHECK_LEN];
+    uint8_t target = 0;
+    uint32_t hash = 0;
+
+    CHECK(vfx_sync_encode_check(0x13, 0xDEADBEEFu, wire) == VFX_SYNC_CHECK_LEN, "CHECK has a fixed length");
+    CHECK(VFX_SYNC_CHECK_LEN <= SPLIT_LINK_MAX_MSG, "and fits one link message");
+    CHECK(vfx_sync_decode_check(wire, sizeof(wire), &target, &hash), "it decodes");
+    CHECK(target == 0x13 && hash == 0xDEADBEEFu, "with its fields intact");
+    CHECK(wire[0] >= 0x40, "and never looks like a scene op");
+    CHECK(!vfx_sync_decode_check(wire, sizeof(wire) - 1, &target, &hash), "a short CHECK is refused");
+
+    wire[0] = VFX_HID_OP_SCENE_RESET;
+    CHECK(!vfx_sync_decode_check(wire, sizeof(wire), &target, &hash), "a scene op is not a CHECK");
+}
+
+static void test_sync_report_round_trips_inside_one_notification(void) {
+    const struct vfx_sync_report in = {
+        .target = 0x21, .match = true, .hash = 0x01020304u,
+        .hash_ok = 7, .hash_bad = 1, .incomplete = 300, .orphan = 65535,
+    };
+    uint8_t wire[VFX_SYNC_REPORT_LEN];
+    struct vfx_sync_report out;
+
+    CHECK(vfx_sync_encode_report(&in, wire) == VFX_SYNC_REPORT_LEN, "a report has a fixed length");
+    CHECK(VFX_SYNC_REPORT_LEN <= 20, "and fits the default ATT payload");
+    CHECK(vfx_sync_decode_report(wire, sizeof(wire), &out), "it decodes");
+    CHECK(out.target == in.target && out.match && out.hash == in.hash && out.hash_ok == 7 &&
+              out.hash_bad == 1 && out.incomplete == 300 && out.orphan == 65535,
+          "with its fields intact");
+
+    wire[0] = 9;
+    CHECK(!vfx_sync_decode_report(wire, sizeof(wire), &out), "an unknown version is refused");
+}
+
+static void test_sync_reply_lists_peers_and_saturates_counters(void) {
+    const struct vfx_hid_peer peers[2] = {
+        {.state = VFX_HID_PEER_MATCH, .hash = 0xAABBCCDDu},
+        {.state = VFX_HID_PEER_MISMATCH, .hash = 0x11223344u},
+    };
+    uint8_t buf[VFX_HID_MAX_REPLY_LEN];
+    const uint8_t len = vfx_hid_encode_sync(VFX_HID_SYNC_RETURN_CHANNEL, true, peers, 2, 500, 3,
+                                            VFX_HID_STATUS_OK, buf);
+
+    CHECK(len <= VFX_HID_MAX_REPLY_LEN, "the reply fits a report");
+    CHECK(buf[0] == VFX_HID_REPLY_SYNC && buf[1] == VFX_HID_STATUS_OK, "reply op and status");
+    CHECK(buf[2] == VFX_HID_SYNC_RETURN_CHANNEL && buf[3] == 1, "features and the replaying flag");
+    CHECK(buf[4] == VFX_HID_PEER_MATCH && buf[5] == 0xDD && buf[8] == 0xAA, "first peer, hash little-endian");
+    CHECK(buf[9] == VFX_HID_PEER_MISMATCH && buf[10] == 0x44, "second peer");
+    CHECK(buf[14] == VFX_HID_PEER_NONE, "an absent third peer is zeroed");
+    CHECK(buf[19] == 255 && buf[20] == 3, "the high-water mark saturates, the refusal count does not");
+}
+
+static void test_sync_ops_decode_their_target(void) {
+    struct vfx_hid_request req;
+    const uint8_t verify[] = {VFX_HID_OP_SCENE_VERIFY, 0x12};
+    const uint8_t resync[] = {VFX_HID_OP_SCENE_RESYNC, 0xFF};
+    const uint8_t sync[] = {VFX_HID_OP_SCENE_GET_SYNC};
+
+    CHECK(vfx_hid_decode(verify, sizeof(verify), &req) && req.op == VFX_HID_OP_SCENE_VERIFY && req.ch == 0x12,
+          "VERIFY names a target");
+    CHECK(vfx_hid_decode(resync, sizeof(resync), &req) && req.ch == VFX_RT_NONE, "RESYNC 0xFF means every scene");
+    CHECK(vfx_hid_decode(sync, sizeof(sync), &req) && req.op == VFX_HID_OP_SCENE_GET_SYNC, "GET_SYNC has no payload");
 }
 
 int main(void) {
@@ -5397,6 +5679,12 @@ int main(void) {
         {"runtime each scene saves and restores on its own",
          test_runtime_each_scene_saves_and_restores_on_its_own},
         {"runtime hash follows what a host built", test_runtime_hash_follows_what_a_host_built},
+        {"replay rebuilds an identical scene", test_replay_rebuilds_an_identical_scene_from_nothing},
+        {"replay handles a full pool", test_replay_handles_a_full_pool_and_every_zone_kind},
+        {"sync check round trips", test_sync_check_round_trips_and_fits_the_link},
+        {"sync report round trips", test_sync_report_round_trips_inside_one_notification},
+        {"sync reply lists peers", test_sync_reply_lists_peers_and_saturates_counters},
+        {"sync ops decode their target", test_sync_ops_decode_their_target},
         {"runtime sizes are visible", test_runtime_sizes_are_visible},
     };
 

@@ -145,6 +145,22 @@ enum vfx_hid_op {
      * many messages never shows half-configured.
      */
     VFX_HID_OP_SCENE_COMMIT_LAYER = 0x1B,
+
+    /* The split sync ops. None is relayed: the central acts on them itself.
+     *
+     * target (VFX_RT_NONE for every scene that has something) -> ACK. Asks every
+     * peripheral to compare its copy of the scene against the central's; the
+     * verdict is read back with SCENE_GET_SYNC a moment later.
+     */
+    VFX_HID_OP_SCENE_VERIFY = 0x1C,
+    /* No payload -> SYNC: whether the board has a return channel, each
+     * peripheral's last verdict and the link's counters.
+     */
+    VFX_HID_OP_SCENE_GET_SYNC = 0x1D,
+    /* target (VFX_RT_NONE for all) -> ACK. Rebuilds the scene on the peripherals
+     * from the central's copy. Mutating ops answer BUSY until it finishes.
+     */
+    VFX_HID_OP_SCENE_RESYNC = 0x1E,
 };
 
 /* SCENE_ADD_LAYER's flags byte, bit 5: build the layer staged -- reserved and
@@ -171,6 +187,7 @@ enum vfx_hid_op {
 #define VFX_HID_REPLY_LIST_COLOR (VFX_HID_OP_SCENE_GET_LIST_COLOR | VFX_HID_REPLY_BIT)
 #define VFX_HID_REPLY_ZONE (VFX_HID_OP_SCENE_GET_ZONE | VFX_HID_REPLY_BIT)
 #define VFX_HID_REPLY_LAYER_EXT (VFX_HID_OP_SCENE_GET_LAYER_EXT | VFX_HID_REPLY_BIT)
+#define VFX_HID_REPLY_SYNC (VFX_HID_OP_SCENE_GET_SYNC | VFX_HID_REPLY_BIT)
 
 /* Zone entries carried by one SET_ZONE / ZONE. 12 keeps SET_ZONE at 18 bytes
  * on the wire, inside SPLIT_LINK_MAX_MSG (split_link.h), so it can be relayed to a split
@@ -313,4 +330,29 @@ uint8_t vfx_hid_encode_layer_ext(uint8_t ch, uint8_t slot, uint8_t zone_kind, ui
  * second copy of payload_len()'s own table.
  */
 uint8_t vfx_hid_request_len(uint8_t op);
+
+/* SCENE_GET_SYNC's reply. A peripheral is seen only once it has a report
+ * channel, so every state past NONE needs CONFIG_ZMK_VFX_SPLIT_REPORT.
+ */
+#define VFX_HID_MAX_PEERS 3
+#define VFX_HID_PEER_NONE 0      /* no peripheral in this slot */
+#define VFX_HID_PEER_UNKNOWN 1   /* present, no verdict since the last change */
+#define VFX_HID_PEER_MATCH 2     /* its copy hashed like the central's */
+#define VFX_HID_PEER_MISMATCH 3  /* it did not */
+#define VFX_HID_PEER_RESYNCING 4 /* a replay is rebuilding it */
+
+#define VFX_HID_SYNC_RETURN_CHANNEL 0x01 /* built with CONFIG_ZMK_VFX_SPLIT_REPORT */
+
+struct vfx_hid_peer {
+    uint8_t state; /* VFX_HID_PEER_* */
+    uint32_t hash; /* what it last reported */
+};
+
+/* [reply op, status, features, replaying, peers x 3 of {state, hash32 LE},
+ * link queue high-water (saturating), link messages refused (saturating)]:
+ * always 21 bytes, absent peers zeroed.
+ */
+uint8_t vfx_hid_encode_sync(uint8_t features, bool replaying, const struct vfx_hid_peer *peers,
+                            uint8_t npeers, uint16_t queue_high_water, uint32_t refused,
+                            uint8_t status, uint8_t *out);
 

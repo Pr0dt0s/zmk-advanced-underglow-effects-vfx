@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <zmk/vfx/hid_protocol.h>
 #include <zmk/vfx/layer.h>
 #include <zmk/vfx/layers.h>
 #include <zmk/vfx/scenes.h>
@@ -511,3 +512,27 @@ bool vfx_runtime_take_dirty(uint8_t *target);
  * messages agree; see runtime_scene.c for what is deliberately left out.
  */
 uint32_t vfx_runtime_hash(uint8_t target);
+
+/* ---- replay -------------------------------------------------------------- */
+
+/* A cursor over the requests that rebuild one scene from nothing: RESET, every
+ * committed layer added staged with its extras, then a commit per layer in
+ * render order, then ACTIVATE if it was showing. Requests carry `target` in
+ * their ch field and are meant to be encoded with vfx_hid_encode_request() and
+ * sent to a half that disagrees; applying them to an identical target
+ * reproduces vfx_runtime_hash(). Yielded one at a time so a paced sender only
+ * pulls what it has room for. Do not edit the source scene while one runs.
+ */
+struct vfx_rt_replay {
+    uint8_t target;
+    uint8_t phase;
+    uint8_t slot;
+    uint8_t step;
+    uint8_t ids; /* one past the highest committed slot id */
+};
+
+/* False for an invalid target. */
+bool vfx_runtime_replay_begin(struct vfx_rt_replay *c, uint8_t target);
+
+/* False once the stream is finished. */
+bool vfx_runtime_replay_next(struct vfx_rt_replay *c, struct vfx_hid_request *out);

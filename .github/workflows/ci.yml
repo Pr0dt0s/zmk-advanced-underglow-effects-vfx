@@ -186,6 +186,19 @@ jobs:
             args: -DCONFIG_ZMK_VFX_RAW_HID=y -DCONFIG_ZMK_VFX_RUNTIME_SCENES=y
               -DCONFIG_ZMK_VFX_RUNTIME_SCENES_PER_CHANNEL=3
             prep: "true"
+          # The peripheral report channel (GATT) and the link statistics, on
+          # both halves: the central compiles the discovery/subscribe side, the
+          # peripheral the service. Neither can be exercised without hardware.
+          - name: split report channel (central)
+            shield: lily58_left raw_hid_adapter
+            args: -DCONFIG_ZMK_VFX_RAW_HID=y -DCONFIG_ZMK_VFX_RUNTIME_SCENES=y
+              -DCONFIG_ZMK_VFX_SPLIT_REPORT=y -DCONFIG_ZMK_VFX_SPLIT_LINK_STATS=y
+            prep: "true"
+          - name: split report channel (peripheral)
+            shield: lily58_right
+            args: -DCONFIG_ZMK_VFX_RUNTIME_SCENES=y -DCONFIG_ZMK_VFX_SPLIT_REPORT=y
+              -DCONFIG_ZMK_VFX_SPLIT_LINK_STATS=y
+            prep: "true"
           # VFX_MAX_CHANNELS is sized to DT_NUM_INST_STATUS_OKAY(zmk_vfx_channel)
           # rather than a fixed ceiling (see scenes.h); six is deliberately
           # more than the old fixed value of 4, so this is what would have

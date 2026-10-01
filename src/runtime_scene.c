@@ -1216,3 +1216,248 @@ uint32_t vfx_runtime_hash(uint8_t target) {
 
     return h;
 }
+
+/* ---- replay -------------------------------------------------------------- */
+
+/* The scene as a request stream, for rebuilding it on a half that disagrees.
+ * Slots are re-added staged and committed at the end, so the other half never
+ * shows a scene mid-rebuild, and slot ids come out the same because a
+ * placeholder fills every id below the highest committed slot that is not one
+ * (add always takes the lowest free id). A staged-but-uncommitted slot is not
+ * part of the scene the hash describes, so it is replayed as a gap too.
+ */
+
+#define REPLAY_STEP_ARG4 1
+#define REPLAY_STEP_ARG5 2
+#define REPLAY_STEP_COLOR0 3
+#define REPLAY_STEP_ZONE0 (REPLAY_STEP_COLOR0 + VFX_RT_MAX_COLORS)
+#define REPLAY_ZONE_CHUNKS ((VFX_RT_MAX_ZONE_PIXELS + VFX_HID_ZONE_CHUNK - 1) / VFX_HID_ZONE_CHUNK)
+#define REPLAY_STEP_OPTS (REPLAY_STEP_ZONE0 + REPLAY_ZONE_CHUNKS)
+#define REPLAY_STEP_END (REPLAY_STEP_OPTS + 1)
+
+enum replay_phase {
+    REPLAY_RESET,
+    REPLAY_ADD,
+    REPLAY_REMOVE_GAPS,
+    REPLAY_COMMIT,
+    REPLAY_ACTIVATE,
+    REPLAY_DONE,
+};
+
+static bool replay_slot_committed(const struct vfx_rt_channel *rc, uint8_t slot) {
+    return rc->slots[slot].used && render_position(rc, slot) != VFX_RT_MAX_LAYERS;
+}
+
+bool vfx_runtime_replay_begin(struct vfx_rt_replay *c, uint8_t target) {
+    if (!valid_target(target)) {
+        return false;
+    }
+
+    memset(c, 0, sizeof(*c));
+    c->target = target;
+    c->phase = REPLAY_RESET;
+
+    const struct vfx_rt_channel *rc = rt(target);
+
+    for (uint8_t i = 0; i < VFX_RT_MAX_LAYERS; i++) {
+        if (replay_slot_committed(rc, i)) {
+            c->ids = (uint8_t)(i + 1);
+        }
+    }
+
+    return true;
+}
+
+/* Fills `out` for step `step` of slot `slot`, or returns false when that step
+ * has nothing to say for this slot.
+ */
+static bool replay_slot_step(const struct vfx_rt_channel *rc, uint8_t slot, uint8_t step,
+                             struct vfx_hid_request *out) {
+    const struct vfx_rt_params *p = &rc->slots[slot].params;
+
+    out->slot = slot;
+
+    if (step == REPLAY_STEP_ARG4 || step == REPLAY_STEP_ARG5) {
+        const uint8_t idx = (uint8_t)(step - REPLAY_STEP_ARG4 + 4);
+
+        if (p->args[idx] == 0) {
+            return false;
+        }
+
+        out->op = VFX_HID_OP_SCENE_SET_ARG;
+        out->arg_idx = idx;
+        out->args[0] = p->args[idx];
+
+        return true;
+    }
+
+    if (step >= REPLAY_STEP_COLOR0 && step < REPLAY_STEP_ZONE0) {
+        const uint8_t i = (uint8_t)(step - REPLAY_STEP_COLOR0);
+
+        if (i >= p->num_colors) {
+            return false;
+        }
+
+        const struct vfx_hsb hsb = vfx_hsb_unpack(p->colors[i]);
+
+        out->op = VFX_HID_OP_SCENE_SET_LIST_COLOR;
+        out->arg_idx = i;
+        out->hue = (int16_t)hsb.h;
+        out->sat = hsb.s;
+        out->bri = hsb.b;
+
+        return true;
+    }
+
+    if (step >= REPLAY_STEP_ZONE0 && step < REPLAY_STEP_OPTS) {
+        const uint8_t chunk = (uint8_t)(step - REPLAY_STEP_ZONE0);
+        const uint8_t offset = (uint8_t)(chunk * VFX_HID_ZONE_CHUNK);
+
+        /* A range rides in the add. A list is sent in chunks; an empty one
+         * still needs its chunk 0, which is what sets the zone's kind.
+         */
+        if (p->zone_kind == VFX_RT_ZONE_RANGE || (offset > 0 && offset >= p->zone_count)) {
+            return false;
+        }
+
+        const uint8_t left = p->zone_count > offset ? (uint8_t)(p->zone_count - offset) : 0;
+        const uint8_t n = left < VFX_HID_ZONE_CHUNK ? left : VFX_HID_ZONE_CHUNK;
+
+        out->op = VFX_HID_OP_SCENE_SET_ZONE;
+        out->zone_kind = p->zone_kind;
+        out->zone_offset = offset;
+        out->zone_count = n;
+
+        if (n > 0) {
+            memcpy(out->zone_data, &p->zone_items[offset], n);
+        }
+
+        return true;
+    }
+
+    if (step == REPLAY_STEP_OPTS) {
+        if (p->opacity_src == 0 && p->opacity_min == 0 && p->opacity_full == 0 && p->tune_id == 0) {
+            return false;
+        }
+
+        out->op = VFX_HID_OP_SCENE_SET_OPTS;
+        out->blend = p->blend;
+        out->opacity = p->opacity;
+        out->opacity_src = p->opacity_src;
+        out->opacity_min = p->opacity_min;
+        out->opacity_full = p->opacity_full;
+        out->tune_id = p->tune_id;
+
+        return true;
+    }
+
+    return false;
+}
+
+bool vfx_runtime_replay_next(struct vfx_rt_replay *c, struct vfx_hid_request *out) {
+    const struct vfx_rt_channel *rc = rt(c->target);
+
+    memset(out, 0, sizeof(*out));
+    out->ch = c->target;
+
+    for (;;) {
+        switch ((enum replay_phase)c->phase) {
+        case REPLAY_RESET:
+            out->op = VFX_HID_OP_SCENE_RESET;
+            c->phase = REPLAY_ADD;
+            c->slot = 0;
+            c->step = 0;
+
+            return true;
+
+        case REPLAY_ADD:
+            if (c->slot >= c->ids) {
+                c->phase = REPLAY_REMOVE_GAPS;
+                c->slot = 0;
+                break;
+            }
+
+            if (c->step == 0) {
+                out->op = VFX_HID_OP_SCENE_ADD_LAYER;
+                out->staged = true;
+                out->slot = VFX_HID_NO_SLOT;
+                c->step = 1;
+
+                if (replay_slot_committed(rc, c->slot)) {
+                    const struct vfx_rt_params *p = &rc->slots[c->slot].params;
+
+                    out->type = p->type;
+                    out->zone_start = p->zone_start;
+                    out->zone_len = p->zone_len;
+                    out->blend = p->blend;
+                    out->opacity = p->opacity;
+                    out->hue = (int16_t)p->hue;
+                    out->sat = p->sat;
+                    out->bri = p->bri;
+                    memcpy(out->args, p->args, sizeof(out->args));
+                    out->flags = p->flags;
+                } else {
+                    out->type = VFX_RT_SOLID; /* a placeholder, removed again below */
+                    c->step = REPLAY_STEP_END;
+                }
+
+                return true;
+            }
+
+            while (c->step < REPLAY_STEP_END) {
+                const uint8_t step = c->step++;
+
+                if (replay_slot_step(rc, c->slot, step, out)) {
+                    return true;
+                }
+            }
+
+            c->slot++;
+            c->step = 0;
+            break;
+
+        case REPLAY_REMOVE_GAPS:
+            while (c->slot < c->ids) {
+                const uint8_t slot = c->slot++;
+
+                if (!replay_slot_committed(rc, slot)) {
+                    out->op = VFX_HID_OP_SCENE_REMOVE_LAYER;
+                    out->slot = slot;
+
+                    return true;
+                }
+            }
+
+            c->phase = REPLAY_COMMIT;
+            c->slot = 0; /* the index into render order from here on */
+            break;
+
+        case REPLAY_COMMIT:
+            if (c->slot >= rc->count) {
+                c->phase = REPLAY_ACTIVATE;
+                break;
+            }
+
+            out->op = VFX_HID_OP_SCENE_COMMIT_LAYER;
+            out->slot = rc->render_order[c->slot++];
+            out->position = VFX_HID_POSITION_TOP;
+
+            return true;
+
+        case REPLAY_ACTIVATE:
+            c->phase = REPLAY_DONE;
+
+            if (vfx_runtime_is_active(c->target)) {
+                out->op = VFX_HID_OP_SCENE_ACTIVATE;
+
+                return true;
+            }
+
+            break;
+
+        case REPLAY_DONE:
+        default:
+            return false;
+        }
+    }
+}

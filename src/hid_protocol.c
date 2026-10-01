@@ -42,7 +42,11 @@ static uint8_t payload_len(enum vfx_hid_op op) {
     case VFX_HID_OP_SCENE_GET_INFO:
     case VFX_HID_OP_SCENE_GET_ORDER:
     case VFX_HID_OP_SCENE_RESET:
+    case VFX_HID_OP_SCENE_VERIFY:
+    case VFX_HID_OP_SCENE_RESYNC:
         return 1; /* ch */
+    case VFX_HID_OP_SCENE_GET_SYNC:
+        return 0;
     case VFX_HID_OP_SCENE_REMOVE_LAYER:
     case VFX_HID_OP_SCENE_GET_LAYER:
         return 2; /* ch, slot */
@@ -106,6 +110,7 @@ bool vfx_hid_decode(const uint8_t *data, uint8_t len, struct vfx_hid_request *ou
     switch (op) {
     case VFX_HID_OP_PING:
     case VFX_HID_OP_GET_ALL:
+    case VFX_HID_OP_SCENE_GET_SYNC:
         break;
 
     case VFX_HID_OP_RESET:
@@ -133,6 +138,8 @@ bool vfx_hid_decode(const uint8_t *data, uint8_t len, struct vfx_hid_request *ou
     case VFX_HID_OP_SCENE_GET_INFO:
     case VFX_HID_OP_SCENE_GET_ORDER:
     case VFX_HID_OP_SCENE_RESET:
+    case VFX_HID_OP_SCENE_VERIFY:
+    case VFX_HID_OP_SCENE_RESYNC:
         out->ch = data[1];
         break;
 
@@ -265,6 +272,7 @@ uint8_t vfx_hid_encode_request(const struct vfx_hid_request *r, uint8_t *out) {
     switch ((enum vfx_hid_op)r->op) {
     case VFX_HID_OP_PING:
     case VFX_HID_OP_GET_ALL:
+    case VFX_HID_OP_SCENE_GET_SYNC:
         break;
 
     case VFX_HID_OP_RESET:
@@ -292,6 +300,8 @@ uint8_t vfx_hid_encode_request(const struct vfx_hid_request *r, uint8_t *out) {
     case VFX_HID_OP_SCENE_GET_INFO:
     case VFX_HID_OP_SCENE_GET_ORDER:
     case VFX_HID_OP_SCENE_RESET:
+    case VFX_HID_OP_SCENE_VERIFY:
+    case VFX_HID_OP_SCENE_RESYNC:
         out[1] = r->ch;
         break;
 
@@ -557,4 +567,30 @@ uint8_t vfx_hid_request_len(uint8_t op) {
     const uint8_t need = payload_len((enum vfx_hid_op)op);
 
     return need == 0xFF ? 0 : (uint8_t)(1 + need);
+}
+
+uint8_t vfx_hid_encode_sync(uint8_t features, bool replaying, const struct vfx_hid_peer *peers,
+                            uint8_t npeers, uint16_t queue_high_water, uint32_t refused,
+                            uint8_t status, uint8_t *out) {
+    memset(out, 0, VFX_HID_MAX_REPLY_LEN);
+
+    out[0] = VFX_HID_REPLY_SYNC;
+    out[1] = status;
+    out[2] = features;
+    out[3] = replaying ? 1 : 0;
+
+    for (uint8_t i = 0; i < VFX_HID_MAX_PEERS && i < npeers; i++) {
+        uint8_t *p = &out[4 + i * 5];
+
+        p[0] = peers[i].state;
+        p[1] = (uint8_t)peers[i].hash;
+        p[2] = (uint8_t)(peers[i].hash >> 8);
+        p[3] = (uint8_t)(peers[i].hash >> 16);
+        p[4] = (uint8_t)(peers[i].hash >> 24);
+    }
+
+    out[19] = queue_high_water > 255 ? 255 : (uint8_t)queue_high_water;
+    out[20] = refused > 255 ? 255 : (uint8_t)refused;
+
+    return 21;
 }

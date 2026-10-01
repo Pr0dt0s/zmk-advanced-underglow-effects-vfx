@@ -55,6 +55,6 @@ if(CONFIG_ZMK_VFX)
 
   target_sources_ifdef(CONFIG_ZMK_VFX_RAW_HID app PRIVATE src/hid_transport.c)
   target_sources_ifdef(CONFIG_ZMK_VFX_RUNTIME_SCENES app PRIVATE
-                       src/runtime_scene.c src/scene_relay.c src/split_link/link_core.c
-                       src/split_link/link.c)
+                       src/runtime_scene.c src/scene_relay.c src/scene_sync.c src/sync_proto.c
+                       src/split_link/link_core.c src/split_link/link.c src/split_link/report.c)
 endif()
