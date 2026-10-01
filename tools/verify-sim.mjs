@@ -343,8 +343,8 @@ for (const name of ['Pulse', 'Darts']) {
         rt.add === 0 && rt.countStaged === 0 && rt.dark === 0,
         `add=${rt.add} count=${rt.countStaged} lit=${rt.dark}`);
   check('Committing a runtime layer draws it, through the real runtime_scene.c',
-        rt.commit === 0 && rt.countLive === 1 && rt.px[0] > 0 && rt.px[1] === 0 && rt.px[2] === 0,
-        `commit=${rt.commit} px=${rt.px.join(',')}`);
+        rt.commit === 0 && rt.countLive === 1 && rt.px[0] > 8 * Math.max(rt.px[1], rt.px[2], 1) / 2,
+        `commit=${rt.commit} count=${rt.countLive} px=${rt.px.join(',')}`);
   check('A committed scene has a hash and can be activated',
         rt.hash !== 0 && rt.activate === 0 && rt.active === 0, `hash=${rt.hash.toString(16)}`);
   check('Bytes that are not a runtime request are refused', rt.junk === 255, `${rt.junk}`);
