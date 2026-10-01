@@ -173,7 +173,7 @@ enum vfx_hid_op {
 #define VFX_HID_REPLY_LAYER_EXT (VFX_HID_OP_SCENE_GET_LAYER_EXT | VFX_HID_REPLY_BIT)
 
 /* Zone entries carried by one SET_ZONE / ZONE. 12 keeps SET_ZONE at 18 bytes
- * on the wire, inside VFX_RELAY_MAX_BYTES, so it can be relayed to a split
+ * on the wire, inside SPLIT_LINK_MAX_MSG (split_link.h), so it can be relayed to a split
  * peripheral like every other mutating op.
  */
 #define VFX_HID_ZONE_CHUNK 12
@@ -201,6 +201,10 @@ enum vfx_hid_op {
 #define VFX_HID_STATUS_OK 0
 #define VFX_HID_STATUS_BAD_SLOT 1
 #define VFX_HID_STATUS_POOL_FULL 2
+/* The central cannot take the request right now (the split link's queue is full
+ * or a resync is running). Nothing was applied; retry after a short wait.
+ */
+#define VFX_HID_STATUS_BUSY 3
 
 struct vfx_hid_request {
     uint8_t op;
@@ -310,42 +314,3 @@ uint8_t vfx_hid_encode_layer_ext(uint8_t ch, uint8_t slot, uint8_t zone_kind, ui
  */
 uint8_t vfx_hid_request_len(uint8_t op);
 
-/* Relaying a request from a split's central to its peripheral, over the &vfx
- * behavior's own relay rather than this transport a second time -- a
- * peripheral never runs raw-hid. See scene_relay.c, the only caller of
- * either of these; this file only packs and unpacks the bytes, the same
- * separation the rest of it keeps from anything Zephyr-shaped.
- *
- * A behavior invocation carries two full uint32_t of payload: param1, above
- * the command byte in its low byte, and param2. There is no third one --
- * ZMK's own split transport narrows a relayed event's `position` to a
- * single byte on the wire (struct zmk_split_run_behavior_data in ZMK's own
- * split/bluetooth/service.h), so anything packed into it past the low 8
- * bits never arrives. Four bytes of a request's own wire bytes per
- * invocation, then, all from param2; VFX_HID_OP_SCENE_ADD_LAYER, the
- * longest request this decodes, needs five, and SCENE_SET_ZONE is why the
- * zone chunk is twelve entries rather than more.
- */
-#define VFX_RELAY_CHUNK_BYTES 4
-#define VFX_RELAY_MAX_BYTES 20
-
-/* Packs one chunk_len-byte chunk (starting at chunk_bytes) of a total_len-
- * byte request into a behavior invocation's own two payload words, above
- * cmd in param1's low byte.
- */
-void vfx_relay_pack(uint8_t cmd, uint8_t chunk_index, uint8_t total_len,
-                    const uint8_t *chunk_bytes, uint8_t chunk_len, uint32_t *param1,
-                    uint32_t *param2);
-
-/* Unpacks one chunk into `buf` (which must be VFX_RELAY_MAX_BYTES long),
- * tracking progress across calls in `*have`/`*total` -- both must be zeroed
- * before the first one. A chunk_index of 0 (re)starts assembly, so a request
- * that begins arriving again abandons whatever an earlier, incomplete one
- * had rather than corrupting it with unrelated bytes. Returns true once
- * `buf` holds the whole request, ready for vfx_hid_decode(); false for a
- * chunk that still leaves it incomplete, or one whose header fails a basic
- * sanity check (a length over the limits above, or a total that disagrees
- * with the one an assembly already in progress started with).
- */
-bool vfx_relay_unpack(uint32_t param1, uint32_t param2, uint8_t *buf, uint8_t *have,
-                      uint8_t *total);

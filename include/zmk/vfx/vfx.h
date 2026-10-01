@@ -202,7 +202,12 @@ void zmk_vfx_inject_key(uint32_t position);
  * called by behavior_vfx.c for VFX_RT_RELAY_CMD, applying the same op once
  * every chunk of it (see hid_protocol.h) has arrived.
  */
-void zmk_vfx_scene_relay_send(const uint8_t *data, uint8_t len);
+int zmk_vfx_scene_relay_send(const uint8_t *data, uint8_t len);
+
+/* Whether a request of `len` bytes would be accepted by zmk_vfx_scene_relay_send()
+ * right now; hid_transport.c asks before applying anything locally.
+ */
+bool zmk_vfx_scene_relay_room(uint8_t len);
 void zmk_vfx_scene_relay_receive(uint32_t param1, uint32_t param2);
 
 /* Ask for a frame now, outside the normal cadence, after something changed

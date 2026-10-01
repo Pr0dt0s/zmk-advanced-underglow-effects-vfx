@@ -268,6 +268,39 @@ config ZMK_VFX_RUNTIME_SCENES_PER_CHANNEL
       build fails if the saved scenes would outgrow their share of the
       settings partition.
 
+config ZMK_VFX_SPLIT_LINK_QUEUE_CHUNKS
+    int "Relay chunks the central queues for its peripherals"
+    range 8 512
+    default 48
+    help
+      A runtime-scene edit crosses the split as chunks of four bytes, one &vfx
+      behavior invocation each; a layer is a few of them, a whole scene resync
+      many more. The central holds them here and sends them at a steady pace
+      rather than all at once, and refuses a request (the host sees BUSY) when
+      this cannot take all of it, rather than let ZMK's own queue drop part of
+      one. Eight bytes of RAM per chunk. 48 holds nine of the longest
+      requests.
+
+config ZMK_VFX_SPLIT_LINK_CHUNK_INTERVAL_MS
+    int "Milliseconds between relay chunks"
+    range 1 200
+    default 16
+    help
+      How often the central hands one chunk to ZMK's split transport. Too low
+      and ZMK's own queue overflows (chunks are lost, which the peripheral
+      notices and the central repairs, but slowly); too high and a big edit
+      takes visibly long. 16 is a first guess, not a measurement: the README's
+      "Verifying on hardware" has the stress test that finds the smallest value
+      that loses nothing on your boards. Below about 12 ms a full ZMK queue
+      can stall the central for up to 100 ms per call.
+
+config ZMK_VFX_SPLIT_LINK_STATS
+    bool "Log relay losses"
+    help
+      Logs a warning whenever a half drops, abandons or refuses a relayed
+      message, with running totals. For measuring the link; leave it off once
+      the pacing is settled.
+
 endif # ZMK_VFX_RUNTIME_SCENES
 
 module = ZMK_VFX

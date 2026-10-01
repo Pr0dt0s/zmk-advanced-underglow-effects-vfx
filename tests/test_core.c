@@ -14,6 +14,7 @@
 
 #include <zmk/vfx/engine.h>
 #include <zmk/vfx/hid_protocol.h>
+#include <zmk/vfx/split_link.h>
 #include <zmk/vfx/runtime_scene.h>
 #include <zmk/vfx/tuning.h>
 #include <zmk/vfx/layers.h>
@@ -2907,163 +2908,302 @@ static void test_hid_scene_add_layer_ack_reports_the_assigned_slot(void) {
     CHECK(buf[1] == 4, "byte 1 must carry the newly assigned slot");
 }
 
-/* ---- split relay ---------------------------------------------------------
+/* ---- split link ---------------------------------------------------------
  *
- * vfx_relay_pack()/vfx_relay_unpack() are the pure half of relaying a scene
- * op's own wire bytes from a split's central to its peripheral (see
- * scene_relay.c for the Zephyr-shaped half these feed, which cannot be
- * exercised here). What matters is that a request chunked one way comes
- * back out the other identically, regardless of how many chunks it took.
+ * split_link_pack()/split_link_rx_chunk() and the send queue are the pure half
+ * of relaying a scene op's own wire bytes from a split's central to its
+ * peripheral (src/split_link/link.c is the Zephyr-shaped half, which cannot be
+ * exercised here). What matters is that a message chunked one way comes back
+ * out the other identically, and that a lost or repeated chunk is noticed
+ * rather than applied.
  */
 
-/* Mimics scene_relay.c's own send loop: chunks `len` bytes of `data` into
- * VFX_RELAY_CHUNK_BYTES pieces and feeds each straight into
- * vfx_relay_unpack(), as if it had crossed the split link chunk by chunk.
+#define LINK_CMD 0x2A
+
+static struct split_link_chunk link_store[64];
+
+/* Sends one message through a queue and feeds every chunk to `rx`, as if it had
+ * crossed the split link, returning what the receiver reported for the last.
  */
-static bool relay_round_trip(const uint8_t *data, uint8_t len, uint8_t *buf, uint8_t *have,
-                             uint8_t *total) {
-    uint8_t sent = 0;
-    uint8_t chunk_index = 0;
-    bool done = false;
+static uint8_t link_round_trip(struct split_link_queue *q, struct split_link_rx *rx,
+                               const uint8_t *data, uint8_t len) {
+    uint8_t done = 0;
+    struct split_link_chunk c;
 
-    while (sent < len) {
-        const uint8_t chunk_len =
-            (uint8_t)((len - sent) < VFX_RELAY_CHUNK_BYTES ? (len - sent) : VFX_RELAY_CHUNK_BYTES);
-        uint32_t param1;
-        uint32_t param2;
+    if (!split_link_queue_push(q, LINK_CMD, data, len)) {
+        return 0;
+    }
 
-        vfx_relay_pack(0x2A, chunk_index, len, &data[sent], chunk_len, &param1, &param2);
-        done = vfx_relay_unpack(param1, param2, buf, have, total);
+    while (split_link_queue_pop(q, &c)) {
+        const uint8_t r = split_link_rx_chunk(rx, c.param1, c.param2);
 
-        sent = (uint8_t)(sent + chunk_len);
-        chunk_index++;
+        if (r) {
+            done = r;
+        }
     }
 
     return done;
 }
 
-static void test_relay_round_trips_a_request_that_fits_one_chunk(void) {
+static void test_link_round_trips_a_request_that_fits_one_chunk(void) {
+    struct split_link_queue q;
+    struct split_link_rx rx = {0};
     const uint8_t req[] = {VFX_HID_OP_SCENE_ACTIVATE, 1};
-    uint8_t buf[VFX_RELAY_MAX_BYTES] = {0};
-    uint8_t have = 0;
-    uint8_t total = 0;
+
+    split_link_queue_init(&q, link_store, 64);
 
     CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_ACTIVATE) == sizeof(req),
-        "SCENE_ACTIVATE's own request length must match what it decodes, got %d",
-        vfx_hid_request_len(VFX_HID_OP_SCENE_ACTIVATE));
-    CHECK(relay_round_trip(req, sizeof(req), buf, &have, &total),
-        "a request under VFX_RELAY_CHUNK_BYTES must complete in its one chunk");
-    CHECK(memcmp(buf, req, sizeof(req)) == 0, "the reassembled bytes must match the original");
+          "SCENE_ACTIVATE's own request length must match what it decodes, got %d",
+          vfx_hid_request_len(VFX_HID_OP_SCENE_ACTIVATE));
+    CHECK(link_round_trip(&q, &rx, req, sizeof(req)) == sizeof(req),
+          "a request under SPLIT_LINK_CHUNK_BYTES must complete in its one chunk");
+    CHECK(memcmp(rx.buf, req, sizeof(req)) == 0, "the reassembled bytes must match the original");
 
     struct vfx_hid_request out;
 
-    CHECK(vfx_hid_decode(buf, total, &out) && out.op == VFX_HID_OP_SCENE_ACTIVATE && out.ch == 1,
-        "the reassembled bytes must still decode to the same request");
+    CHECK(vfx_hid_decode(rx.buf, sizeof(req), &out) && out.op == VFX_HID_OP_SCENE_ACTIVATE &&
+              out.ch == 1,
+          "the reassembled bytes must still decode to the same request");
 }
 
-static void test_relay_round_trips_the_longest_request_across_five_chunks(void) {
+static void test_link_round_trips_the_longest_request_across_five_chunks(void) {
     /* The same 20-byte SCENE_ADD_LAYER request
      * test_hid_scene_add_layer_decodes_every_field() already proves decodes
-     * correctly on its own -- what this test is proving is that chunking
-     * and reassembling it changes nothing. Four bytes a chunk (not eight):
-     * param1 carries the header and param2 the payload, since ZMK's own
-     * split transport narrows event.position to a single byte, too little
-     * to trust with a payload word (see VFX_RELAY_CHUNK_BYTES's comment).
+     * correctly on its own -- this proves chunking and reassembling it changes
+     * nothing. Four bytes a chunk: param1 carries the header and param2 the
+     * payload, since ZMK's own split transport narrows event.position to a
+     * single byte, too little to trust with a payload word.
      */
-    const uint8_t req[] = {
-        VFX_HID_OP_SCENE_ADD_LAYER,
-        2,          /* ch */
-        5,          /* type */
-        10,         /* zone start */
-        20,         /* zone len */
-        1,          /* blend */
-        200,        /* opacity */
-        0x2C, 0x01, /* hue = 300 */
-        80,         /* sat */
-        90,         /* bri */
-        0xE2, 0xFF, /* arg0 = -30 */
-        0x64, 0x00, /* arg1 = 100 */
-        0x00, 0x00, /* arg2 = 0 */
-        0x01, 0x00, /* arg3 = 1 */
-        0x03,       /* flags */
-    };
-    uint8_t buf[VFX_RELAY_MAX_BYTES] = {0};
-    uint8_t have = 0;
-    uint8_t total = 0;
-    uint32_t param1;
-    uint32_t param2;
+    uint8_t req[20] = {VFX_HID_OP_SCENE_ADD_LAYER, 1, VFX_RT_SOLID, 2, 30, VFX_BLEND_NORMAL, 200};
+    struct split_link_queue q;
+    struct split_link_rx rx = {0};
 
-    CHECK(sizeof(req) == VFX_RELAY_MAX_BYTES, "this fixture must exercise the actual ceiling");
-    CHECK(VFX_RELAY_CHUNK_BYTES == 4, "this test's chunk count assumes four bytes a chunk, got %d",
-        VFX_RELAY_CHUNK_BYTES);
-
-    /* Fed chunk by chunk with an explicit index, rather than through
-     * relay_round_trip(), which always starts a fresh sequence at chunk 0 --
-     * exactly the restart behaviour the next test is about, so it cannot
-     * also be used to resume one here.
-     */
-    for (uint8_t i = 0; i < 4; i++) {
-        vfx_relay_pack(0x2A, i, sizeof(req), &req[i * 4], 4, &param1, &param2);
-        CHECK(!vfx_relay_unpack(param1, param2, buf, &have, &total) && have == (i + 1) * 4,
-            "chunk %d of five must still leave the request incomplete", i);
+    for (uint8_t i = 7; i < sizeof(req); i++) {
+        req[i] = (uint8_t)(0x40 + i);
     }
 
-    vfx_relay_pack(0x2A, 4, sizeof(req), &req[16], 4, &param1, &param2);
-    CHECK(vfx_relay_unpack(param1, param2, buf, &have, &total), "the fifth chunk must complete it");
+    CHECK(SPLIT_LINK_MAX_MSG == 20 && SPLIT_LINK_CHUNK_BYTES == 4 && SPLIT_LINK_MAX_CHUNKS == 5,
+          "this test's chunk count assumes four bytes a chunk and twenty a message");
+    CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_ADD_LAYER) == sizeof(req), "ADD_LAYER is twenty bytes");
 
-    CHECK(memcmp(buf, req, sizeof(req)) == 0,
-        "twenty bytes reassembled from five chunks must match the original");
+    split_link_queue_init(&q, link_store, 64);
+    CHECK(link_round_trip(&q, &rx, req, sizeof(req)) == sizeof(req), "five chunks complete it");
+    CHECK(memcmp(rx.buf, req, sizeof(req)) == 0, "byte for byte");
+    CHECK(rx.ok == 1 && rx.incomplete == 0 && rx.orphan == 0 && rx.malformed == 0,
+          "and cleanly: ok %u incomplete %u orphan %u malformed %u", (unsigned)rx.ok,
+          (unsigned)rx.incomplete, (unsigned)rx.orphan, (unsigned)rx.malformed);
+}
+
+static void test_link_round_trips_a_zone_chunk(void) {
+    uint8_t req[18] = {VFX_HID_OP_SCENE_SET_ZONE, 1, 2, VFX_RT_ZONE_PIXELS, 0, 12};
+    struct split_link_queue q;
+    struct split_link_rx rx = {0};
+
+    for (uint8_t i = 0; i < VFX_HID_ZONE_CHUNK; i++) {
+        req[6 + i] = (uint8_t)(20 + i);
+    }
+
+    split_link_queue_init(&q, link_store, 64);
+    CHECK(link_round_trip(&q, &rx, req, sizeof(req)) == sizeof(req),
+          "eighteen bytes in five chunks (the last of two) must complete");
+    CHECK(memcmp(rx.buf, req, sizeof(req)) == 0, "the bytes must match");
 
     struct vfx_hid_request out;
 
-    CHECK(vfx_hid_decode(buf, total, &out) && out.zone_start == 10 && out.args[3] == 1,
-        "the reassembled longest request must still decode correctly");
+    CHECK(vfx_hid_decode(rx.buf, sizeof(req), &out) && out.zone_count == 12 &&
+              memcmp(out.zone_data, &req[6], VFX_HID_ZONE_CHUNK) == 0,
+          "the reassembled SET_ZONE must still decode");
 }
 
-static void test_relay_restarting_at_chunk_zero_discards_a_stale_assembly(void) {
-    const uint8_t abandoned[] = {VFX_HID_OP_SCENE_ADD_LAYER, 0, 0, 0};
-    const uint8_t fresh[] = {VFX_HID_OP_SCENE_DEACTIVATE, 1};
-    uint8_t buf[VFX_RELAY_MAX_BYTES] = {0};
-    uint8_t have = 0;
-    uint8_t total = 0;
-    uint32_t param1;
-    uint32_t param2;
+/* Chunks of one 20-byte message, packed by hand so a test can drop or repeat any
+ * of them.
+ */
+static void link_chunk(uint8_t seq, uint8_t idx, uint8_t total, const uint8_t *msg, uint32_t *p1,
+                       uint32_t *p2) {
+    const uint8_t left = (uint8_t)(total - idx * 4);
 
-    /* Only the first chunk of a 20-byte request arrives... */
-    vfx_relay_pack(0x2A, 0, 20, abandoned, sizeof(abandoned), &param1, &param2);
-    CHECK(!vfx_relay_unpack(param1, param2, buf, &have, &total),
-        "one chunk of five must not report a complete request");
-
-    /* ...then a whole new, unrelated one starts, rather than continuing it. */
-    CHECK(relay_round_trip(fresh, sizeof(fresh), buf, &have, &total),
-        "a fresh chunk 0 must restart assembly rather than append to the abandoned one");
-    CHECK(memcmp(buf, fresh, sizeof(fresh)) == 0,
-        "the abandoned request's bytes must not leak into the fresh one");
+    split_link_pack(LINK_CMD, seq, idx, total, &msg[idx * 4], left < 4 ? left : 4, p1, p2);
 }
 
-static void test_relay_unpack_rejects_a_malformed_header(void) {
-    uint8_t buf[VFX_RELAY_MAX_BYTES] = {0};
-    uint8_t have = 0;
-    uint8_t total = 0;
-    uint32_t param1;
-    uint32_t param2;
-    const uint8_t one_byte[] = {0x2A};
+static void test_link_a_missing_middle_chunk_is_never_applied(void) {
+    uint8_t msg[20];
+    struct split_link_rx rx = {0};
+    uint32_t p1, p2;
 
-    vfx_relay_pack(0x2A, 0, 0, one_byte, 0, &param1, &param2);
-    CHECK(!vfx_relay_unpack(param1, param2, buf, &have, &total), "a zero total length must be refused");
+    for (uint8_t i = 0; i < 20; i++) {
+        msg[i] = (uint8_t)(i + 1);
+    }
 
-    vfx_relay_pack(0x2A, 0, VFX_RELAY_MAX_BYTES + 1, one_byte, 1, &param1, &param2);
-    CHECK(!vfx_relay_unpack(param1, param2, buf, &have, &total),
-        "a total length over the ceiling must be refused");
+    for (uint8_t idx = 0; idx < 5; idx++) {
+        if (idx == 2) {
+            continue;
+        }
 
-    /* A chunk_index of 1 claiming a total that disagrees with what chunk 0
-     * of a still-incomplete assembly already established.
+        link_chunk(1, idx, 20, msg, &p1, &p2);
+        CHECK(split_link_rx_chunk(&rx, p1, p2) == 0, "chunk %d of a gapped message must not complete", idx);
+    }
+
+    CHECK(rx.ok == 0, "nothing was delivered");
+    CHECK(rx.incomplete == 1, "the gap abandoned the message, once: %u", (unsigned)rx.incomplete);
+    CHECK(rx.orphan >= 1, "and what followed it is an orphan: %u", (unsigned)rx.orphan);
+
+    /* The link recovers on the next message. */
+    for (uint8_t idx = 0; idx < 5; idx++) {
+        link_chunk(2, idx, 20, msg, &p1, &p2);
+        split_link_rx_chunk(&rx, p1, p2);
+    }
+
+    CHECK(rx.ok == 1 && memcmp(rx.buf, msg, 20) == 0, "the next message arrives whole");
+}
+
+static void test_link_a_missing_first_chunk_is_never_applied(void) {
+    uint8_t msg[20];
+    struct split_link_rx rx = {0};
+    uint32_t p1, p2;
+
+    for (uint8_t i = 0; i < 20; i++) {
+        msg[i] = (uint8_t)(0x80 + i);
+    }
+
+    for (uint8_t idx = 1; idx < 5; idx++) {
+        link_chunk(3, idx, 20, msg, &p1, &p2);
+        CHECK(split_link_rx_chunk(&rx, p1, p2) == 0, "a tail with no head must not complete");
+    }
+
+    CHECK(rx.ok == 0 && rx.orphan == 4, "four orphans, nothing delivered: ok %u orphan %u",
+          (unsigned)rx.ok, (unsigned)rx.orphan);
+}
+
+static void test_link_a_stale_head_is_not_glued_to_the_next_tail(void) {
+    /* The corruption a bare chunk index cannot catch: message A loses its tail
+     * and so leaves its first two chunks behind; message B, the same length,
+     * loses its first two chunks, and what is left of it would be stitched onto
+     * A's head. The sequence number in the header is what refuses it.
      */
-    vfx_relay_pack(0x2A, 0, 20, one_byte, 1, &param1, &param2);
-    vfx_relay_unpack(param1, param2, buf, &have, &total);
-    vfx_relay_pack(0x2A, 1, 9, one_byte, 1, &param1, &param2);
-    CHECK(!vfx_relay_unpack(param1, param2, buf, &have, &total),
-        "a later chunk naming a different total than the one in progress must be refused");
+    uint8_t a[20], b[20];
+    struct split_link_rx rx = {0};
+    uint32_t p1, p2;
+
+    for (uint8_t i = 0; i < 20; i++) {
+        a[i] = (uint8_t)(0x10 + i);
+        b[i] = (uint8_t)(0xB0 + i);
+    }
+
+    for (uint8_t idx = 0; idx < 2; idx++) {
+        link_chunk(4, idx, 20, a, &p1, &p2);
+        split_link_rx_chunk(&rx, p1, p2);
+    }
+
+    for (uint8_t idx = 2; idx < 5; idx++) {
+        link_chunk(5, idx, 20, b, &p1, &p2);
+        CHECK(split_link_rx_chunk(&rx, p1, p2) == 0, "B's tail must not complete A's head");
+    }
+
+    CHECK(rx.ok == 0, "no corrupt message was delivered");
+}
+
+static void test_link_a_new_message_abandons_a_partial_one(void) {
+    uint8_t a[20] = {0}, b[2] = {VFX_HID_OP_SCENE_ACTIVATE, 0};
+    struct split_link_rx rx = {0};
+    uint32_t p1, p2;
+
+    link_chunk(1, 0, 20, a, &p1, &p2);
+    split_link_rx_chunk(&rx, p1, p2);
+    link_chunk(2, 0, 2, b, &p1, &p2);
+
+    CHECK(split_link_rx_chunk(&rx, p1, p2) == 2 && memcmp(rx.buf, b, 2) == 0,
+          "the new message completes on its own");
+    CHECK(rx.incomplete == 1 && rx.ok == 1, "and the abandoned one was counted: %u",
+          (unsigned)rx.incomplete);
+}
+
+static void test_link_a_repeated_chunk_is_ignored(void) {
+    uint8_t msg[20] = {0};
+    struct split_link_rx rx = {0};
+    uint32_t p1, p2;
+
+    link_chunk(1, 0, 20, msg, &p1, &p2);
+    split_link_rx_chunk(&rx, p1, p2);
+    link_chunk(1, 1, 20, msg, &p1, &p2);
+    split_link_rx_chunk(&rx, p1, p2);
+    CHECK(split_link_rx_chunk(&rx, p1, p2) == 0 && rx.orphan == 1, "a repeated chunk is an orphan");
+
+    for (uint8_t idx = 2; idx < 5; idx++) {
+        link_chunk(1, idx, 20, msg, &p1, &p2);
+        split_link_rx_chunk(&rx, p1, p2);
+    }
+
+    CHECK(rx.ok == 1, "the message still completes once, after the repeat");
+    CHECK(split_link_rx_chunk(&rx, p1, p2) == 0 && rx.ok == 1,
+          "a repeat of the last chunk does not deliver it twice");
+}
+
+static void test_link_rejects_a_malformed_header(void) {
+    uint8_t one_byte[1] = {1};
+    struct split_link_rx rx = {0};
+    uint32_t p1, p2;
+
+    split_link_pack(LINK_CMD, 0, 0, 0, one_byte, 0, &p1, &p2);
+    CHECK(split_link_rx_chunk(&rx, p1, p2) == 0, "a zero total length must be refused");
+
+    split_link_pack(LINK_CMD, 0, 0, SPLIT_LINK_MAX_MSG + 1, one_byte, 1, &p1, &p2);
+    CHECK(split_link_rx_chunk(&rx, p1, p2) == 0, "a total over the ceiling must be refused");
+
+    split_link_pack(LINK_CMD, 0, 0, 20, one_byte, 1, &p1, &p2);
+    CHECK(split_link_rx_chunk(&rx, p1, p2) == 0, "a short chunk where a full one is due is refused");
+
+    split_link_pack(LINK_CMD, 0, 7, 20, one_byte, 1, &p1, &p2);
+    CHECK(split_link_rx_chunk(&rx, p1, p2) == 0, "a chunk index past the message is refused");
+
+    CHECK(rx.malformed == 4 && rx.ok == 0, "four malformed, none delivered: %u",
+          (unsigned)rx.malformed);
+}
+
+static void test_link_queue_takes_a_whole_message_or_none(void) {
+    struct split_link_queue q;
+    uint8_t msg[20] = {0};
+    struct split_link_chunk c;
+
+    split_link_queue_init(&q, link_store, 8);
+
+    CHECK(split_link_queue_room(&q) == 8, "an empty queue has all its room");
+    CHECK(split_link_queue_push(&q, LINK_CMD, msg, 20) && q.count == 5, "five chunks queued");
+    CHECK(!split_link_queue_push(&q, LINK_CMD, msg, 20), "a second does not fit in the three left");
+    CHECK(q.count == 5 && q.refused == 1, "and nothing of it was queued: count %u refused %u",
+          (unsigned)q.count, (unsigned)q.refused);
+    CHECK(split_link_queue_push(&q, LINK_CMD, msg, 12) && q.count == 8, "one that does fit is taken");
+    CHECK(!split_link_queue_push(&q, LINK_CMD, msg, 1), "a full queue refuses even one chunk");
+    CHECK(q.high_water == 8, "high water: %u", (unsigned)q.high_water);
+    CHECK(!split_link_queue_push(&q, LINK_CMD, msg, 0) && !split_link_queue_push(&q, LINK_CMD, msg, 21),
+          "lengths the link cannot carry are refused");
+
+    for (int i = 0; i < 8; i++) {
+        CHECK(split_link_queue_pop(&q, &c), "pop %d", i);
+    }
+
+    CHECK(!split_link_queue_pop(&q, &c) && split_link_queue_room(&q) == 8, "drained");
+}
+
+static void test_link_queue_wraps_and_numbers_messages(void) {
+    struct split_link_queue q;
+    struct split_link_rx rx = {0};
+    uint8_t msg[8];
+
+    split_link_queue_init(&q, link_store, 5);
+
+    /* Enough messages through a five-slot ring that it wraps repeatedly, and the
+     * three-bit sequence wraps with it.
+     */
+    for (uint8_t n = 0; n < 40; n++) {
+        for (uint8_t i = 0; i < sizeof(msg); i++) {
+            msg[i] = (uint8_t)(n * 7 + i);
+        }
+
+        CHECK(link_round_trip(&q, &rx, msg, sizeof(msg)) == sizeof(msg) && memcmp(rx.buf, msg, sizeof(msg)) == 0,
+              "message %d survives the ring", n);
+    }
+
+    CHECK(rx.ok == 40 && rx.incomplete == 0 && rx.orphan == 0, "all forty delivered cleanly");
 }
 
 /* ---- runtime scene authoring -------------------------------------------
@@ -4940,7 +5080,7 @@ static void test_hid_new_ops_have_the_lengths_the_relay_needs(void) {
     CHECK(vfx_hid_request_len(0x1C) == 0, "the first op past the last is unknown");
 
     /* Every op that changes a scene is relayed to a split's peripheral, which
-     * can carry VFX_RELAY_MAX_BYTES of it.
+     * can carry SPLIT_LINK_MAX_MSG of it.
      */
     static const uint8_t mutating[] = {
         VFX_HID_OP_SCENE_RESET,          VFX_HID_OP_SCENE_ADD_LAYER,
@@ -4955,8 +5095,8 @@ static void test_hid_new_ops_have_the_lengths_the_relay_needs(void) {
     for (unsigned i = 0; i < sizeof(mutating); i++) {
         const uint8_t len = vfx_hid_request_len(mutating[i]);
 
-        CHECK(len > 0 && len <= VFX_RELAY_MAX_BYTES, "op 0x%02x is %d bytes, over the relay's %d",
-              mutating[i], len, VFX_RELAY_MAX_BYTES);
+        CHECK(len > 0 && len <= SPLIT_LINK_MAX_MSG, "op 0x%02x is %d bytes, over the relay's %d",
+              mutating[i], len, SPLIT_LINK_MAX_MSG);
     }
 }
 
@@ -5060,28 +5200,6 @@ static void test_hid_opts_and_layer_ext_decode_and_encode(void) {
 
     CHECK(arg4 == -200 && arg5 == 300, "a negative argument survives the wire: %d,%d", arg4, arg5);
     CHECK(buf[14] == VFX_HID_STATUS_OK, "status is last");
-}
-
-static void test_relay_round_trips_a_zone_chunk_across_five_chunks(void) {
-    uint8_t req[18] = {VFX_HID_OP_SCENE_SET_ZONE, 1, 2, VFX_RT_ZONE_PIXELS, 0, 12};
-
-    for (uint8_t i = 0; i < VFX_HID_ZONE_CHUNK; i++) {
-        req[6 + i] = (uint8_t)(20 + i);
-    }
-
-    uint8_t buf[VFX_RELAY_MAX_BYTES] = {0};
-    uint8_t have = 0;
-    uint8_t total = 0;
-
-    CHECK(relay_round_trip(req, sizeof(req), buf, &have, &total),
-          "eighteen bytes in five chunks (the last of two) must complete");
-    CHECK(total == sizeof(req) && memcmp(buf, req, sizeof(req)) == 0, "the bytes must match");
-
-    struct vfx_hid_request out;
-
-    CHECK(vfx_hid_decode(buf, total, &out) && out.zone_count == 12 &&
-              memcmp(out.zone_data, &req[6], VFX_HID_ZONE_CHUNK) == 0,
-          "the reassembled SET_ZONE must still decode");
 }
 
 int main(void) {
@@ -5195,13 +5313,6 @@ int main(void) {
          test_hid_get_gradient_stop_decodes_and_encodes},
         {"hid scene add layer ack reports the assigned slot",
          test_hid_scene_add_layer_ack_reports_the_assigned_slot},
-        {"relay round trips a request that fits one chunk",
-         test_relay_round_trips_a_request_that_fits_one_chunk},
-        {"relay round trips the longest request across five chunks",
-         test_relay_round_trips_the_longest_request_across_five_chunks},
-        {"relay restarting at chunk zero discards a stale assembly",
-         test_relay_restarting_at_chunk_zero_discards_a_stale_assembly},
-        {"relay unpack rejects a malformed header", test_relay_unpack_rejects_a_malformed_header},
         {"runtime add layer renders", test_runtime_add_layer_renders},
         {"runtime empty scene is null", test_runtime_empty_scene_is_null},
         {"runtime channels are independent", test_runtime_channels_are_independent},
@@ -5252,12 +5363,21 @@ int main(void) {
          test_runtime_restore_drops_what_cannot_be_trusted},
         {"hid new ops have the lengths the relay needs",
          test_hid_new_ops_have_the_lengths_the_relay_needs},
+        {"link round trips one chunk", test_link_round_trips_a_request_that_fits_one_chunk},
+        {"link round trips the longest request", test_link_round_trips_the_longest_request_across_five_chunks},
+        {"link round trips a zone chunk", test_link_round_trips_a_zone_chunk},
+        {"link missing middle chunk is never applied", test_link_a_missing_middle_chunk_is_never_applied},
+        {"link missing first chunk is never applied", test_link_a_missing_first_chunk_is_never_applied},
+        {"link stale head is not glued to a tail", test_link_a_stale_head_is_not_glued_to_the_next_tail},
+        {"link new message abandons a partial one", test_link_a_new_message_abandons_a_partial_one},
+        {"link repeated chunk is ignored", test_link_a_repeated_chunk_is_ignored},
+        {"link rejects a malformed header", test_link_rejects_a_malformed_header},
+        {"link queue takes a whole message or none", test_link_queue_takes_a_whole_message_or_none},
+        {"link queue wraps and numbers messages", test_link_queue_wraps_and_numbers_messages},
         {"hid list colour ops decode and encode", test_hid_list_color_ops_decode_and_encode},
         {"hid zone ops decode and encode", test_hid_zone_ops_decode_and_encode},
         {"hid opts and layer ext decode and encode",
          test_hid_opts_and_layer_ext_decode_and_encode},
-        {"relay round trips a zone chunk across five chunks",
-         test_relay_round_trips_a_zone_chunk_across_five_chunks},
         {"hid every op survives decode then encode", test_hid_every_op_survives_decode_then_encode},
         {"hid add layer staged bit is split from flags",
          test_hid_add_layer_staged_bit_is_split_from_flags},

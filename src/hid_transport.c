@@ -86,11 +86,23 @@ static uint8_t scene_status(int rc) {
         return VFX_HID_STATUS_OK;
     }
 
+    if (rc == -EBUSY) {
+        return VFX_HID_STATUS_BUSY;
+    }
+
     return rc == -ENOSPC ? VFX_HID_STATUS_POOL_FULL : VFX_HID_STATUS_BAD_SLOT;
 }
 
+/* What the last scene op did locally, so the listener can relay only an op
+ * that succeeded: the peripheral would refuse the same bytes, and relaying
+ * them anyway would only spend link bandwidth.
+ */
+static int last_scene_rc;
+
 static void reply_scene_ack(uint8_t op, uint8_t slot, int rc) {
     uint8_t buf[VFX_HID_MAX_REPLY_LEN];
+
+    last_scene_rc = rc;
     const uint8_t len = vfx_hid_encode_ack(op, slot, scene_status(rc), buf);
 
     send(buf, len);
@@ -193,13 +205,21 @@ static void reply_layer_ext(uint8_t ch, uint8_t slot) {
 }
 
 /* Whether an op needs relaying to a split peripheral: every SCENE_* op that
- * changes something, as opposed to one that only reads it back. Relayed
- * regardless of whether it succeeded locally -- the peripheral runs the
- * identical zmk_vfx_scene_*() validation on the identical bytes, so it
- * accepts or rejects the same way the central just did, and threading a
- * success flag out here just to skip a request the far side would refuse
- * anyway buys nothing.
+ * changes something, as opposed to one that only reads it back.
  */
+static uint8_t busy_ack_slot(const struct vfx_hid_request *req) {
+    switch ((enum vfx_hid_op)req->op) {
+    case VFX_HID_OP_SCENE_RESET:
+    case VFX_HID_OP_SCENE_ACTIVATE:
+    case VFX_HID_OP_SCENE_DEACTIVATE:
+        return req->ch;
+    case VFX_HID_OP_SCENE_ADD_LAYER:
+        return VFX_HID_NO_SLOT;
+    default:
+        return req->slot;
+    }
+}
+
 static bool op_needs_relay(uint8_t op) {
     switch ((enum vfx_hid_op)op) {
     case VFX_HID_OP_SCENE_RESET:
@@ -425,13 +445,30 @@ static int raw_hid_received_listener(const zmk_event_t *eh) {
         struct vfx_hid_request req;
 
         if (vfx_hid_decode(event->data, event->length, &req)) {
-            handle(&req);
-
 #if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
             if (op_needs_relay(req.op)) {
-                zmk_vfx_scene_relay_send(event->data, vfx_hid_request_len(req.op));
+                const uint8_t len = vfx_hid_request_len(req.op);
+
+                /* Refused before any of it is applied, so a request the link has
+                 * no room to carry cannot leave the halves different.
+                 */
+                if (!zmk_vfx_scene_relay_room(len)) {
+                    reply_scene_ack(req.op, busy_ack_slot(&req), -EBUSY);
+
+                    return ZMK_EV_EVENT_BUBBLE;
+                }
+
+                last_scene_rc = -EINVAL;
+                handle(&req);
+
+                if (last_scene_rc == 0) {
+                    zmk_vfx_scene_relay_send(event->data, len);
+                }
+
+                return ZMK_EV_EVENT_BUBBLE;
             }
 #endif
+            handle(&req);
         } else {
             LOG_WRN("Malformed VFX raw-hid report (%d bytes)", event->length);
         }
