@@ -211,6 +211,8 @@ static bool op_needs_relay(uint8_t op) {
     case VFX_HID_OP_SCENE_SET_LIST_COLOR:
     case VFX_HID_OP_SCENE_SET_ZONE:
     case VFX_HID_OP_SCENE_SET_OPTS:
+    case VFX_HID_OP_SCENE_SET_FLAGS:
+    case VFX_HID_OP_SCENE_COMMIT_LAYER:
         return true;
     default:
         return false;
@@ -281,7 +283,8 @@ static void handle(const struct vfx_hid_request *req) {
         memcpy(params.args, req->args, sizeof(req->args));
 
         uint8_t slot = VFX_HID_NO_SLOT;
-        const int rc = zmk_vfx_scene_add_layer(req->ch, &params, &slot);
+        const int rc = req->staged ? zmk_vfx_scene_add_layer_staged(req->ch, &params, &slot)
+                                   : zmk_vfx_scene_add_layer(req->ch, &params, &slot);
 
         reply_scene_ack(req->op, slot, rc);
         break;
@@ -368,6 +371,16 @@ static void handle(const struct vfx_hid_request *req) {
     case VFX_HID_OP_SCENE_GET_LAYER_EXT:
         reply_layer_ext(req->ch, req->slot);
         break;
+
+    case VFX_HID_OP_SCENE_SET_FLAGS:
+        reply_scene_ack(req->op, req->slot,
+                        zmk_vfx_scene_set_flags(req->ch, req->slot, req->flags));
+        break;
+
+    case VFX_HID_OP_SCENE_COMMIT_LAYER:
+        reply_scene_ack(req->op, req->slot,
+                        zmk_vfx_scene_commit_layer(req->ch, req->slot, req->position));
+        break;
 #else
     /* CONFIG_ZMK_VFX_RUNTIME_SCENES is off: hid_protocol.c decodes these
      * fine regardless (see payload_len()), but there is nothing here to
@@ -394,6 +407,8 @@ static void handle(const struct vfx_hid_request *req) {
     case VFX_HID_OP_SCENE_GET_ZONE:
     case VFX_HID_OP_SCENE_SET_OPTS:
     case VFX_HID_OP_SCENE_GET_LAYER_EXT:
+    case VFX_HID_OP_SCENE_SET_FLAGS:
+    case VFX_HID_OP_SCENE_COMMIT_LAYER:
         reply_ack(req->op, req->ch, -EINVAL);
         break;
 #endif

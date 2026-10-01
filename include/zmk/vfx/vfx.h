@@ -92,6 +92,16 @@ int zmk_vfx_scene_add_layer(uint8_t ch, const struct vfx_rt_params *params, uint
 int zmk_vfx_scene_set_arg(uint8_t ch, uint8_t slot, uint8_t idx, int16_t value);
 int zmk_vfx_scene_set_color(uint8_t ch, uint8_t slot, uint16_t hue, uint8_t sat, uint8_t bri);
 int zmk_vfx_scene_remove_layer(uint8_t ch, uint8_t slot);
+
+/* A layer built in the dark: _add_layer_staged() reserves a slot without
+ * rendering it, the usual edits fill it in, and _commit_layer() puts it in
+ * render order at `position` (0xFF = on top) in one step. _set_flags() changes
+ * stack/reverse/axis on a layer that already exists. See runtime_scene.h.
+ */
+int zmk_vfx_scene_add_layer_staged(uint8_t ch, const struct vfx_rt_params *params,
+                                   uint8_t *slot_out);
+int zmk_vfx_scene_commit_layer(uint8_t ch, uint8_t slot, uint8_t position);
+int zmk_vfx_scene_set_flags(uint8_t ch, uint8_t slot, uint8_t flags);
 int zmk_vfx_scene_move_layer(uint8_t ch, uint8_t slot, int8_t direction);
 
 /* Switches the channel between showing this scene and its compiled list.

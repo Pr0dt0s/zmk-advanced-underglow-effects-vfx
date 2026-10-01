@@ -127,7 +127,11 @@ static void apply_relayed_request(const struct vfx_hid_request *req) {
         uint8_t slot = VFX_HID_NO_SLOT;
 
         memcpy(params.args, req->args, sizeof(req->args));
-        zmk_vfx_scene_add_layer(req->ch, &params, &slot);
+        if (req->staged) {
+            zmk_vfx_scene_add_layer_staged(req->ch, &params, &slot);
+        } else {
+            zmk_vfx_scene_add_layer(req->ch, &params, &slot);
+        }
         break;
     }
 
@@ -173,6 +177,14 @@ static void apply_relayed_request(const struct vfx_hid_request *req) {
     case VFX_HID_OP_SCENE_SET_OPTS:
         zmk_vfx_scene_set_opts(req->ch, req->slot, req->blend, req->opacity, req->opacity_src,
                                req->opacity_min, req->opacity_full, req->tune_id);
+        break;
+
+    case VFX_HID_OP_SCENE_SET_FLAGS:
+        zmk_vfx_scene_set_flags(req->ch, req->slot, req->flags);
+        break;
+
+    case VFX_HID_OP_SCENE_COMMIT_LAYER:
+        zmk_vfx_scene_commit_layer(req->ch, req->slot, req->position);
         break;
 
     default:

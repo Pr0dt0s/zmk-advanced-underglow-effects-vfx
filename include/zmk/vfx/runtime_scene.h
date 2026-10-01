@@ -127,6 +127,8 @@ enum vfx_rt_type {
 #define VFX_RT_FLAG_REVERSE 0x02
 #define VFX_RT_FLAG_AXIS_SHIFT 2
 #define VFX_RT_FLAG_AXIS_MASK (0x7 << VFX_RT_FLAG_AXIS_SHIFT)
+/* Every bit a layer's flags byte may carry; vfx_runtime_set_flags() refuses the rest. */
+#define VFX_RT_FLAGS_MASK (VFX_RT_FLAG_STACK | VFX_RT_FLAG_REVERSE | VFX_RT_FLAG_AXIS_MASK)
 
 /* How a layer's zone is written. RANGE is `range = <start len>`; PIXELS is
  * `pixels = <...>`, strip indices; KEYS is `keys = <...>`, key positions
@@ -305,6 +307,28 @@ void vfx_runtime_set_key_context(const struct vfx_frame_ctx *ctx);
  * or hold and every heavy state is taken).
  */
 int vfx_runtime_add_layer(uint8_t ch, const struct vfx_rt_params *params);
+
+/* Same as add_layer, but the layer is held back from the render order: it can
+ * be edited (set_arg, set_list_color, set_zone, set_opts, set_flags), holds its
+ * heavy state and counts against the pool, yet nothing draws it and it is
+ * invisible to get_order, get_info's count and the saved image until
+ * vfx_runtime_commit_layer() makes it live in one step. That is what lets a
+ * layer with a second colour or a zone list appear fully built instead of
+ * half-configured. remove_layer abandons one.
+ */
+int vfx_runtime_add_layer_staged(uint8_t ch, const struct vfx_rt_params *params);
+
+/* Puts a staged layer into render order at `position` (0 is the bottom;
+ * anything at or past the current count means the top). False for a slot that
+ * is unused or already rendered.
+ */
+bool vfx_runtime_commit_layer(uint8_t ch, uint8_t slot, uint8_t position);
+
+/* Replaces a layer's flags byte in place (see VFX_RT_FLAG_*), so toggling stack,
+ * reverse or axis needs no remove and re-add. False for bits outside
+ * VFX_RT_FLAGS_MASK.
+ */
+bool vfx_runtime_set_flags(uint8_t ch, uint8_t slot, uint8_t flags);
 
 /* idx 0..VFX_RT_MAX_ARGS-1. */
 bool vfx_runtime_set_arg(uint8_t ch, uint8_t slot, uint8_t idx, int16_t value);

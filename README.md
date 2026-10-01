@@ -963,6 +963,8 @@ channel's own pool — a different id space from a tuning slot, assigned by
 | `SCENE_GET_ZONE` (`0x17`) | ch, slot, offset | `0x97`: ch, slot, kind, total, offset, n, 12 data bytes, status | 20 |
 | `SCENE_SET_OPTS` (`0x18`) | ch, slot, blend, opacity, opacity source, opacity min, opacity full, tune id | `0x98`: slot, status | 3 |
 | `SCENE_GET_LAYER_EXT` (`0x19`) | ch, slot | `0x99`: ch, slot, zone kind, zone count, colour count, opacity source, opacity min, opacity full, tune id, arg 4 (`int16`), arg 5 (`int16`), status | 15 |
+| `SCENE_SET_FLAGS` (`0x1A`) | ch, slot, flags | `0x9A`: slot, status | 3 |
+| `SCENE_COMMIT_LAYER` (`0x1B`) | ch, slot, position (`0xFF` = top) | `0x9B`: slot, status | 3 |
 
 `SCENE_SET_LIST_COLOR` and `SCENE_GET_LIST_COLOR` work on any generator's
 colour list; `SCENE_GRADIENT_ADD_STOP` and `SCENE_GET_GRADIENT_STOP` are the
@@ -998,10 +1000,19 @@ over, and may change its kind; any later chunk has to continue the same list.
 `flags` is one byte: bit 0 is `pulse`'s `stack`, bit 1 is `dart`'s `reverse`,
 and bits 2-4 are the `axis` (`VFX_AXIS_*`, the same values
 `dt-bindings/zmk/vfx.h` defines) of every generator that has one — `wave`,
-`dart`, `gradient`, `fire` and `comet`. Only `SCENE_ADD_LAYER` carries it, so
-changing a layer's flags means building it again (see
-[The simulator's own panel](#the-simulators-own-panel)); everything else about
+`dart`, `gradient`, `fire` and `comet`. `SCENE_ADD_LAYER` sets it and
+`SCENE_SET_FLAGS` replaces it afterwards, in place; bits 5-7 are refused
+(bit 5 only means something on `SCENE_ADD_LAYER`, see below). Everything about
 a layer is edited in place.
+
+`SCENE_ADD_LAYER`'s flags byte also carries one wire-only bit, `0x20`
+(`VFX_HID_FLAG_STAGED`): build the layer *staged*. A staged layer takes a slot
+(and a heavy state, for `trail` and `hold`) and can be edited with every
+message below, but it is not rendered, not counted by `SCENE_GET_INFO`, not in
+`SCENE_GET_ORDER` and not saved, until `SCENE_COMMIT_LAYER` puts it in render
+order at `position` (`0` the bottom, `0xFF` or anything past the top: on top)
+in a single step. `SCENE_REMOVE_LAYER` abandons one. That is how a layer with a
+second colour or a zone list appears fully built rather than half-configured.
 
 ### Cycling in the runtime scene
 
@@ -1048,7 +1059,7 @@ re-added to change a colour, a number, a list entry, a zone or an option,
 and changing an option does not restart anything that is animating. (An edit
 to a colour, a number or the zone does restart that one layer's own
 animation, since what it was mid-way through was drawn under the old
-configuration.) Only the flags byte has no message of its own.
+configuration.) The flags byte has its own message, `SCENE_SET_FLAGS`, too.
 
 Which colour and which number feeds which field is fixed per generator, in
 the order `rebuild_slot()` in `runtime_scene.c` reads them. A generator that
@@ -1085,12 +1096,13 @@ A list entry that was never set is black, which each generator reads as "not
 given". A `layer-state` layer's black entries draw nothing, so the layers
 beneath them show through.
 
-On a channel whose runtime scene is active, a layer is visible from the
-moment `SCENE_ADD_LAYER` is applied, not from the moment the last message
-lands, so a layer with a second colour or a zone list shows briefly
-half-configured — second colour black, or over the range zone
-`SCENE_ADD_LAYER` set — while the rest arrives. Building a scene while it is
-not active, and activating it last, avoids that.
+On a channel whose runtime scene is active, a layer added without the staged
+bit is visible from the moment `SCENE_ADD_LAYER` is applied, not from the
+moment the last message lands, so a layer with a second colour or a zone list
+shows briefly half-configured — second colour black, or over the range zone
+`SCENE_ADD_LAYER` set — while the rest arrives. Adding it staged and
+finishing with `SCENE_COMMIT_LAYER` avoids that, as does building the scene
+while it is not active and activating it last.
 
 `SCENE_GET_LAYER` answers one slot at a time and says nothing about where
 that slot renders relative to the rest, since add, remove and move never

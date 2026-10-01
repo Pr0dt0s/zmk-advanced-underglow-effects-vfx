@@ -4469,6 +4469,249 @@ static void test_runtime_restore_drops_what_cannot_be_trusted(void) {
     CHECK(!vfx_runtime_get_layer(0, (uint8_t)VFX_RT_HEAVY_STATES, &out), "and the extra one is dropped");
 }
 
+/* ---- staged layers, in-place flags, and the generic request encoder ------- */
+
+static void test_hid_every_op_survives_decode_then_encode(void) {
+    unsigned ops_checked = 0;
+
+    for (unsigned op = 0; op < 0x100; op++) {
+        const uint8_t len = vfx_hid_request_len((uint8_t)op);
+
+        if (len == 0) {
+            continue;
+        }
+
+        uint8_t wire[VFX_HID_MAX_REQUEST_LEN] = {0};
+
+        wire[0] = (uint8_t)op;
+
+        for (uint8_t i = 1; i < len; i++) {
+            wire[i] = (uint8_t)(op * 7 + i * 13 + 1);
+        }
+
+        if (op == VFX_HID_OP_SCENE_SET_ZONE) {
+            wire[5] = 9; /* count: must not exceed the chunk */
+        }
+
+        struct vfx_hid_request req;
+        uint8_t again[VFX_HID_MAX_REQUEST_LEN];
+
+        CHECK(vfx_hid_decode(wire, len, &req), "op 0x%02x must decode", op);
+        CHECK(vfx_hid_encode_request(&req, again) == len, "op 0x%02x must re-encode to %d bytes",
+              op, len);
+        CHECK(memcmp(wire, again, len) == 0, "op 0x%02x must re-encode to the same bytes", op);
+        ops_checked++;
+    }
+
+    CHECK(ops_checked == 0x1C, "expected 28 ops (0x00-0x1B), covered %u", ops_checked);
+
+    struct vfx_hid_request unknown = {.op = 0x7E};
+    uint8_t out[VFX_HID_MAX_REQUEST_LEN];
+
+    CHECK(vfx_hid_encode_request(&unknown, out) == 0, "an unknown op encodes to nothing");
+}
+
+static void test_hid_add_layer_staged_bit_is_split_from_flags(void) {
+    uint8_t wire[20] = {VFX_HID_OP_SCENE_ADD_LAYER, 0};
+
+    wire[19] = VFX_HID_FLAG_STAGED | VFX_RT_FLAG_STACK | (3 << VFX_RT_FLAG_AXIS_SHIFT);
+
+    struct vfx_hid_request req;
+
+    CHECK(vfx_hid_decode(wire, sizeof(wire), &req), "ADD_LAYER must decode");
+    CHECK(req.staged, "bit 5 must be reported as staged");
+    CHECK(req.flags == (VFX_RT_FLAG_STACK | (3 << VFX_RT_FLAG_AXIS_SHIFT)),
+          "the staged bit must not leak into flags, got 0x%02x", req.flags);
+
+    wire[19] = VFX_RT_FLAG_REVERSE;
+    CHECK(vfx_hid_decode(wire, sizeof(wire), &req) && !req.staged && req.flags == VFX_RT_FLAG_REVERSE,
+          "without the bit the layer is built live");
+
+    const uint8_t flags[] = {VFX_HID_OP_SCENE_SET_FLAGS, 1, 2, 0x0D};
+    const uint8_t commit[] = {VFX_HID_OP_SCENE_COMMIT_LAYER, 1, 2, VFX_HID_POSITION_TOP};
+
+    CHECK(vfx_hid_decode(flags, sizeof(flags), &req) && req.ch == 1 && req.slot == 2 &&
+              req.flags == 0x0D,
+          "SET_FLAGS must decode");
+    CHECK(vfx_hid_decode(commit, sizeof(commit), &req) && req.ch == 1 && req.slot == 2 &&
+              req.position == VFX_HID_POSITION_TOP,
+          "COMMIT_LAYER must decode");
+    CHECK(!vfx_hid_decode(flags, sizeof(flags) - 1, &req), "a short SET_FLAGS is refused");
+}
+
+static void test_runtime_set_flags_changes_a_layer_in_place(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params p = rt_solid(0, NPX, 0);
+
+    p.type = VFX_RT_DART;
+    p.flags = VFX_RT_FLAG_REVERSE;
+
+    const int slot = vfx_runtime_add_layer(0, &p);
+    uint8_t order_before[VFX_RT_MAX_LAYERS];
+    uint8_t order_after[VFX_RT_MAX_LAYERS];
+    uint8_t count = 0;
+
+    CHECK(slot >= 0, "dart must build");
+    vfx_runtime_get_order(0, order_before, &count);
+
+    const uint8_t want = (uint8_t)(VFX_RT_FLAG_STACK | (4 << VFX_RT_FLAG_AXIS_SHIFT));
+
+    CHECK(vfx_runtime_set_flags(0, (uint8_t)slot, want), "set_flags must succeed");
+
+    struct vfx_rt_params got;
+
+    CHECK(vfx_runtime_get_layer(0, (uint8_t)slot, &got) && got.flags == want,
+          "flags must read back as set, got 0x%02x", got.flags);
+
+    vfx_runtime_get_order(0, order_after, &count);
+    CHECK(count == 1 && order_after[0] == order_before[0], "set_flags must not touch the order");
+    CHECK(vfx_runtime_scene(0) && vfx_runtime_scene(0)->num_layers == 1,
+          "the layer must still render");
+
+    CHECK(!vfx_runtime_set_flags(0, (uint8_t)slot, VFX_HID_FLAG_STAGED),
+          "bit 5 is wire-only and must be refused");
+    CHECK(!vfx_runtime_set_flags(0, (uint8_t)slot, 0x80), "bit 7 must be refused");
+    CHECK(!vfx_runtime_set_flags(0, 7, 0), "an unused slot must be refused");
+    CHECK(!vfx_runtime_set_flags(9, (uint8_t)slot, 0), "a bad channel must be refused");
+    CHECK(vfx_runtime_get_layer(0, (uint8_t)slot, &got) && got.flags == want,
+          "a refused set_flags must leave the flags alone");
+}
+
+static void test_runtime_staged_layer_is_invisible_until_committed(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params base = rt_solid(0, NPX, 120);
+    const int live = vfx_runtime_add_layer(0, &base);
+    struct vfx_rt_params top = rt_solid(0, NPX, 0);
+    const int staged = vfx_runtime_add_layer_staged(0, &top);
+
+    CHECK(live == 0 && staged == 1, "slots are handed out in order, got %d and %d", live, staged);
+
+    uint8_t order[VFX_RT_MAX_LAYERS];
+    uint8_t count = 99;
+    bool active = false;
+
+    vfx_runtime_get_order(0, order, &count);
+    CHECK(count == 1 && order[0] == 0, "a staged layer must not be in the order, count %d", count);
+    CHECK(vfx_runtime_get_info(0, &count, &active) && count == 1,
+          "a staged layer must not be counted, got %d", count);
+    CHECK(vfx_runtime_scene(0)->num_layers == 1, "a staged layer must not render");
+
+    struct vfx_rt_params got;
+
+    CHECK(vfx_runtime_get_layer(0, (uint8_t)staged, &got), "a staged layer is still readable");
+    CHECK(vfx_runtime_set_arg(0, (uint8_t)staged, 0, 5) &&
+              vfx_runtime_set_color(0, (uint8_t)staged, 200, 100, 100),
+          "a staged layer is still editable");
+    CHECK(!vfx_runtime_move_layer(0, (uint8_t)staged, VFX_RT_MOVE_DOWN),
+          "a staged layer has no position to move from");
+
+    CHECK(vfx_runtime_commit_layer(0, (uint8_t)staged, 0), "commit must succeed");
+    vfx_runtime_get_order(0, order, &count);
+    CHECK(count == 2 && order[0] == staged && order[1] == live,
+          "commit at 0 puts it under the live layer: %d,%d", order[0], order[1]);
+    CHECK(vfx_runtime_scene(0)->num_layers == 2, "a committed layer renders");
+    CHECK(!vfx_runtime_commit_layer(0, (uint8_t)staged, 0),
+          "a rendered layer cannot be committed again");
+    CHECK(!vfx_runtime_commit_layer(0, 5, 0), "an unused slot cannot be committed");
+
+    struct vfx_rt_params third = rt_solid(0, NPX, 60);
+    const int t = vfx_runtime_add_layer_staged(0, &third);
+
+    CHECK(vfx_runtime_commit_layer(0, (uint8_t)t, VFX_HID_POSITION_TOP),
+          "commit at top must succeed");
+    vfx_runtime_get_order(0, order, &count);
+    CHECK(count == 3 && order[2] == t, "0xFF means on top: %d,%d,%d", order[0], order[1], order[2]);
+
+    struct vfx_rt_params fourth = rt_solid(0, NPX, 30);
+    const int m = vfx_runtime_add_layer_staged(0, &fourth);
+
+    CHECK(vfx_runtime_commit_layer(0, (uint8_t)m, 1), "commit in the middle must succeed");
+    vfx_runtime_get_order(0, order, &count);
+    CHECK(count == 4 && order[1] == m && order[0] == staged && order[2] == live && order[3] == t,
+          "a middle commit shifts the rest up: %d,%d,%d,%d", order[0], order[1], order[2],
+          order[3]);
+}
+
+static void test_runtime_staged_layer_can_be_abandoned(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params p = rt_solid(0, NPX, 0);
+    uint8_t slots[VFX_RT_MAX_LAYERS];
+
+    for (uint8_t i = 0; i < VFX_RT_MAX_LAYERS; i++) {
+        const int s = vfx_runtime_add_layer_staged(0, &p);
+
+        CHECK(s >= 0, "staged slot %d must be available", i);
+        slots[i] = (uint8_t)s;
+    }
+
+    CHECK(vfx_runtime_add_layer_staged(0, &p) == VFX_RT_ERR_FULL,
+          "staged layers use the same pool and fill it");
+    CHECK(vfx_runtime_add_layer(0, &p) == VFX_RT_ERR_FULL,
+          "a live add is refused when staged ones fill the pool");
+
+    CHECK(vfx_runtime_remove_layer(0, slots[3]), "a staged layer can be removed");
+
+    uint8_t count = 9;
+    bool active;
+
+    vfx_runtime_get_info(0, &count, &active);
+    CHECK(count == 0, "removing a staged layer must not disturb the empty order, count %d", count);
+    CHECK(vfx_runtime_add_layer_staged(0, &p) == slots[3], "its slot is reusable");
+    CHECK(vfx_runtime_remove_layer(0, slots[3]), "and removable again");
+}
+
+static void test_runtime_staged_heavy_layer_holds_its_state_until_removed(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params t = rt_solid(0, NPX, 0);
+
+    t.type = VFX_RT_TRAIL;
+
+    int held[VFX_RT_HEAVY_STATES];
+
+    for (int i = 0; i < VFX_RT_HEAVY_STATES; i++) {
+        held[i] = vfx_runtime_add_layer_staged(0, &t);
+        CHECK(held[i] >= 0, "staged trail %d must get a heavy state", i);
+    }
+
+    CHECK(vfx_runtime_add_layer_staged(0, &t) == VFX_RT_ERR_FULL,
+          "a staged trail occupies a heavy state, so one more has none left");
+    CHECK(vfx_runtime_remove_layer(0, (uint8_t)held[0]), "abandoning it releases the state");
+    CHECK(vfx_runtime_add_layer_staged(0, &t) >= 0, "which is then free again");
+}
+
+static void test_runtime_save_skips_staged_layers(void) {
+    vfx_runtime_init();
+
+    struct vfx_rt_params a = rt_solid(0, NPX, 10);
+    struct vfx_rt_params b = rt_solid(0, NPX, 20);
+
+    CHECK(vfx_runtime_add_layer(0, &a) == 0, "the live layer");
+    CHECK(vfx_runtime_add_layer_staged(0, &b) == 1, "the staged layer");
+
+    uint16_t len = 0;
+    const void *blob = vfx_runtime_state(&len);
+    static uint8_t copy[4096];
+
+    CHECK(len <= sizeof(copy), "saved image fits the scratch copy");
+    memcpy(copy, blob, len);
+
+    vfx_runtime_init();
+    CHECK(vfx_runtime_restore_state(copy, len), "restore must accept the image");
+
+    uint8_t count = 0;
+    bool active;
+    struct vfx_rt_params got;
+
+    vfx_runtime_get_info(0, &count, &active);
+    CHECK(count == 1, "only the committed layer survives a restore, got %d", count);
+    CHECK(vfx_runtime_get_layer(0, 0, &got) && got.hue == 10, "the committed layer is intact");
+    CHECK(!vfx_runtime_get_layer(0, 1, &got), "the staged layer is gone, not auto-appended");
+}
+
 /* ---- host control: the ops added for full generator coverage ------------- */
 
 static void test_hid_new_ops_have_the_lengths_the_relay_needs(void) {
@@ -4478,7 +4721,9 @@ static void test_hid_new_ops_have_the_lengths_the_relay_needs(void) {
     CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_GET_ZONE) == 4, "GET_ZONE is 4 bytes");
     CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_SET_OPTS) == 9, "SET_OPTS is 9 bytes");
     CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_GET_LAYER_EXT) == 3, "GET_LAYER_EXT is 3 bytes");
-    CHECK(vfx_hid_request_len(0x1A) == 0, "the first op past the last is unknown");
+    CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_SET_FLAGS) == 4, "SET_FLAGS is 4 bytes");
+    CHECK(vfx_hid_request_len(VFX_HID_OP_SCENE_COMMIT_LAYER) == 4, "COMMIT_LAYER is 4 bytes");
+    CHECK(vfx_hid_request_len(0x1C) == 0, "the first op past the last is unknown");
 
     /* Every op that changes a scene is relayed to a split's peripheral, which
      * can carry VFX_RELAY_MAX_BYTES of it.
@@ -4490,6 +4735,7 @@ static void test_hid_new_ops_have_the_lengths_the_relay_needs(void) {
         VFX_HID_OP_SCENE_ACTIVATE,       VFX_HID_OP_SCENE_DEACTIVATE,
         VFX_HID_OP_SCENE_GRADIENT_ADD_STOP, VFX_HID_OP_SCENE_SET_LIST_COLOR,
         VFX_HID_OP_SCENE_SET_ZONE,       VFX_HID_OP_SCENE_SET_OPTS,
+        VFX_HID_OP_SCENE_SET_FLAGS,      VFX_HID_OP_SCENE_COMMIT_LAYER,
     };
 
     for (unsigned i = 0; i < sizeof(mutating); i++) {
@@ -4798,6 +5044,17 @@ int main(void) {
          test_hid_opts_and_layer_ext_decode_and_encode},
         {"relay round trips a zone chunk across five chunks",
          test_relay_round_trips_a_zone_chunk_across_five_chunks},
+        {"hid every op survives decode then encode", test_hid_every_op_survives_decode_then_encode},
+        {"hid add layer staged bit is split from flags",
+         test_hid_add_layer_staged_bit_is_split_from_flags},
+        {"runtime set flags changes a layer in place",
+         test_runtime_set_flags_changes_a_layer_in_place},
+        {"runtime staged layer is invisible until committed",
+         test_runtime_staged_layer_is_invisible_until_committed},
+        {"runtime staged layer can be abandoned", test_runtime_staged_layer_can_be_abandoned},
+        {"runtime staged heavy layer holds its state until removed",
+         test_runtime_staged_heavy_layer_holds_its_state_until_removed},
+        {"runtime save skips staged layers", test_runtime_save_skips_staged_layers},
     };
 
     for (unsigned i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {

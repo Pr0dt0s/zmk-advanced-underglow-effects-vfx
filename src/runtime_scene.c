@@ -549,7 +549,7 @@ void vfx_runtime_set_key_context(const struct vfx_frame_ctx *ctx) {
     }
 }
 
-int vfx_runtime_add_layer(uint8_t ch, const struct vfx_rt_params *params) {
+static int add_layer(uint8_t ch, const struct vfx_rt_params *params, bool staged) {
     if (!valid_channel(ch) || !params_valid(params)) {
         return VFX_RT_ERR_INVALID;
     }
@@ -585,11 +585,73 @@ int vfx_runtime_add_layer(uint8_t ch, const struct vfx_rt_params *params) {
     }
 
     s->used = true;
-    rc->render_order[rc->count] = slot;
+
+    /* A staged slot is used -- so it can be edited, and holds its heavy
+     * state -- but sits outside render_order and count until committed, which
+     * is what keeps a half-built layer off the screen.
+     */
+    if (!staged) {
+        rc->render_order[rc->count] = slot;
+        rc->count++;
+        rebuild_render(rc);
+    }
+
+    return slot;
+}
+
+int vfx_runtime_add_layer(uint8_t ch, const struct vfx_rt_params *params) {
+    return add_layer(ch, params, false);
+}
+
+int vfx_runtime_add_layer_staged(uint8_t ch, const struct vfx_rt_params *params) {
+    return add_layer(ch, params, true);
+}
+
+bool vfx_runtime_commit_layer(uint8_t ch, uint8_t slot, uint8_t position) {
+    if (!valid_channel(ch) || !valid_slot(&channels[ch], slot)) {
+        return false;
+    }
+
+    struct vfx_rt_channel *rc = &channels[ch];
+
+    if (render_position(rc, slot) != VFX_RT_MAX_LAYERS || rc->count >= VFX_RT_MAX_LAYERS) {
+        return false; /* already rendered, or nowhere left to put it */
+    }
+
+    const uint8_t pos = position < rc->count ? position : rc->count;
+
+    for (uint8_t i = rc->count; i > pos; i--) {
+        rc->render_order[i] = rc->render_order[i - 1];
+    }
+
+    rc->render_order[pos] = slot;
     rc->count++;
     rebuild_render(rc);
 
-    return slot;
+    return true;
+}
+
+bool vfx_runtime_set_flags(uint8_t ch, uint8_t slot, uint8_t flags) {
+    if (!valid_channel(ch) || !valid_slot(&channels[ch], slot) ||
+        (flags & (uint8_t)~VFX_RT_FLAGS_MASK) != 0) {
+        return false;
+    }
+
+    struct vfx_rt_channel *rc = &channels[ch];
+    struct vfx_rt_slot *s = &rc->slots[slot];
+
+    s->params.flags = flags;
+
+    /* rebuild_slot() rewrites slot->layer, whose copy sits in render[] -- the
+     * same reason set_opts rebuilds the render array.
+     */
+    if (!rebuild_slot(rc, s)) {
+        return false;
+    }
+
+    rebuild_render(rc);
+
+    return true;
 }
 
 bool vfx_runtime_set_arg(uint8_t ch, uint8_t slot, uint8_t idx, int16_t value) {
@@ -626,15 +688,17 @@ bool vfx_runtime_remove_layer(uint8_t ch, uint8_t slot) {
     struct vfx_rt_channel *rc = &channels[ch];
     const uint8_t pos = render_position(rc, slot);
 
-    if (pos == VFX_RT_MAX_LAYERS) {
-        return false;
+    /* A staged slot has no position; removing it is how a half-built layer is
+     * abandoned.
+     */
+    if (pos != VFX_RT_MAX_LAYERS) {
+        for (uint8_t i = pos; i + 1 < rc->count; i++) {
+            rc->render_order[i] = rc->render_order[i + 1];
+        }
+
+        rc->count--;
     }
 
-    for (uint8_t i = pos; i + 1 < rc->count; i++) {
-        rc->render_order[i] = rc->render_order[i + 1];
-    }
-
-    rc->count--;
     release_heavy(rc, &rc->slots[slot]);
     rc->slots[slot].used = false;
     rebuild_render(rc);
@@ -899,7 +963,8 @@ const void *vfx_runtime_state(uint16_t *len) {
     for (uint8_t ch = 0; ch < VFX_MAX_CHANNELS; ch++) {
         for (uint8_t i = 0; i < VFX_RT_MAX_LAYERS; i++) {
             saved[ch].slots[i].params = channels[ch].slots[i].params;
-            saved[ch].slots[i].used = channels[ch].slots[i].used;
+            saved[ch].slots[i].used = channels[ch].slots[i].used &&
+                                      render_position(&channels[ch], i) != VFX_RT_MAX_LAYERS;
         }
 
         memcpy(saved[ch].render_order, channels[ch].render_order,

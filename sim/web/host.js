@@ -44,7 +44,16 @@ const OP = {
   SCENE_GET_ZONE: 0x17,
   SCENE_SET_OPTS: 0x18,
   SCENE_GET_LAYER_EXT: 0x19,
+  SCENE_SET_FLAGS: 0x1a,
+  SCENE_COMMIT_LAYER: 0x1b,
 };
+
+/* SCENE_ADD_LAYER's flags bit 5: reserve the layer without rendering it until
+ * SCENE_COMMIT_LAYER (VFX_HID_FLAG_STAGED). SCENE_COMMIT_LAYER's position 0xFF
+ * is "on top" (VFX_HID_POSITION_TOP).
+ */
+const FLAG_STAGED = 0x20;
+const POSITION_TOP = 0xff;
 
 const REPLY_BIT = 0x80;
 const REPLY_PONG = OP.PING | REPLY_BIT;
@@ -263,7 +272,8 @@ const requests = {
   get: slot => new Uint8Array([OP.GET, slot]),
 
   sceneReset: ch => new Uint8Array([OP.SCENE_RESET, ch]),
-  sceneAddLayer: (ch, type, zoneStart, zoneLen, blend, opacity, hue, sat, bri, args, flags) => {
+  sceneAddLayer: (ch, type, zoneStart, zoneLen, blend, opacity, hue, sat, bri, args, flags,
+                  staged = false) => {
     const b = new Uint8Array(20);
 
     b[0] = OP.SCENE_ADD_LAYER;
@@ -277,10 +287,13 @@ const requests = {
     b[9] = sat;
     b[10] = bri;
     for (let i = 0; i < 4; i++) writeI16(b, 11 + i * 2, args[i] ?? 0);
-    b[19] = flags;
+    b[19] = (flags & ~FLAG_STAGED) | (staged ? FLAG_STAGED : 0);
 
     return b;
   },
+  sceneSetFlags: (ch, slot, flags) => new Uint8Array([OP.SCENE_SET_FLAGS, ch, slot, flags]),
+  sceneCommitLayer: (ch, slot, position = POSITION_TOP) =>
+    new Uint8Array([OP.SCENE_COMMIT_LAYER, ch, slot, position]),
   sceneSetArg: (ch, slot, idx, value) => {
     const b = new Uint8Array(6);
 
@@ -1473,6 +1486,7 @@ export function initHostPanel() {
     OP.SCENE_RESET, OP.SCENE_ADD_LAYER, OP.SCENE_SET_ARG, OP.SCENE_SET_COLOR,
     OP.SCENE_REMOVE_LAYER, OP.SCENE_MOVE_LAYER, OP.SCENE_ACTIVATE, OP.SCENE_DEACTIVATE,
     OP.SCENE_GRADIENT_ADD_STOP, OP.SCENE_SET_LIST_COLOR, OP.SCENE_SET_ZONE, OP.SCENE_SET_OPTS,
+    OP.SCENE_SET_FLAGS, OP.SCENE_COMMIT_LAYER,
   ]);
   const RELAY_CHUNK_BYTES = 4;
   const RELAY_PACE_MS_PER_CHUNK = 16;

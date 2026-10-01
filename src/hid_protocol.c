@@ -47,7 +47,9 @@ static uint8_t payload_len(enum vfx_hid_op op) {
     case VFX_HID_OP_SCENE_GET_LAYER:
         return 2; /* ch, slot */
     case VFX_HID_OP_SCENE_MOVE_LAYER:
-        return 3; /* ch, slot, direction */
+    case VFX_HID_OP_SCENE_SET_FLAGS:
+    case VFX_HID_OP_SCENE_COMMIT_LAYER:
+        return 3; /* ch, slot, direction / flags / position */
     case VFX_HID_OP_SCENE_SET_ARG:
         return 5; /* ch, slot, arg index, value lo, value hi */
     case VFX_HID_OP_SCENE_SET_COLOR:
@@ -175,7 +177,8 @@ bool vfx_hid_decode(const uint8_t *data, uint8_t len, struct vfx_hid_request *ou
         out->args[1] = read_i16(&data[13]);
         out->args[2] = read_i16(&data[15]);
         out->args[3] = read_i16(&data[17]);
-        out->flags = data[19];
+        out->staged = (data[19] & VFX_HID_FLAG_STAGED) != 0;
+        out->flags = (uint8_t)(data[19] & ~VFX_HID_FLAG_STAGED);
         break;
 
     case VFX_HID_OP_SCENE_GRADIENT_ADD_STOP:
@@ -232,9 +235,168 @@ bool vfx_hid_decode(const uint8_t *data, uint8_t len, struct vfx_hid_request *ou
         out->ch = data[1];
         out->slot = data[2];
         break;
+
+    case VFX_HID_OP_SCENE_SET_FLAGS:
+        out->ch = data[1];
+        out->slot = data[2];
+        out->flags = data[3];
+        break;
+
+    case VFX_HID_OP_SCENE_COMMIT_LAYER:
+        out->ch = data[1];
+        out->slot = data[2];
+        out->position = data[3];
+        break;
     }
 
     return true;
+}
+
+uint8_t vfx_hid_encode_request(const struct vfx_hid_request *r, uint8_t *out) {
+    const uint8_t need = payload_len((enum vfx_hid_op)r->op);
+
+    if (need == 0xFF) {
+        return 0;
+    }
+
+    memset(out, 0, VFX_HID_MAX_REQUEST_LEN);
+    out[0] = r->op;
+
+    switch ((enum vfx_hid_op)r->op) {
+    case VFX_HID_OP_PING:
+    case VFX_HID_OP_GET_ALL:
+        break;
+
+    case VFX_HID_OP_RESET:
+    case VFX_HID_OP_GET:
+        out[1] = r->slot;
+        break;
+
+    case VFX_HID_OP_SET_LEVEL:
+        out[1] = r->slot;
+        out[2] = r->level;
+        break;
+
+    case VFX_HID_OP_SET_SPEED:
+        out[1] = r->slot;
+        out[2] = r->speed;
+        break;
+
+    case VFX_HID_OP_SET_HUE:
+        out[1] = r->slot;
+        write_i16(&out[2], r->hue);
+        break;
+
+    case VFX_HID_OP_SCENE_ACTIVATE:
+    case VFX_HID_OP_SCENE_DEACTIVATE:
+    case VFX_HID_OP_SCENE_GET_INFO:
+    case VFX_HID_OP_SCENE_GET_ORDER:
+    case VFX_HID_OP_SCENE_RESET:
+        out[1] = r->ch;
+        break;
+
+    case VFX_HID_OP_SCENE_REMOVE_LAYER:
+    case VFX_HID_OP_SCENE_GET_LAYER:
+    case VFX_HID_OP_SCENE_GET_LAYER_EXT:
+        out[1] = r->ch;
+        out[2] = r->slot;
+        break;
+
+    case VFX_HID_OP_SCENE_MOVE_LAYER:
+        out[1] = r->ch;
+        out[2] = r->slot;
+        out[3] = (uint8_t)r->direction;
+        break;
+
+    case VFX_HID_OP_SCENE_SET_FLAGS:
+        out[1] = r->ch;
+        out[2] = r->slot;
+        out[3] = r->flags;
+        break;
+
+    case VFX_HID_OP_SCENE_COMMIT_LAYER:
+        out[1] = r->ch;
+        out[2] = r->slot;
+        out[3] = r->position;
+        break;
+
+    case VFX_HID_OP_SCENE_SET_ARG:
+        out[1] = r->ch;
+        out[2] = r->slot;
+        out[3] = r->arg_idx;
+        write_i16(&out[4], r->args[0]);
+        break;
+
+    case VFX_HID_OP_SCENE_SET_COLOR:
+    case VFX_HID_OP_SCENE_GRADIENT_ADD_STOP:
+        out[1] = r->ch;
+        out[2] = r->slot;
+        write_i16(&out[3], r->hue);
+        out[5] = r->sat;
+        out[6] = r->bri;
+        break;
+
+    case VFX_HID_OP_SCENE_ADD_LAYER:
+        out[1] = r->ch;
+        out[2] = r->type;
+        out[3] = r->zone_start;
+        out[4] = r->zone_len;
+        out[5] = r->blend;
+        out[6] = r->opacity;
+        write_i16(&out[7], r->hue);
+        out[9] = r->sat;
+        out[10] = r->bri;
+        write_i16(&out[11], r->args[0]);
+        write_i16(&out[13], r->args[1]);
+        write_i16(&out[15], r->args[2]);
+        write_i16(&out[17], r->args[3]);
+        out[19] = (uint8_t)((r->flags & ~VFX_HID_FLAG_STAGED) | (r->staged ? VFX_HID_FLAG_STAGED : 0));
+        break;
+
+    case VFX_HID_OP_SCENE_GET_GRADIENT_STOP:
+    case VFX_HID_OP_SCENE_GET_LIST_COLOR:
+        out[1] = r->ch;
+        out[2] = r->slot;
+        out[3] = r->arg_idx;
+        break;
+
+    case VFX_HID_OP_SCENE_SET_LIST_COLOR:
+        out[1] = r->ch;
+        out[2] = r->slot;
+        out[3] = r->arg_idx;
+        write_i16(&out[4], r->hue);
+        out[6] = r->sat;
+        out[7] = r->bri;
+        break;
+
+    case VFX_HID_OP_SCENE_SET_ZONE:
+        out[1] = r->ch;
+        out[2] = r->slot;
+        out[3] = r->zone_kind;
+        out[4] = r->zone_offset;
+        out[5] = r->zone_count;
+        memcpy(&out[6], r->zone_data, VFX_HID_ZONE_CHUNK);
+        break;
+
+    case VFX_HID_OP_SCENE_GET_ZONE:
+        out[1] = r->ch;
+        out[2] = r->slot;
+        out[3] = r->zone_offset;
+        break;
+
+    case VFX_HID_OP_SCENE_SET_OPTS:
+        out[1] = r->ch;
+        out[2] = r->slot;
+        out[3] = r->blend;
+        out[4] = r->opacity;
+        out[5] = r->opacity_src;
+        out[6] = r->opacity_min;
+        out[7] = r->opacity_full;
+        out[8] = r->tune_id;
+        break;
+    }
+
+    return (uint8_t)(1 + need);
 }
 
 uint8_t vfx_hid_encode_pong(uint8_t max_slot, uint8_t *out) {

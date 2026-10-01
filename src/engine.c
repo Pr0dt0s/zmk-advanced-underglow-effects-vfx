@@ -1036,12 +1036,14 @@ int zmk_vfx_scene_reset(uint8_t ch) {
     return runtime_result(true);
 }
 
-int zmk_vfx_scene_add_layer(uint8_t ch, const struct vfx_rt_params *params, uint8_t *slot_out) {
+static int add_layer(uint8_t ch, const struct vfx_rt_params *params, bool staged,
+                     uint8_t *slot_out) {
     if (ch >= channel_count()) {
         return -EINVAL;
     }
 
-    const int slot = vfx_runtime_add_layer(ch, params);
+    const int slot = staged ? vfx_runtime_add_layer_staged(ch, params)
+                            : vfx_runtime_add_layer(ch, params);
 
     if (slot < 0) {
         /* A pool that is merely full is a different problem for a host to
@@ -1057,6 +1059,31 @@ int zmk_vfx_scene_add_layer(uint8_t ch, const struct vfx_rt_params *params, uint
     }
 
     return runtime_result(true);
+}
+
+int zmk_vfx_scene_add_layer(uint8_t ch, const struct vfx_rt_params *params, uint8_t *slot_out) {
+    return add_layer(ch, params, false, slot_out);
+}
+
+int zmk_vfx_scene_add_layer_staged(uint8_t ch, const struct vfx_rt_params *params,
+                                   uint8_t *slot_out) {
+    return add_layer(ch, params, true, slot_out);
+}
+
+int zmk_vfx_scene_commit_layer(uint8_t ch, uint8_t slot, uint8_t position) {
+    if (ch >= channel_count()) {
+        return -EINVAL;
+    }
+
+    return runtime_result(vfx_runtime_commit_layer(ch, slot, position));
+}
+
+int zmk_vfx_scene_set_flags(uint8_t ch, uint8_t slot, uint8_t flags) {
+    if (ch >= channel_count()) {
+        return -EINVAL;
+    }
+
+    return runtime_result(vfx_runtime_set_flags(ch, slot, flags));
 }
 
 int zmk_vfx_scene_set_arg(uint8_t ch, uint8_t slot, uint8_t idx, int16_t value) {

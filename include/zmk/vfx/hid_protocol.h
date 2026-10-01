@@ -133,7 +133,29 @@ enum vfx_hid_op {
      * options, and the fifth and sixth numbers.
      */
     VFX_HID_OP_SCENE_GET_LAYER_EXT = 0x19,
+
+    /* ch, slot, flags -> ACK. Replaces a layer's flags byte (stack, reverse,
+     * axis) in place -- the one field SCENE_ADD_LAYER carried that had no
+     * message of its own, so changing it meant removing and re-adding.
+     */
+    VFX_HID_OP_SCENE_SET_FLAGS = 0x1A,
+    /* ch, slot, position -> ACK. Makes a layer added with VFX_HID_FLAG_STAGED
+     * live: it enters the render order at `position` (0 = bottom, 0xFF or
+     * anything past the top = on top) in a single step, so a layer built from
+     * many messages never shows half-configured.
+     */
+    VFX_HID_OP_SCENE_COMMIT_LAYER = 0x1B,
 };
+
+/* SCENE_ADD_LAYER's flags byte, bit 5: build the layer staged -- reserved and
+ * editable, but not rendered until SCENE_COMMIT_LAYER. A wire-only bit; decode
+ * strips it into vfx_hid_request.staged, so it never reaches a layer's own
+ * flags (VFX_RT_FLAGS_MASK covers bits 0-4).
+ */
+#define VFX_HID_FLAG_STAGED 0x20
+
+/* SCENE_COMMIT_LAYER's position meaning "on top". */
+#define VFX_HID_POSITION_TOP 0xFF
 
 #define VFX_HID_REPLY_BIT 0x80
 
@@ -212,7 +234,24 @@ struct vfx_hid_request {
     uint8_t opacity_min;
     uint8_t opacity_full;
     uint8_t tune_id;
+
+    /* SCENE_ADD_LAYER: the STAGED bit, split out of the flags byte. */
+    bool staged;
+    /* SCENE_COMMIT_LAYER */
+    uint8_t position;
 };
+
+/* Most bytes vfx_hid_encode_request() can write: SCENE_SET_ZONE's 18, rounded
+ * up to what a raw HID report carries.
+ */
+#define VFX_HID_MAX_REQUEST_LEN 32
+
+/* The inverse of vfx_hid_decode(): writes the wire bytes of `req` into `out`
+ * (VFX_HID_MAX_REQUEST_LEN long) and returns their count, 0 for an op it does
+ * not know. What a firmware-side sender uses to replay a scene to a peripheral
+ * without keeping the bytes it was originally sent.
+ */
+uint8_t vfx_hid_encode_request(const struct vfx_hid_request *req, uint8_t *out);
 
 /* Decodes one request out of a report. False when len is too short for the
  * op it names, or the op is not one of the above -- both are a truncated or
