@@ -763,6 +763,19 @@ static void start_scene(uint8_t ch, uint8_t index) {
     cs->scene = index;
 }
 
+#if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
+/* Whether a channel's runtime scene is worth cycling into. An inactive,
+ * empty pool would otherwise show up as a phantom last entry that renders
+ * black and looks like NEXT did nothing.
+ */
+static bool channel_runtime_cyclable(uint8_t ch) {
+    uint8_t count;
+    bool active;
+
+    return vfx_runtime_get_info(ch, &count, &active) && count > 0;
+}
+#endif
+
 int zmk_vfx_select_scene(uint8_t ch, uint8_t index) {
     uint8_t first, last;
 
@@ -778,10 +791,18 @@ int zmk_vfx_select_scene(uint8_t ch, uint8_t index) {
         }
 
 #if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
-        /* Picking a compiled scene has to give up the channel, or NEXT/PREV
-         * on the keymap would appear to do nothing while a runtime scene
-         * stayed stuck on screen.
+        /* index == chan->num_scenes is the virtual slot one past the
+         * compiled list, standing in for this channel's runtime scene.
+         * Landing on it activates the runtime scene instead of starting a
+         * compiled one; landing anywhere else has to give up the runtime
+         * scene, or NEXT/PREV on the keymap would appear to do nothing
+         * while it stayed stuck on screen.
          */
+        if (index == chan->num_scenes && channel_runtime_cyclable(i)) {
+            vfx_runtime_set_active(i, true);
+            continue;
+        }
+
         vfx_runtime_set_active(i, false);
 #endif
 
@@ -815,12 +836,39 @@ int zmk_vfx_cycle_scene(uint8_t ch, int direction) {
     return zmk_vfx_select_scene(ch, zmk_vfx_calc_scene(ch, direction));
 }
 
-uint8_t zmk_vfx_current_scene(uint8_t ch) { return state.chan[channel_for_read(ch)].scene; }
+uint8_t zmk_vfx_current_scene(uint8_t ch) {
+    const uint8_t i = channel_for_read(ch);
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
+    if (vfx_runtime_is_active(i)) {
+        const struct vfx_channel *chan = vfx_channel_get(i);
+
+        if (chan) {
+            return chan->num_scenes;
+        }
+    }
+#endif
+
+    return state.chan[i].scene;
+}
 
 const char *zmk_vfx_scene_name(uint8_t ch, uint8_t index) {
-    const struct vfx_scene *scene = channel_scene(channel_for_read(ch), index);
+    const uint8_t i = channel_for_read(ch);
+    const struct vfx_scene *scene = channel_scene(i, index);
 
-    return scene ? scene->name : NULL;
+    if (scene) {
+        return scene->name;
+    }
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
+    const struct vfx_channel *chan = vfx_channel_get(i);
+
+    if (chan && index == chan->num_scenes && channel_runtime_cyclable(i)) {
+        return "Runtime";
+    }
+#endif
+
+    return NULL;
 }
 
 #define VFX_BRT_STEP (255 / 10)
@@ -834,7 +882,25 @@ uint8_t zmk_vfx_calc_scene(uint8_t ch, int direction) {
         return 0;
     }
 
-    return (uint8_t)(((int)state.chan[i].scene + chan->num_scenes + direction) % chan->num_scenes);
+    /* The runtime scene, when there is one worth showing, rides along as one
+     * extra position past the compiled list -- index == num_scenes -- so
+     * NEXT/PREV walks into and out of it the same way it walks between
+     * compiled scenes, instead of it only being reachable by activating it
+     * out of band.
+     */
+    int total = chan->num_scenes;
+    bool at_runtime = false;
+
+#if IS_ENABLED(CONFIG_ZMK_VFX_RUNTIME_SCENES)
+    if (channel_runtime_cyclable(i)) {
+        total++;
+        at_runtime = vfx_runtime_is_active(i);
+    }
+#endif
+
+    const int current = at_runtime ? chan->num_scenes : (int)state.chan[i].scene;
+
+    return (uint8_t)((current + total + direction) % total);
 }
 
 uint8_t zmk_vfx_calc_brightness(uint8_t ch, int direction) {
